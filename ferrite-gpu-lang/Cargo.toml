@@ -1,0 +1,30 @@
+[package]
+name = "ferrite-gpu-lang"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Rust GPU language layer on top of Ferrite PTX-OS runtime"
+
+[dependencies]
+thiserror = "1.0"
+ptx-runtime = { path = "../ferrite-os/ptx-runtime" }
+ptx-kernels = { path = "../ferrite-os/internal/ptx-kernels", features = ["candle-kernels"] }
+ferrite-apps = { path = "../ferrite-os/ferrite-apps" }
+libc = "0.2"
+anyhow = { version = "1.0", optional = true }
+tch = { version = "0.16", optional = true }
+aten-ptx = { path = "../external/aten-ptx", optional = true }
+cudarc = { path = "../external/cudarc-ptx", optional = true, features = ["ptx-alloc", "cuda-12080"] }
+rlsf = "0.2.1"
+
+[features]
+default = []
+torch = ["dep:anyhow", "dep:tch", "dep:aten-ptx", "dep:cudarc"]
+
+[[example]]
+name = "script_cv_depth"
+required-features = ["torch"]
+
+[[example]]
+name = "script_cv_detect"
+required-features = ["torch"]

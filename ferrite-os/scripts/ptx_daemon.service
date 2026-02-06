@@ -1,0 +1,16 @@
+[Unit]
+Description=PTX-OS Runtime Daemon
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ptx-os
+ExecStart=/opt/ptx-os/rust/target/release/ptx-daemon serve
+Restart=on-failure
+RestartSec=2
+Environment=PTX_DAEMON_SOCKET=/tmp/ptx_os.sock
+Environment=PTX_DAEMON_KEEPALIVE_MS=5000
+Environment=LD_LIBRARY_PATH=/opt/ptx-os/lib
+
+[Install]
+WantedBy=multi-user.target

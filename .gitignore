@@ -1,0 +1,22 @@
+# Build outputs
+**/target/
+**/build/
+**/lib/
+*.o
+*.a
+*.so
+*.ptx
+*.fatbin
+
+# Caches and temp artifacts
+external/.cache/
+*.log
+
+# Local env/secrets
+.env
+.env.*
+
+# Editor/OS
+.DS_Store
+.vscode/
+.idea/

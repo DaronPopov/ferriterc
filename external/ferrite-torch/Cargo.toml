@@ -1,0 +1,29 @@
+[package]
+name = "ferrite-torch"
+version = "0.1.0"
+edition = "2021"
+authors = ["Daron Popov"]
+description = "PyTorch (tch-rs) integration with PTX-OS TLSF allocator"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# PyTorch Rust bindings
+tch = "0.16"  # Matches LibTorch 2.3
+
+# PTX-OS Runtime
+ptx-runtime = { path = "../../ferrite-os/ptx-runtime" }
+ptx-sys = { path = "../../ferrite-os/internal/ptx-sys" }
+aten-ptx = { path = "../aten-ptx" }
+cudarc = { path = "../cudarc-ptx", features = ["ptx-alloc", "cuda-12080"] }
+
+# Utilities
+anyhow = "1.0"
+
+[[example]]
+name = "torch_basic"
+
+[[example]]
+name = "torch_training"
+
+[[example]]
+name = "torch_dynamic_model"

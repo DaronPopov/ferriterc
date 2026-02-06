@@ -1,0 +1,17 @@
+[package]
+name = "ferrite-runtime-src"
+version = "0.1.0"
+kind = "source-distribution"
+
+[profiles]
+default = "runtime"
+
+[profile.runtime]
+components = [
+  "ferrite-os",
+  "ferrite-gpu-lang",
+  "external/aten-ptx",
+  "external/cudarc-ptx",
+  "external/ferrite-torch",
+  "external/ferrite-xla",
+]

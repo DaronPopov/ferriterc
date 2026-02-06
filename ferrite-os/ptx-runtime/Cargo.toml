@@ -1,0 +1,29 @@
+[package]
+name = "ptx-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Safe Rust wrappers for PTX-OS GPU runtime"
+
+[dependencies]
+ptx-sys = { workspace = true }
+libc = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+once_cell = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+ptx-autograd = { workspace = true }
+ptx-tensor = { workspace = true }
+ptx-compute = { workspace = true }
+ptx-kernels = { workspace = true, features = ["torch-kernels", "candle-kernels"] }
+rand = "0.8"
+
+[features]
+default = []
+gpu-tests = []  # Enable GPU-requiring tests
