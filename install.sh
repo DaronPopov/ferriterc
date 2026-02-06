@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SM="${SM:-${CUDA_SM:-${GPU_SM:-}}}"
 VERBOSE=false
 LIBTORCH_VERSION="${LIBTORCH_VERSION:-2.3.0}"
-LIBTORCH_CUDA_TAG="${LIBTORCH_CUDA_TAG:-cu121}"
+LIBTORCH_CUDA_TAG="${LIBTORCH_CUDA_TAG:-}"
 LIBTORCH_URL="${LIBTORCH_URL:-}"
 LIBTORCH_ALLOW_PYTORCH="${LIBTORCH_ALLOW_PYTORCH:-0}"
 
@@ -28,10 +28,51 @@ Environment variable fallback:
 Torch provisioning env (optional):
   LIBTORCH                   Existing libtorch root
   LIBTORCH_VERSION           Default: 2.3.0
-  LIBTORCH_CUDA_TAG          Default: cu121
+  LIBTORCH_CUDA_TAG          Auto-detected from nvcc (or set explicitly)
   LIBTORCH_URL               Override download URL entirely
   LIBTORCH_ALLOW_PYTORCH     Default 0. Set 1 to allow Python torch fallback
 EOF
+}
+
+need_cmd() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "[error] missing required tool: $cmd"
+    exit 1
+  fi
+}
+
+ensure_rust_toolchain() {
+  if command -v cargo >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "[info] cargo not found; installing rust toolchain via rustup"
+  need_cmd curl
+  curl https://sh.rustup.rs -sSf | sh -s -- -y
+  # shellcheck disable=SC1090
+  source "$HOME/.cargo/env"
+  need_cmd cargo
+}
+
+detect_cuda_tag() {
+  if [[ -n "${LIBTORCH_CUDA_TAG}" ]]; then
+    return 0
+  fi
+  if ! command -v nvcc >/dev/null 2>&1; then
+    LIBTORCH_CUDA_TAG="cu121"
+    echo "[warn] nvcc not found while selecting LIBTORCH_CUDA_TAG, defaulting to ${LIBTORCH_CUDA_TAG}"
+    return 0
+  fi
+  local rel
+  rel="$(nvcc --version | sed -n 's/.*release \([0-9]\+\)\.\([0-9]\+\).*/\1.\2/p' | head -n1)"
+  case "$rel" in
+    11.8) LIBTORCH_CUDA_TAG="cu118" ;;
+    12.*) LIBTORCH_CUDA_TAG="cu121" ;;
+    *)
+      LIBTORCH_CUDA_TAG="cu121"
+      echo "[warn] unsupported/unknown CUDA release '${rel}', defaulting to ${LIBTORCH_CUDA_TAG}"
+      ;;
+  esac
 }
 
 is_valid_libtorch() {
@@ -78,9 +119,9 @@ download_libtorch() {
 
   echo "[info] downloading libtorch from: $url"
   if command -v curl >/dev/null 2>&1; then
-    curl -fL "$url" -o "$zip"
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fL "$url" -o "$zip"
   elif command -v wget >/dev/null 2>&1; then
-    wget -O "$zip" "$url"
+    wget --tries=5 --waitretry=2 -O "$zip" "$url"
   else
     echo "[error] need curl or wget to auto-download libtorch"
     exit 1
@@ -92,8 +133,16 @@ download_libtorch() {
     unzip -o "$zip" >/dev/null
   elif command -v bsdtar >/dev/null 2>&1; then
     bsdtar -xf "$zip"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$zip" "$ROOT/external" <<'PY'
+import sys, zipfile, pathlib
+z = pathlib.Path(sys.argv[1])
+out = pathlib.Path(sys.argv[2])
+with zipfile.ZipFile(z) as f:
+    f.extractall(out)
+PY
   else
-    echo "[error] need unzip or bsdtar to extract libtorch archive"
+    echo "[error] need unzip, bsdtar, or python3 to extract libtorch archive"
     exit 1
   fi
 
@@ -152,6 +201,15 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+need_cmd make
+need_cmd gcc
+need_cmd g++
+need_cmd nvidia-smi
+need_cmd nvcc
+ensure_rust_toolchain
+detect_cuda_tag
+echo "[info] selected LIBTORCH_CUDA_TAG: ${LIBTORCH_CUDA_TAG}"
 
 if [[ -z "${SM}" ]]; then
   if command -v nvidia-smi >/dev/null 2>&1; then

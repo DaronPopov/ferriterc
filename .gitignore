@@ -10,6 +10,7 @@
 
 # Caches and temp artifacts
 external/.cache/
+external/libtorch/
 *.log
 
 # Local env/secrets

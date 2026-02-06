@@ -39,7 +39,7 @@ Installer resolves libtorch in this order:
 
 1. `LIBTORCH` env path
 2. `external/libtorch`
-3. Auto-download libtorch
+3. Auto-download libtorch (CUDA tag auto-detected from local `nvcc`)
 4. Optional Python torch fallback (`LIBTORCH_ALLOW_PYTORCH=1`)
 
 Auto-download controls:
