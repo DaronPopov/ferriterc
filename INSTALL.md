@@ -38,6 +38,7 @@ No global project files are required outside this directory.
 - `LIBTORCH_VERSION`: default `2.3.0`
 - `LIBTORCH_CUDA_TAG`: default `cu121`
 - `LIBTORCH_URL`: custom download URL
+- `LIBTORCH_ALLOW_PYTORCH`: default `0` (set `1` only if you explicitly want Python torch fallback)
 
 ## Verify Manually
 

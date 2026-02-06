@@ -39,10 +39,11 @@ Installer resolves libtorch in this order:
 
 1. `LIBTORCH` env path
 2. `external/libtorch`
-3. CUDA-enabled Python `torch` install
-4. Auto-download libtorch
+3. Auto-download libtorch
+4. Optional Python torch fallback (`LIBTORCH_ALLOW_PYTORCH=1`)
 
 Auto-download controls:
 - `LIBTORCH_VERSION` (default `2.3.0`)
 - `LIBTORCH_CUDA_TAG` (default `cu121`)
 - `LIBTORCH_URL` (full override)
+- `LIBTORCH_ALLOW_PYTORCH` (default `0`)

@@ -8,6 +8,7 @@ VERBOSE=false
 LIBTORCH_VERSION="${LIBTORCH_VERSION:-2.3.0}"
 LIBTORCH_CUDA_TAG="${LIBTORCH_CUDA_TAG:-cu121}"
 LIBTORCH_URL="${LIBTORCH_URL:-}"
+LIBTORCH_ALLOW_PYTORCH="${LIBTORCH_ALLOW_PYTORCH:-0}"
 
 usage() {
   cat <<'EOF'
@@ -29,6 +30,7 @@ Torch provisioning env (optional):
   LIBTORCH_VERSION           Default: 2.3.0
   LIBTORCH_CUDA_TAG          Default: cu121
   LIBTORCH_URL               Override download URL entirely
+  LIBTORCH_ALLOW_PYTORCH     Default 0. Set 1 to allow Python torch fallback
 EOF
 }
 
@@ -114,12 +116,14 @@ ensure_libtorch() {
     return 0
   fi
 
-  local py_root
-  if py_root="$(detect_python_torch_root)"; then
-    if is_valid_libtorch "$py_root"; then
-      export LIBTORCH="$py_root"
-      echo "[info] using Python torch libraries: ${LIBTORCH}"
-      return 0
+  if [[ "${LIBTORCH_ALLOW_PYTORCH}" == "1" ]]; then
+    local py_root
+    if py_root="$(detect_python_torch_root)"; then
+      if is_valid_libtorch "$py_root"; then
+        export LIBTORCH="$py_root"
+        echo "[info] using Python torch libraries: ${LIBTORCH}"
+        return 0
+      fi
     fi
   fi
 
