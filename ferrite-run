@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LANG_DIR="$ROOT/ferrite-gpu-lang"
+EXAMPLES_DIR="$LANG_DIR/examples"
+CALLER_CWD="$(pwd)"
+
+TORCH=false
+RELEASE=true
+EXTRA_ARGS=()
+
+usage() {
+  cat <<'EOF'
+ferrite-run — compile and run any .rs file against ferrite-gpu-lang
+
+Usage:
+  ferrite-run <script.rs> [options] [-- <args...>]
+
+Options:
+  --torch       Enable the torch feature (for cv/torch_bridge APIs)
+  --debug       Build in debug mode instead of release
+  -h, --help    Show this help
+
+Examples:
+  ferrite-run ~/fdfd/scripting.rs
+  ferrite-run ./my_pipeline.rs --torch
+  ferrite-run /tmp/test.rs -- --some-arg
+
+The script is temporarily linked into ferrite-gpu-lang/examples,
+compiled, run, and cleaned up. You can target any .rs file on disk.
+EOF
+}
+
+SCRIPT_PATH=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --torch)
+      TORCH=true
+      shift
+      ;;
+    --debug)
+      RELEASE=false
+      shift
+      ;;
+    --)
+      shift
+      EXTRA_ARGS=("$@")
+      break
+      ;;
+    -*)
+      echo "[error] unknown option: $1"
+      usage
+      exit 1
+      ;;
+    *)
+      if [[ -z "$SCRIPT_PATH" ]]; then
+        SCRIPT_PATH="$1"
+      else
+        echo "[error] multiple script paths given"
+        usage
+        exit 1
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$SCRIPT_PATH" ]]; then
+  echo "[error] no script file specified"
+  usage
+  exit 1
+fi
+
+# Resolve to absolute path.
+SCRIPT_PATH="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)/$(basename "$SCRIPT_PATH")"
+
+if [[ ! -f "$SCRIPT_PATH" ]]; then
+  echo "[error] file not found: $SCRIPT_PATH"
+  exit 1
+fi
+
+if [[ "$SCRIPT_PATH" != *.rs ]]; then
+  echo "[error] file must be a .rs file: $SCRIPT_PATH"
+  exit 1
+fi
+
+# Derive example name from filename (strip .rs extension).
+BASENAME="$(basename "$SCRIPT_PATH" .rs)"
+# Sanitize: replace non-alphanumeric/underscore with underscore.
+EXAMPLE_NAME="$(echo "$BASENAME" | sed 's/[^a-zA-Z0-9_]/_/g')"
+LINK_PATH="$EXAMPLES_DIR/$EXAMPLE_NAME.rs"
+
+# Guard against clobbering an existing example that isn't our symlink.
+if [[ -e "$LINK_PATH" && ! -L "$LINK_PATH" ]]; then
+  # File exists and is NOT a symlink — don't overwrite a real example.
+  EXAMPLE_NAME="_ferrite_run_${EXAMPLE_NAME}"
+  LINK_PATH="$EXAMPLES_DIR/$EXAMPLE_NAME.rs"
+fi
+
+cleanup() {
+  if [[ -L "$LINK_PATH" ]]; then
+    rm -f "$LINK_PATH"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+# Auto-detect --torch if script uses tch, aten_ptx, or anyhow.
+if [[ "$TORCH" == "false" ]]; then
+  if grep -qE 'use (tch|aten_ptx|anyhow)' "$SCRIPT_PATH" 2>/dev/null; then
+    TORCH=true
+    echo "[ferrite-run] auto-detected torch feature from imports"
+  fi
+fi
+
+# Create symlink into the examples directory.
+ln -sf "$SCRIPT_PATH" "$LINK_PATH"
+
+# Resolve LIBTORCH the same way install.sh does:
+#   1. LIBTORCH env already set
+#   2. Bundled external/libtorch
+if [[ -z "${LIBTORCH:-}" ]]; then
+  if [[ -d "$ROOT/external/libtorch" ]]; then
+    export LIBTORCH="$ROOT/external/libtorch"
+  fi
+fi
+export LIBTORCH_BYPASS_VERSION_CHECK="${LIBTORCH_BYPASS_VERSION_CHECK:-1}"
+
+# Set up library path so the runtime .so files are found.
+export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LD_LIBRARY_PATH:-}"
+
+# Add libtorch libs.
+if [[ -n "${LIBTORCH:-}" && -d "${LIBTORCH}/lib" ]]; then
+  export LD_LIBRARY_PATH="${LIBTORCH}/lib:$LD_LIBRARY_PATH"
+fi
+
+# Build cargo command.
+CARGO_CMD=(cargo run)
+if [[ "$RELEASE" == "true" ]]; then
+  CARGO_CMD+=(--release)
+fi
+if [[ "$TORCH" == "true" ]]; then
+  CARGO_CMD+=(--features torch)
+fi
+CARGO_CMD+=(--example "$EXAMPLE_NAME")
+
+if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+  CARGO_CMD+=(-- "${EXTRA_ARGS[@]}")
+fi
+
+echo "[ferrite-run] $SCRIPT_PATH -> example/$EXAMPLE_NAME"
+export FERRITE_RUN_CALLER_CWD="$CALLER_CWD"
+cd "$LANG_DIR"
+"${CARGO_CMD[@]}"

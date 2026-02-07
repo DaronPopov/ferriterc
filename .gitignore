@@ -13,6 +13,11 @@ external/.cache/
 external/libtorch/
 *.log
 
+# Downloaded model weights
+ferrite-gpu-lang/models/
+**/merged_shard_*.safetensors
+**/checkpoint_*.bin
+
 # Local env/secrets
 .env
 .env.*

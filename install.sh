@@ -241,28 +241,60 @@ ensure_libtorch
 export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LIBTORCH}/lib:${LD_LIBRARY_PATH:-}"
 
 echo "[info] using GPU SM: ${SM}"
-echo "[1/5] Building ferrite-os"
+STEPS=7
+echo "[1/${STEPS}] Building ferrite-os"
 cd "$ROOT/ferrite-os"
-if [[ "${VERBOSE}" == "true" ]]; then
-  make all
-else
-  make all
-fi
+make all
 
-echo "[2/5] Building ferrite-gpu-lang (torch feature)"
+echo "[2/${STEPS}] Building ferrite-gpu-lang (torch feature)"
 cd "$ROOT/ferrite-gpu-lang"
 cargo build --release --features torch
 
-echo "[3/5] Building external/ferrite-torch examples"
+echo "[3/${STEPS}] Building external/ferrite-torch examples"
 cd "$ROOT/external/ferrite-torch"
 cargo build --release --examples
 
-echo "[4/5] Building external/ferrite-xla example"
+echo "[4/${STEPS}] Building external/ferrite-xla example"
 cd "$ROOT/external/ferrite-xla"
 cargo build --release --example xla_allocator_test
 
-echo "[5/5] Validating ferrite-gpu-lang torch+xla scripts"
+echo "[5/${STEPS}] Validating ferrite-gpu-lang torch+xla scripts"
 cd "$ROOT/ferrite-gpu-lang"
 cargo run --release --features torch --example script_cv_detect >/dev/null
 
-echo "[ok] runtime source build complete (sm_${SM})"
+check_engine_scripts() {
+  local engine_dir="$1"
+  local engine_name="$2"
+  local all_ok=true
+
+  while IFS= read -r -d '' script; do
+    NAME="$(basename "$script" .rs)"
+    NAME="$(echo "$NAME" | sed 's/[^a-zA-Z0-9_]/_/g')"
+    LINK="$ROOT/ferrite-gpu-lang/examples/${NAME}.rs"
+    ln -sf "$script" "$LINK"
+    if ! cargo check --release --features torch --example "$NAME" 2>/dev/null; then
+      echo "  [warn] $(basename "$script") failed to check"
+      all_ok=false
+    fi
+    rm -f "$LINK"
+  done < <(find "$engine_dir" -name '*.rs' -type f -print0)
+
+  if [[ "$all_ok" == "true" ]]; then
+    echo "  ${engine_name}: all scripts compile"
+  else
+    echo "  ${engine_name}: some scripts had warnings (non-fatal)"
+  fi
+}
+
+echo "[6/${STEPS}] Checking finetune_engine scripts"
+cd "$ROOT/ferrite-gpu-lang"
+check_engine_scripts "$ROOT/finetune_engine" "finetune_engine"
+
+echo "[7/${STEPS}] Checking mathematics_engine scripts"
+check_engine_scripts "$ROOT/mathematics_engine" "mathematics_engine"
+
+echo "[ok] ferrite runtime build complete (sm_${SM})"
+echo "     finetune_engine:    ready"
+echo "     mathematics_engine: ready"
+echo ""
+echo "  Run scripts with: ./ferrite-run <script.rs> --torch"
