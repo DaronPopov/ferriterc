@@ -15,12 +15,15 @@
 //!   PTX_BENCH_HIDDEN=256
 //!   PTX_BENCH_SYNC_EVERY=10
 //!   PTX_BENCH_PRINT_EVERY=100
+//!   PTX_BENCH_MAX_STREAMS=32
+//!   PTX_BENCH_POOL_FRACTION=0.70
+//!   PTX_BENCH_RESERVE_VRAM_MB=256
 
 use std::env;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ptx_runtime::PtxRuntime;
+use ptx_runtime::{PTX_STABLE_ABI_VERSION, PTXStableConfig, PtxRuntime};
 use ptx_tensor::{DType, Result, Tensor};
 
 struct Lcg {
@@ -54,6 +57,13 @@ fn parse_usize_env(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn parse_f32_env(key: &str, default: f32) -> f32 {
+    env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(default)
+}
+
 fn main() -> Result<()> {
     let requests = parse_usize_env("PTX_BENCH_REQUESTS", 1000);
     let batch_min = parse_usize_env("PTX_BENCH_BATCH_MIN", 1);
@@ -63,6 +73,9 @@ fn main() -> Result<()> {
     let hidden = parse_usize_env("PTX_BENCH_HIDDEN", 256);
     let sync_every = parse_usize_env("PTX_BENCH_SYNC_EVERY", 10).max(1);
     let print_every = parse_usize_env("PTX_BENCH_PRINT_EVERY", 100).max(1);
+    let max_streams = parse_usize_env("PTX_BENCH_MAX_STREAMS", 32).max(1) as u32;
+    let pool_fraction = parse_f32_env("PTX_BENCH_POOL_FRACTION", 0.70);
+    let reserve_vram_mb = parse_usize_env("PTX_BENCH_RESERVE_VRAM_MB", 256) as u64;
 
     println!("=== PTX-OS Dynamic-Shape Inference Benchmark ===");
     println!("requests: {}", requests);
@@ -71,9 +84,26 @@ fn main() -> Result<()> {
     println!("hidden: {}", hidden);
     println!("sync every: {}", sync_every);
     println!("print every: {}", print_every);
+    println!("max streams: {}", max_streams);
+    println!("pool fraction: {:.2}", pool_fraction);
+    println!("reserve VRAM: {} MB", reserve_vram_mb);
     println!();
 
-    let runtime = Arc::new(PtxRuntime::new(0)?);
+    let runtime_cfg = PTXStableConfig {
+        struct_size: std::mem::size_of::<PTXStableConfig>() as u32,
+        abi_version: PTX_STABLE_ABI_VERSION,
+        flags: 0,
+        device_id: 0,
+        pool_fraction,
+        fixed_pool_size: 0,
+        reserve_vram: reserve_vram_mb * 1024 * 1024,
+        max_streams,
+        quiet_init: 0,
+        enable_leak_detection: 1,
+        enable_pool_health: 1,
+        _reserved0: 0,
+    };
+    let runtime = Arc::new(PtxRuntime::with_stable_config(0, Some(runtime_cfg))?);
     let mut rng = Lcg::new(0xC0FFEE);
 
     let start = Instant::now();

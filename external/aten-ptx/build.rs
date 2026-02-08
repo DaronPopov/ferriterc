@@ -1,8 +1,16 @@
 // Build script to compile C++ PyTorch allocator
+//
+// Resolution order for libtorch:
+//   1. LIBTORCH env var (set by install.sh / ferrite-run)
+//   2. ../libtorch  (external/libtorch relative to external/aten-ptx)
+//   3. ../../external/libtorch  (repo root)
+//
+// No Python fallback — libtorch is provisioned by install.sh as a standalone
+// C++ distribution. This avoids version mismatches between pip-installed
+// PyTorch and the headers we compile against.
 
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn looks_like_libtorch(root: &Path) -> bool {
     (root.join("include/torch/torch.h").exists()
@@ -12,37 +20,21 @@ fn looks_like_libtorch(root: &Path) -> bool {
         && (root.join("lib/libc10_cuda.so").exists() || root.join("lib/libtorch_cuda.so").exists())
 }
 
-fn detect_python_torch_root() -> Option<PathBuf> {
-    let output = Command::new("python3")
-        .args([
-            "-c",
-            "import os, torch; print(os.path.dirname(torch.__file__)) if getattr(torch.version, 'cuda', None) else exit(1)",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(s))
-    }
-}
-
 fn resolve_libtorch(manifest_dir: &Path) -> PathBuf {
+    // 1. LIBTORCH env var (highest priority — set by install.sh and ferrite-run)
     if let Ok(p) = env::var("LIBTORCH") {
-        let path = PathBuf::from(p);
+        let path = PathBuf::from(&p);
         if looks_like_libtorch(&path) {
             return path;
         }
+        eprintln!(
+            "cargo:warning=LIBTORCH={} does not look like a valid libtorch directory, trying other paths",
+            p
+        );
     }
 
+    // 2. Local paths relative to this crate (external/aten-ptx → external/libtorch)
     let mut candidates = Vec::new();
-    if let Some(py_root) = detect_python_torch_root() {
-        candidates.push(py_root);
-    }
     if let Some(external_dir) = manifest_dir.parent() {
         candidates.push(external_dir.join("libtorch"));
         if let Some(repo_root) = external_dir.parent() {
@@ -50,14 +42,21 @@ fn resolve_libtorch(manifest_dir: &Path) -> PathBuf {
         }
     }
 
-    for c in candidates {
-        if looks_like_libtorch(&c) {
-            return c;
+    for c in &candidates {
+        if looks_like_libtorch(c) {
+            return c.clone();
         }
     }
 
     panic!(
-        "Could not find libtorch. Set LIBTORCH=/path/to/libtorch (must contain include/torch/torch.h or include/torch/csrc/api/include/torch/torch.h)."
+        "Could not find libtorch.\n\
+         Run ./install.sh to provision it, or set LIBTORCH=/path/to/libtorch.\n\
+         Searched:\n  - LIBTORCH env var\n{}",
+        candidates
+            .iter()
+            .map(|c| format!("  - {}", c.display()))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
@@ -74,6 +73,8 @@ fn main() {
         "libtorch at {} is missing c10/cuda/CUDACachingAllocator.h (need CUDA-enabled libtorch)",
         libtorch.display()
     );
+
+    eprintln!("cargo:warning=aten-ptx: using libtorch at {}", libtorch.display());
 
     // Find CUDA
     let cuda_include = env::var("CUDA_INCLUDE").unwrap_or_else(|_| "/usr/local/cuda/include".to_string());

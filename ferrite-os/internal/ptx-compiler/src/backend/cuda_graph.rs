@@ -356,6 +356,163 @@ fn emit_node_f32(
             }
         }
 
+        // Gather/scatter ops
+        OpCode::Gather => {
+            let input_id = node.inputs.get(0).ok_or_else(|| Error::Internal {
+                message: "Gather missing input".to_string(),
+            })?;
+            let idx_id = node.inputs.get(1).ok_or_else(|| Error::Internal {
+                message: "Gather missing indices".to_string(),
+            })?;
+            let input_meta = graph.tensor(*input_id).ok_or_else(|| Error::Internal {
+                message: "Missing gather input meta".to_string(),
+            })?;
+            let idx_meta = graph.tensor(*idx_id).ok_or_else(|| Error::Internal {
+                message: "Missing gather indices meta".to_string(),
+            })?;
+            let dim = node.attrs.reduce_dim.ok_or_else(|| Error::Internal {
+                message: "Gather missing dim".to_string(),
+            })?;
+            let ndim = input_meta.shape.len() as i32;
+            let dim = if dim < 0 { ndim + dim } else { dim } as usize;
+            let outer: usize = input_meta.shape[..dim].iter().product();
+            let input_dim_size = input_meta.shape[dim];
+            let idx_dim_size = idx_meta.shape[dim];
+            let inner: usize = input_meta.shape[dim + 1..].iter().product();
+
+            let a = inputs[0] as *mut f32;
+            let idx = inputs[1] as *mut i32;
+            unsafe {
+                ptx_sys::ptx_tensor_gather_f32(a, idx, out, outer, input_dim_size, idx_dim_size, inner, stream.raw())
+            };
+        }
+
+        // Index-select
+        OpCode::IndexSelect => {
+            let input_id = node.inputs.get(0).ok_or_else(|| Error::Internal {
+                message: "IndexSelect missing input".to_string(),
+            })?;
+            let idx_id = node.inputs.get(1).ok_or_else(|| Error::Internal {
+                message: "IndexSelect missing indices".to_string(),
+            })?;
+            let input_meta = graph.tensor(*input_id).ok_or_else(|| Error::Internal {
+                message: "Missing index_select input meta".to_string(),
+            })?;
+            let idx_meta = graph.tensor(*idx_id).ok_or_else(|| Error::Internal {
+                message: "Missing index_select indices meta".to_string(),
+            })?;
+            let dim = node.attrs.reduce_dim.ok_or_else(|| Error::Internal {
+                message: "IndexSelect missing dim".to_string(),
+            })?;
+            let ndim = input_meta.shape.len() as i32;
+            let dim = if dim < 0 { ndim + dim } else { dim } as usize;
+            let left: usize = input_meta.shape[..dim].iter().product();
+            let src_dim = input_meta.shape[dim];
+            let ids_dim = idx_meta.shape[dim];
+            let right: usize = input_meta.shape[dim + 1..].iter().product();
+
+            let a = inputs[0] as *mut f32;
+            let idx = inputs[1] as *mut i32;
+            unsafe {
+                ptx_sys::ptx_tensor_index_select_f32(
+                    a, idx, out, left, src_dim, ids_dim, right, stream.raw(),
+                )
+            };
+        }
+
+        // Where conditional
+        OpCode::Where => {
+            let cond = inputs[0] as *mut u8;
+            let t = inputs[1] as *mut f32;
+            let f = inputs[2] as *mut f32;
+            unsafe {
+                ptx_sys::ptx_tensor_where_f32(cond, t, f, out, n, stream.raw())
+            };
+        }
+
+        // Argsort — output is u32, so this is a special case
+        OpCode::Argsort => {
+            let input_id = node.inputs.get(0).ok_or_else(|| Error::Internal {
+                message: "Argsort missing input".to_string(),
+            })?;
+            let input_meta = graph.tensor(*input_id).ok_or_else(|| Error::Internal {
+                message: "Missing argsort input meta".to_string(),
+            })?;
+            let dim = node.attrs.reduce_dim.ok_or_else(|| Error::Internal {
+                message: "Argsort missing dim".to_string(),
+            })?;
+            let ndim = input_meta.shape.len() as i32;
+            let dim = if dim < 0 { ndim + dim } else { dim } as usize;
+            // Argsort works on the last dim: reshape to [nrows, ncols]
+            let nrows: usize = input_meta.shape[..dim].iter().product();
+            let ncols = input_meta.shape[dim];
+            let ascending = node.attrs.scalar_a.unwrap_or(1.0) > 0.5;
+
+            let a = inputs[0] as *mut f32;
+            unsafe {
+                ptx_sys::ptx_tensor_argsort_f32(
+                    a, out as *mut u32, nrows, ncols,
+                    if ascending { 1 } else { 0 },
+                    stream.raw(),
+                )
+            };
+        }
+
+        // Scan/prefix ops
+        OpCode::CumSum => {
+            let input_id = node.inputs.get(0).ok_or_else(|| Error::Internal {
+                message: "CumSum missing input".to_string(),
+            })?;
+            let input_meta = graph.tensor(*input_id).ok_or_else(|| Error::Internal {
+                message: "Missing cumsum input meta".to_string(),
+            })?;
+            let dim = node.attrs.reduce_dim.ok_or_else(|| Error::Internal {
+                message: "CumSum missing dim".to_string(),
+            })?;
+            let ndim = input_meta.shape.len() as i32;
+            let dim = if dim < 0 { ndim + dim } else { dim } as usize;
+            let (outer, dim_size, inner) = ptx_tensor::shape::reduction_sizes(&input_meta.shape, dim);
+
+            let a = inputs[0] as *mut f32;
+            unsafe {
+                ptx_sys::ptx_tensor_cumsum_f32(a, out, outer, dim_size, inner, stream.raw())
+            };
+        }
+
+        // Sort/Select ops
+        OpCode::TopK => {
+            let input_id = node.inputs.get(0).ok_or_else(|| Error::Internal {
+                message: "TopK missing input".to_string(),
+            })?;
+            let input_meta = graph.tensor(*input_id).ok_or_else(|| Error::Internal {
+                message: "Missing topk input meta".to_string(),
+            })?;
+            let dim = node.attrs.reduce_dim.ok_or_else(|| Error::Internal {
+                message: "TopK missing dim".to_string(),
+            })?;
+            let k = node.attrs.k.ok_or_else(|| Error::Internal {
+                message: "TopK missing k".to_string(),
+            })?;
+            let largest = node.attrs.scalar_a.unwrap_or(1.0) > 0.5;
+            let ndim = input_meta.shape.len() as i32;
+            let dim = if dim < 0 { ndim + dim } else { dim } as usize;
+            let outer: usize = input_meta.shape[..dim].iter().product();
+            let dim_size = input_meta.shape[dim];
+            let inner: usize = input_meta.shape[dim + 1..].iter().product();
+
+            // TopK produces values to `out`; indices are not wired through the graph yet.
+            let a = inputs[0] as *mut f32;
+            // We need a scratch buffer for indices — skip indices for the graph path.
+            unsafe {
+                ptx_sys::ptx_tensor_topk_f32(
+                    a, out, std::ptr::null_mut(), // no indices buffer in graph mode
+                    outer, dim_size, inner, k,
+                    if largest { 1 } else { 0 },
+                    stream.raw(),
+                )
+            };
+        }
+
         // Softmax
         OpCode::Softmax => {
             let input_id = node.inputs.get(0).ok_or_else(|| Error::Internal {

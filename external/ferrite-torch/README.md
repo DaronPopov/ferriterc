@@ -42,7 +42,7 @@ This project integrates PyTorch Rust bindings (tch-rs) with the PTX-OS TLSF allo
 
 ```bash
 # Download LibTorch from pytorch.org
-wget https://download.pytorch.org/libtorch/cu121/libtorch-cxx11-abi-shared-with-deps-2.1.0%2Bcu121.zip
+wget https://download.pytorch.org/libtorch/cu126/libtorch-shared-with-deps-2.9.0%2Bcu126.zip
 unzip libtorch-*.zip
 export LIBTORCH=$PWD/libtorch
 export LD_LIBRARY_PATH=$LIBTORCH/lib:$LD_LIBRARY_PATH

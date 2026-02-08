@@ -24,6 +24,16 @@ use std::collections::HashMap;
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+// dlopen constants
+const RTLD_NOW: i32 = 0x2;
+const RTLD_GLOBAL: i32 = 0x100;
+const RTLD_NOLOAD: i32 = 0x4;
+
+extern "C" {
+    fn dlopen(filename: *const i8, flags: i32) -> *mut c_void;
+    fn dlerror() -> *const i8;
+}
+
 // Thread-safe globals using OnceLock (safer than static mut)
 static GLOBAL_RUNTIME: OnceLock<Arc<PtxRuntime>> = OnceLock::new();
 static PTR_MAP: OnceLock<Mutex<HashMap<usize, Arc<ptx_runtime::GpuPtr>>>> = OnceLock::new();
@@ -254,6 +264,48 @@ pub extern "C" fn tlsf_get_fragmentation_ffi() -> f64 {
 }
 
 // ============================================================================
+// libtorch CUDA backend loading
+// ============================================================================
+
+/// Ensure libtorch_cuda.so is loaded so CUDA dispatch keys are registered.
+///
+/// The linker's --as-needed flag drops libtorch_cuda.so because no symbols are
+/// directly referenced from it — the CUDA ops register via static constructors.
+/// We force-load it here with RTLD_GLOBAL before any tensor operations.
+pub fn ensure_libtorch_cuda_loaded() {
+    // Order matters: load dependencies first, then the main CUDA library.
+    // libtorch_cuda.so depends on libtorch_cpu.so and libtorch.so.
+    let libs = [
+        "libtorch_cpu.so\0",
+        "libtorch.so\0",
+        "libtorch_cuda.so\0",
+    ];
+
+    for lib in &libs {
+        unsafe {
+            // Check if already loaded
+            let handle = dlopen(lib.as_ptr() as *const i8, RTLD_NOW | RTLD_NOLOAD | RTLD_GLOBAL);
+            if !handle.is_null() {
+                continue;
+            }
+            // Load with RTLD_GLOBAL so dispatch keys register in the global symbol table
+            let handle = dlopen(lib.as_ptr() as *const i8, RTLD_NOW | RTLD_GLOBAL);
+            if handle.is_null() {
+                let err = dlerror();
+                let msg = if err.is_null() {
+                    "unknown error".to_string()
+                } else {
+                    std::ffi::CStr::from_ptr(err).to_string_lossy().into_owned()
+                };
+                eprintln!("[aten-ptx] warning: failed to dlopen {}: {}", &lib[..lib.len()-1], msg);
+            } else {
+                eprintln!("[aten-ptx] loaded {}", &lib[..lib.len()-1]);
+            }
+        }
+    }
+}
+
+// ============================================================================
 // Rust High-Level API
 // ============================================================================
 
@@ -273,6 +325,10 @@ pub fn init_pytorch_tlsf_ex(device_id: i32, pool_fraction: f64, num_streams: u32
     if num_streams == 0 {
         return Err("num_streams must be > 0".to_string());
     }
+
+    // Must load libtorch_cuda.so BEFORE any PyTorch operations so CUDA
+    // dispatch keys are registered (the linker drops it via --as-needed).
+    ensure_libtorch_cuda_loaded();
 
     tlsf_init_ex_ffi(device_id, pool_fraction, num_streams);
 

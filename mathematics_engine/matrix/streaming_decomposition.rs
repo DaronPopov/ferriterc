@@ -402,6 +402,7 @@ fn streaming_block_lu(
 fn main() -> Result<()> {
     let cfg = parse_args()?;
 
+    aten_ptx::ensure_libtorch_cuda_loaded();
     if !tch::Cuda::is_available() {
         println!("CUDA not available");
         return Ok(());

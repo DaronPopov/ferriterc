@@ -1,0 +1,298 @@
+
+FERRITERC COMPILER PIPELINE
+=============================
+From user DSL through IR optimization to GPU execution.
+
+
+=== FRONTEND: PROGRAM DSL (ferrite-gpu-lang/lib.rs) ===
+
+  User writes:
+
+    let mut p = Program::new();
+    let x = p.input(&[1, 1, 1, 2048]);     // ValueId(0)
+    let y = p.relu(x);                       // ValueId(1)
+    let z = p.sigmoid(y);                    // ValueId(2)
+    p.set_output(z);
+    let compiled = p.compile()?;
+
+  Internal representation:
+
+    Program {
+      nodes: Vec<Op>,
+      output: Option<ValueId>,
+    }
+
+    Op enum:
+    +------------------+
+    | Input { shape }  |  ValueId(0)  shape=[1,1,1,2048]
+    +------------------+
+    | Relu(ValueId)    |  ValueId(1)  input=0
+    +------------------+
+    | Tanh(ValueId)    |
+    +------------------+
+    | Sigmoid(ValueId) |  ValueId(2)  input=1
+    +------------------+
+    | Add { lhs, rhs } |
+    +------------------+
+    | Mul { lhs, rhs } |
+    +------------------+
+
+  compile() validates:
+    - output is set
+    - all ValueId references are valid
+    - shapes propagate correctly
+    - computes numel for each node
+
+  Result: CompiledProgram {
+    nodes, shapes, numels, input_ids, output
+  }
+
+
+=== GRAPH IR (ptx-compiler/src/ir/) ===
+
+  Higher-level graph representation for optimization:
+
+  Graph {
+    tensors: IndexMap<TensorId, TensorMeta>,
+    nodes: IndexMap<NodeId, Node>,
+    inputs: Vec<TensorId>,
+    outputs: Vec<TensorId>,
+  }
+
+  TensorMeta {                    Node {
+    id: TensorId,                   id: NodeId,
+    shape: Vec<usize>,              op: OpCode,
+    dtype: DType,                   inputs: SmallVec<[TensorId; 4]>,
+    is_input: bool,                 output: TensorId,
+    is_output: bool,                attrs: OpAttrs,
+    is_constant: bool,            }
+  }
+
+  OpCode (mirrors PTXTensorOpcode, 0x00-0xA2):
+
+    0x00 Input          0x40 Relu           0x60 Softmax
+    0x01 Constant       0x41 Relu6          0x61 LogSoftmax
+                        0x42 LeakyRelu
+    0x10 Add            0x43 Elu            0x70 CmpEq
+    0x11 Sub            0x44 Selu           0x71 CmpNe
+    0x12 Mul            0x45 Gelu           0x72 CmpLt
+    0x13 Div            0x46 GeluTanh       0x73 CmpLe
+    0x14 Max            0x47 Sigmoid        0x74 CmpGt
+    0x15 Min            0x48 Silu           0x75 CmpGe
+    0x16 Pow            0x49 Softplus
+    0x17 Mod            0x4A Mish           0x80 Affine
+                        0x4B HardSwish      0x81 Clamp
+    0x20 Neg            0x4C HardSigmoid    0x82 Where
+    0x21 Abs
+    0x22 Exp            0x50 ReduceSum      0x90 Copy
+    0x23 Log            0x51 ReduceMean     0x91 Cast
+    0x24 Sin            0x52 ReduceMax      0x92 Fill
+    0x25 Cos            0x53 ReduceMin
+    0x26 Sqrt           0x54 ReduceProd     0xA0 Matmul
+    0x27 Rsqrt          0x55 ReduceArgmax   0xA1 BatchMatmul
+    0x28 Tanh           0x56 ReduceArgmin   0xA2 Transpose
+    ...
+
+  OpAttrs {
+    scalar_a: Option<f32>,        // leaky_relu alpha, affine mul, clamp min
+    scalar_b: Option<f32>,        // affine add, clamp max
+    reduce_dim: Option<i32>,      // reduction axis
+    keepdim: bool,                // keep reduced dim as 1
+    target_dtype: Option<DType>,  // for cast
+    transpose_dims: Option<(usize, usize)>,
+  }
+
+
+=== OPTIMIZATION PASSES (ptx-compiler/src/passes/) ===
+
+  run_passes(graph) applies in order:
+
+  +-------------------+     +-------------------+     +-------------------+
+  |  Dead Code Elim   | --> | Constant Folding  | --> | Operator Fusion   |
+  +-------------------+     +-------------------+     +-------------------+
+           |                         |                         |
+  Mark reachable from      Pre-compute ops on        Combine compatible
+  outputs, remove dead     constant inputs,          elementwise ops
+  nodes that don't         replace with pre-         (e.g. add+relu ->
+  contribute to output     computed values           fused kernel)
+                                                              |
+                                                              v
+                                                  +-------------------+
+                                                  | Memory Planning   |
+                                                  +-------------------+
+                                                           |
+                                                  Assign buffers,
+                                                  reuse for non-
+                                                  overlapping lifetimes,
+                                                  compute total memory
+
+  Example - Dead Code Elimination:
+
+    BEFORE:                    AFTER:
+    x = input([2,3])           x = input([2,3])
+    y = relu(x)                y = relu(x)        <-- reaches output
+    z = sigmoid(x)  DEAD       output = y
+    w = add(y, z)   DEAD
+    output = y
+
+
+  Example - Operator Fusion:
+
+    BEFORE (3 kernel launches, 3 memory round-trips):
+      t1 = add(a, b)    // launch kernel, write t1
+      t2 = relu(t1)     // launch kernel, read t1, write t2
+      t3 = mul(t2, c)   // launch kernel, read t2, write t3
+
+    AFTER (1 fused kernel, 1 memory round-trip):
+      t3 = fused_add_relu_mul(a, b, c)
+
+
+  Example - Memory Planning:
+
+    Node execution order:    Buffer assignments:
+    n0: x = input            buf0 <- x
+    n1: y = relu(x)          buf1 <- y     (x still needed? no -> buf0 free)
+    n2: z = exp(y)           buf0 <- z     (reuse! y still needed? no)
+    n3: out = add(y, z)      buf2 <- out   (y=buf1, z=buf0 both needed)
+
+    Total buffers: 3  (instead of 4 without reuse)
+
+
+=== BACKEND CODE GENERATION ===
+
+  Two backends:
+
+  +--CUDA Graph Backend--+          +--PTX Dispatch Backend--+
+  |  cuda_graph.rs       |          |  ptx_dispatch.rs       |
+  |                      |          |                        |
+  |  1. Begin capture    |          |  1. For each node:     |
+  |  2. Execute all ops  |          |     - get stream       |
+  |     on captured      |          |     - dispatch kernel  |
+  |     stream           |          |     - next stream      |
+  |  3. End capture      |          |  2. Synchronize        |
+  |  4. Replay graph     |          |                        |
+  |     N times          |          |  More flexible,        |
+  |                      |          |  higher per-op         |
+  |  Lower latency for   |          |  overhead              |
+  |  repeated execution  |          |                        |
+  +----------+-----------+          +------------+-----------+
+             |                                   |
+             +-----------------------------------+
+                             |
+                             v
+  CompiledGraph {
+    graph_id: Option<i32>,           // CUDA graph handle
+    memory_plan: MemoryPlan,         // buffer allocation map
+    buffers: Vec<Arc<GpuPtr>>,       // pre-allocated GPU buffers
+    input_buffers: Vec<Arc<GpuPtr>>, // input staging buffers
+    input_ids / input_metas,         // input metadata
+    output_ids / output_metas,       // output metadata
+    runtime: Arc<PtxRuntime>,
+  }
+
+  execute(inputs: &[Tensor]) -> Vec<Tensor>:
+    1. Validate inputs (count, shapes)
+    2. Copy inputs -> input_buffers  (cudaMemcpy D2D)
+    3. Launch CUDA graph:
+         gpu_hot_launch_graph(runtime, graph_id, stream)
+    4. Synchronize all streams
+    5. Extract outputs as Tensor views into output_buffers
+    6. Return Vec<Tensor>
+
+
+=== AUTOGRAD (ptx-autograd/) ===
+
+  Forward recording + reverse-mode backward:
+
+  FORWARD PASS (builds tape):
+
+    Variable::param(tensor)
+         |
+         | .relu()
+         |   record_unary:
+         |     output = tensor.relu()
+         |     TapeNode {
+         |       op: Relu,
+         |       grad_fn: ReluBackward,
+         |       inputs: [self.id],
+         |       saved_tensors: [input_tensor],
+         |     }
+         |   push to TAPE
+         |
+         | .matmul(other)
+         |   record_binary:
+         |     output = tensor.matmul(other)
+         |     TapeNode {
+         |       op: Matmul,
+         |       grad_fn: MatmulBackward,
+         |       inputs: [self.id, other.id],
+         |       saved_tensors: [self, other],
+         |     }
+         v
+
+  Global TAPE (thread-local):
+    +--------+--------+--------+--------+--------+
+    | Node 0 | Node 1 | Node 2 | Node 3 | Node 4 |
+    | Input  | Relu   | Matmul | Add    | Sum    |
+    +--------+--------+--------+--------+--------+
+    ^ forward direction                          |
+    |                    backward direction       v
+
+
+  BACKWARD PASS:
+
+    backward(loss_id, loss_tensor):
+
+    1. grad[loss] = ones_like(loss)
+
+    2. For node in tape.iter_reverse():
+         grad_out = tape.get_grad(node.output_id)
+         grads = node.grad_fn.backward(&grad_out, &node.saved_tensors)
+         for (input_id, grad) in zip(node.inputs, grads):
+           tape.accumulate_grad(input_id, grad)
+
+    GradFn implementations (chain rule):
+    +------------------+------------------------------------------------+
+    | Operation        | Backward Rule                                  |
+    +------------------+------------------------------------------------+
+    | Add(a, b)        | da = grad, db = grad                           |
+    | Sub(a, b)        | da = grad, db = -grad                          |
+    | Mul(a, b)        | da = grad * b, db = grad * a                   |
+    | Div(a, b)        | da = grad / b, db = -grad * a / b^2            |
+    | Neg(x)           | dx = -grad                                     |
+    | Exp(x)           | dx = grad * exp(x)          [saved: exp(x)]    |
+    | Log(x)           | dx = grad / x               [saved: x]         |
+    | Sqrt(x)          | dx = grad * 0.5 / sqrt(x)   [saved: sqrt(x)]   |
+    | Tanh(x)          | dx = grad * (1 - tanh^2(x)) [saved: tanh(x)]   |
+    | Relu(x)          | dx = grad * (x > 0)         [saved: x]         |
+    | Sigmoid(x)       | dx = grad * s * (1 - s)     [saved: sigmoid(x)]|
+    | Sum(x, dim)      | dx = grad.expand(x.shape)                      |
+    | Matmul(A, B)     | dA = grad @ B^T, dB = A^T @ grad               |
+    +------------------+------------------------------------------------+
+
+
+=== FULL PIPELINE ===
+
+  User DSL                 Autograd Tape            Graph IR
+  +--------+              +-------------+          +-----------+
+  | Program|              | Variable    |          | Graph     |
+  | .input |  ----or----> | .relu()     | -------> | .input()  |
+  | .relu  |              | .matmul()   |  compile | .relu()   |
+  | .sigmoid|             | .sum()      |  _from_  | .matmul() |
+  | .compile|             | backward()  |  tape()  | .softmax()|
+  +----+---+              +------+------+          +-----+-----+
+       |                         |                       |
+       v                         |                       v
+  CompiledProgram                |               Optimization Passes
+  (lightweight,                  |                 DCE + Fold + Fuse
+   direct kernel                 |                       |
+   dispatch)                     |                       v
+       |                         |               CompiledGraph
+       v                         |                 (CUDA graph
+  GpuLangRuntime                 |                  capture)
+  .execute()                     |                       |
+       |                         |                       v
+       +-------------------------+------------------> GPU Execution
+                                                     (TLSF + streams
+                                                      + kernels)
+

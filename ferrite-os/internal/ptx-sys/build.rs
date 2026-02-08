@@ -102,6 +102,8 @@ fn find_cuda() -> Option<PathBuf> {
     // Check common paths
     let common_paths = [
         "/usr/local/cuda",
+        "/usr/local/cuda-12.9",
+        "/usr/local/cuda-12.8",
         "/usr/local/cuda-12.6",
         "/usr/local/cuda-12",
         "/usr/local/cuda-12.0",
@@ -114,6 +116,8 @@ fn find_cuda() -> Option<PathBuf> {
         "/opt/cuda",
         "/usr/lib/cuda",
         "/usr/cuda",
+        // ARM / Jetson paths
+        "/usr/local/cuda-arm64",
     ];
 
     for path in &common_paths {

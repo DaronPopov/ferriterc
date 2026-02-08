@@ -13,6 +13,7 @@ pub enum BinaryOp {
     Div,
     Max,
     Min,
+    Mod,
 }
 
 impl Tensor {
@@ -34,14 +35,20 @@ impl Tensor {
             });
         }
 
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let lhs = self.require_contiguous()?;
+        let rhs = other.require_contiguous()?;
 
-        match self.dtype() {
+        let output = lhs.empty_like()?;
+        let n = lhs.elem_count();
+        if n == 0 {
+            return Ok(output);
+        }
+        let stream = lhs.runtime().next_stream();
+
+        match lhs.dtype() {
             DType::F32 => unsafe {
-                let a = self.data_ptr_typed::<f32>();
-                let b = other.data_ptr_typed::<f32>();
+                let a = lhs.data_ptr_typed::<f32>();
+                let b = rhs.data_ptr_typed::<f32>();
                 let out = output.data_ptr_typed::<f32>();
 
                 match op {
@@ -51,11 +58,12 @@ impl Tensor {
                     BinaryOp::Div => ptx_sys::ptx_tensor_div_f32(a, b, out, n, stream.raw()),
                     BinaryOp::Max => ptx_sys::ptx_tensor_max_f32(a, b, out, n, stream.raw()),
                     BinaryOp::Min => ptx_sys::ptx_tensor_min_f32(a, b, out, n, stream.raw()),
+                    BinaryOp::Mod => ptx_sys::ptx_tensor_mod_f32(a, b, out, n, stream.raw()),
                 }
             },
             DType::F64 => unsafe {
-                let a = self.data_ptr_typed::<f64>();
-                let b = other.data_ptr_typed::<f64>();
+                let a = lhs.data_ptr_typed::<f64>();
+                let b = rhs.data_ptr_typed::<f64>();
                 let out = output.data_ptr_typed::<f64>();
 
                 match op {
@@ -69,8 +77,8 @@ impl Tensor {
                 }
             },
             DType::F16 => unsafe {
-                let a = self.data_ptr_typed::<ptx_sys::__half>();
-                let b = other.data_ptr_typed::<ptx_sys::__half>();
+                let a = lhs.data_ptr_typed::<ptx_sys::__half>();
+                let b = rhs.data_ptr_typed::<ptx_sys::__half>();
                 let out = output.data_ptr_typed::<ptx_sys::__half>();
 
                 match op {
@@ -122,6 +130,11 @@ impl Tensor {
         self.binary_op(other, BinaryOp::Min)
     }
 
+    /// Element-wise modulo.
+    pub fn fmod(&self, other: &Tensor) -> Result<Tensor> {
+        self.binary_op(other, BinaryOp::Mod)
+    }
+
     // ========================================================================
     // Scalar operations
     // ========================================================================
@@ -134,13 +147,14 @@ impl Tensor {
             });
         }
 
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let input = self.require_contiguous()?;
+        let output = input.empty_like()?;
+        let n = input.elem_count();
+        let stream = input.runtime().next_stream();
 
         unsafe {
             ptx_sys::ptx_tensor_add_scalar_f32(
-                self.data_ptr_typed::<f32>(),
+                input.data_ptr_typed::<f32>(),
                 scalar,
                 output.data_ptr_typed::<f32>(),
                 n,
@@ -159,13 +173,14 @@ impl Tensor {
             });
         }
 
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let input = self.require_contiguous()?;
+        let output = input.empty_like()?;
+        let n = input.elem_count();
+        let stream = input.runtime().next_stream();
 
         unsafe {
             ptx_sys::ptx_tensor_sub_scalar_f32(
-                self.data_ptr_typed::<f32>(),
+                input.data_ptr_typed::<f32>(),
                 scalar,
                 output.data_ptr_typed::<f32>(),
                 n,
@@ -184,13 +199,14 @@ impl Tensor {
             });
         }
 
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let input = self.require_contiguous()?;
+        let output = input.empty_like()?;
+        let n = input.elem_count();
+        let stream = input.runtime().next_stream();
 
         unsafe {
             ptx_sys::ptx_tensor_mul_scalar_f32(
-                self.data_ptr_typed::<f32>(),
+                input.data_ptr_typed::<f32>(),
                 scalar,
                 output.data_ptr_typed::<f32>(),
                 n,
@@ -209,13 +225,14 @@ impl Tensor {
             });
         }
 
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let input = self.require_contiguous()?;
+        let output = input.empty_like()?;
+        let n = input.elem_count();
+        let stream = input.runtime().next_stream();
 
         unsafe {
             ptx_sys::ptx_tensor_div_scalar_f32(
-                self.data_ptr_typed::<f32>(),
+                input.data_ptr_typed::<f32>(),
                 scalar,
                 output.data_ptr_typed::<f32>(),
                 n,
@@ -234,13 +251,14 @@ impl Tensor {
             });
         }
 
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let input = self.require_contiguous()?;
+        let output = input.empty_like()?;
+        let n = input.elem_count();
+        let stream = input.runtime().next_stream();
 
         unsafe {
             ptx_sys::ptx_tensor_affine_f32(
-                self.data_ptr_typed::<f32>(),
+                input.data_ptr_typed::<f32>(),
                 output.data_ptr_typed::<f32>(),
                 n,
                 mul,
@@ -260,13 +278,14 @@ impl Tensor {
             });
         }
 
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let input = self.require_contiguous()?;
+        let output = input.empty_like()?;
+        let n = input.elem_count();
+        let stream = input.runtime().next_stream();
 
         unsafe {
             ptx_sys::ptx_tensor_clamp_f32(
-                self.data_ptr_typed::<f32>(),
+                input.data_ptr_typed::<f32>(),
                 output.data_ptr_typed::<f32>(),
                 n,
                 min_val,
@@ -286,13 +305,14 @@ impl Tensor {
             });
         }
 
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let input = self.require_contiguous()?;
+        let output = input.empty_like()?;
+        let n = input.elem_count();
+        let stream = input.runtime().next_stream();
 
         unsafe {
             ptx_sys::ptx_tensor_powf_f32(
-                self.data_ptr_typed::<f32>(),
+                input.data_ptr_typed::<f32>(),
                 output.data_ptr_typed::<f32>(),
                 n,
                 exponent,

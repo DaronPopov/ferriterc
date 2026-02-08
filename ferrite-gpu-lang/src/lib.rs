@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use ptx_kernels::candle::{binary_f32, unary_f32};
+use ptx_kernels::candle::{binary_f32, scan_f32, topk_f32, unary_f32};
 use ptx_runtime::{GpuPtr, PtxRuntime};
 use thiserror::Error;
 
@@ -59,6 +59,8 @@ pub enum Op {
     Sigmoid(ValueId),
     Add { lhs: ValueId, rhs: ValueId },
     Mul { lhs: ValueId, rhs: ValueId },
+    CumSum { input: ValueId, dim: usize },
+    TopK { input: ValueId, k: usize, dim: usize, largest: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -107,6 +109,15 @@ impl Program {
         self.push(Op::Mul { lhs, rhs })
     }
 
+    pub fn cumsum(&mut self, input: ValueId, dim: usize) -> ValueId {
+        self.push(Op::CumSum { input, dim })
+    }
+
+    /// TopK — returns the values tensor (dim-th dimension replaced by k).
+    pub fn topk(&mut self, input: ValueId, k: usize, dim: usize, largest: bool) -> ValueId {
+        self.push(Op::TopK { input, k, dim, largest })
+    }
+
     pub fn set_output(&mut self, output: ValueId) {
         self.output = Some(output);
     }
@@ -130,6 +141,23 @@ impl Program {
                 }
                 Op::Relu(x) | Op::Tanh(x) | Op::Sigmoid(x) => {
                     let shape = get_shape(&shapes, *x)?;
+                    let n = numel(&shape);
+                    (shape, n)
+                }
+                Op::CumSum { input, dim } => {
+                    let shape = get_shape(&shapes, *input)?;
+                    if *dim >= shape.len() {
+                        return Err(LangError::InvalidNodeRef(*dim));
+                    }
+                    let n = numel(&shape);
+                    (shape, n)
+                }
+                Op::TopK { input, k, dim, .. } => {
+                    let mut shape = get_shape(&shapes, *input)?;
+                    if *dim >= shape.len() {
+                        return Err(LangError::InvalidNodeRef(*dim));
+                    }
+                    shape[*dim] = *k;
                     let n = numel(&shape);
                     (shape, n)
                 }
@@ -393,6 +421,54 @@ impl GpuLangRuntime {
                     }
                     out
                 }
+                Op::CumSum { input, dim } => {
+                    let inp = slots[input.index()]
+                        .as_ref()
+                        .ok_or(LangError::InvalidNodeRef(input.index()))?;
+                    let shape = &program.shapes[i];
+                    let outer: usize = shape[..*dim].iter().product();
+                    let dim_size = shape[*dim];
+                    let inner: usize = shape[*dim + 1..].iter().product();
+                    let out = self.runtime.alloc(bytes)?;
+                    unsafe {
+                        scan_f32::cumsum(
+                            inp.as_ptr_typed::<f32>(),
+                            out.as_ptr_typed::<f32>(),
+                            outer,
+                            dim_size,
+                            inner,
+                            stream.raw(),
+                        );
+                    }
+                    out
+                }
+                Op::TopK { input, k, dim, largest } => {
+                    let inp = slots[input.index()]
+                        .as_ref()
+                        .ok_or(LangError::InvalidNodeRef(input.index()))?;
+                    // Input shape is needed to compute outer/dim_size/inner.
+                    // The compile step stored the output shape (with dim replaced by k),
+                    // so we need to recover the original dim_size from the input.
+                    let inp_shape = &program.shapes[input.index()];
+                    let outer: usize = inp_shape[..*dim].iter().product();
+                    let dim_size = inp_shape[*dim];
+                    let inner: usize = inp_shape[*dim + 1..].iter().product();
+                    let out = self.runtime.alloc(bytes)?;
+                    unsafe {
+                        topk_f32::topk(
+                            inp.as_ptr_typed::<f32>(),
+                            out.as_ptr_typed::<f32>(),
+                            std::ptr::null_mut(), // no indices in graph mode
+                            outer,
+                            dim_size,
+                            inner,
+                            *k,
+                            *largest,
+                            stream.raw(),
+                        );
+                    }
+                    out
+                }
             };
 
             slots[i] = Some(out_ptr);
@@ -450,6 +526,9 @@ pub use tensor::{CpuTensor, GpuTensor, ToCpu, ToGpu};
 
 #[cfg(feature = "torch")]
 pub mod cv;
+
+#[cfg(feature = "torch")]
+pub mod dataflow;
 
 #[cfg(feature = "torch")]
 pub mod torch_bridge;

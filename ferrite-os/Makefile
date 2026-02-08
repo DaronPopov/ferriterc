@@ -25,13 +25,18 @@ NVCC := $(CUDA_PATH)/bin/nvcc
 CC := gcc
 
 # Detect GPU compute capability (provided by scripts/ptx_env.sh)
-ifeq ($(GPU_SM),)
-    # Default to common architectures if detection fails
-    GENCODE_FLAGS := -gencode arch=compute_75,code=sm_75 \
-                     -gencode arch=compute_80,code=sm_80 \
-                     -gencode arch=compute_86,code=sm_86
-else
-    GENCODE_FLAGS := -gencode arch=compute_$(GPU_SM),code=sm_$(GPU_SM)
+# Always build fat binary with all common architectures.
+# For CUDA 12.8+ add: compute_100/sm_100, compute_120/sm_120
+GENCODE_FLAGS := -gencode arch=compute_75,code=sm_75 \
+                 -gencode arch=compute_80,code=sm_80 \
+                 -gencode arch=compute_86,code=sm_86 \
+                 -gencode arch=compute_89,code=sm_89 \
+                 -gencode arch=compute_90,code=sm_90
+ifneq ($(GPU_SM),)
+    # Also include detected SM if not already in the standard list
+    ifeq ($(filter $(GPU_SM),75 80 86 89 90),)
+        GENCODE_FLAGS += -gencode arch=compute_$(GPU_SM),code=sm_$(GPU_SM)
+    endif
 endif
 
 # Compiler flags

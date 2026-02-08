@@ -35,6 +35,15 @@ fn main() {
         "candle/launcher_simple.cu",  // Simplified launcher with F32 only
         "candle/binary_f32.cu",       // F32-only binary ops
         "candle/unary_f32.cu",        // F32-only unary ops
+        "candle/scan_f32.cu",         // F32-only prefix scan (cumsum)
+        "candle/gather_f32.cu",       // F32-only gather/scatter
+        "candle/topk_f32.cu",         // F32-only top-k selection
+        "candle/indexing.cu",         // Candle index_select, gather, scatter, scatter_add
+        "candle/indexing_launchers.cu", // Launchers for indexing kernels
+        "candle/sort.cu",             // Candle bitonic argsort
+        "candle/sort_launchers.cu",   // Launchers for argsort kernels
+        "candle/ternary.cu",          // Candle where conditional
+        "candle/where_launchers.cu",  // Launchers for where kernel
     ];
 
     for file in &kernel_files {

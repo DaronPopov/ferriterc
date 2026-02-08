@@ -3,12 +3,23 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ─── platform detection (first) ───
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64|aarch64) ;;
+  *)
+    echo "[error] unsupported architecture: $ARCH (need x86_64 or aarch64)"
+    exit 1
+    ;;
+esac
+
+# ─── defaults ───
 SM="${SM:-${CUDA_SM:-${GPU_SM:-}}}"
 VERBOSE=false
-LIBTORCH_VERSION="${LIBTORCH_VERSION:-2.3.0}"
+LIBTORCH_VERSION="${LIBTORCH_VERSION:-2.9.0}"
 LIBTORCH_CUDA_TAG="${LIBTORCH_CUDA_TAG:-}"
 LIBTORCH_URL="${LIBTORCH_URL:-}"
-LIBTORCH_ALLOW_PYTORCH="${LIBTORCH_ALLOW_PYTORCH:-0}"
+TORCH_CPYTHON_TAG="${TORCH_CPYTHON_TAG:-cp311}"
 
 usage() {
   cat <<'EOF'
@@ -18,7 +29,7 @@ Usage:
   ./install.sh [--sm <SM>] [--verbose]
 
 Options:
-  --sm <SM>     GPU compute capability (e.g. 75, 80, 86, 89, 90)
+  --sm <SM>     GPU compute capability (e.g. 75, 80, 86, 89, 90, 100, 120)
   --verbose     Enable verbose build output
   -h, --help    Show this help
 
@@ -27,12 +38,14 @@ Environment variable fallback:
 
 Torch provisioning env (optional):
   LIBTORCH                   Existing libtorch root
-  LIBTORCH_VERSION           Default: 2.3.0
+  LIBTORCH_VERSION           Default: 2.9.0
   LIBTORCH_CUDA_TAG          Auto-detected from nvcc (or set explicitly)
   LIBTORCH_URL               Override download URL entirely
-  LIBTORCH_ALLOW_PYTORCH     Default 0. Set 1 to allow Python torch fallback
+  TORCH_CPYTHON_TAG          Default: cp311 (only matters for aarch64 wheel)
 EOF
 }
+
+# ─── helpers ───
 
 need_cmd() {
   local cmd="$1"
@@ -54,26 +67,47 @@ ensure_rust_toolchain() {
   need_cmd cargo
 }
 
+# ─── CUDA detection ───
+
 detect_cuda_tag() {
   if [[ -n "${LIBTORCH_CUDA_TAG}" ]]; then
     return 0
   fi
   if ! command -v nvcc >/dev/null 2>&1; then
-    LIBTORCH_CUDA_TAG="cu121"
+    LIBTORCH_CUDA_TAG="cu128"
     echo "[warn] nvcc not found while selecting LIBTORCH_CUDA_TAG, defaulting to ${LIBTORCH_CUDA_TAG}"
     return 0
   fi
   local rel
   rel="$(nvcc --version | sed -n 's/.*release \([0-9]\+\)\.\([0-9]\+\).*/\1.\2/p' | head -n1)"
-  case "$rel" in
-    11.8) LIBTORCH_CUDA_TAG="cu118" ;;
-    12.*) LIBTORCH_CUDA_TAG="cu121" ;;
+  local major minor
+  major="$(echo "$rel" | cut -d. -f1)"
+  minor="$(echo "$rel" | cut -d. -f2)"
+  case "$major" in
+    11)
+      LIBTORCH_CUDA_TAG="cu118"
+      ;;
+    12)
+      # CUDA 12.0-12.3 → cu121, CUDA 12.4-12.5 → cu124, CUDA 12.6+ → cu126
+      if [[ "$minor" -le 3 ]]; then
+        LIBTORCH_CUDA_TAG="cu121"
+      elif [[ "$minor" -le 5 ]]; then
+        LIBTORCH_CUDA_TAG="cu124"
+      else
+        LIBTORCH_CUDA_TAG="cu126"
+      fi
+      ;;
+    13)
+      LIBTORCH_CUDA_TAG="cu128"
+      ;;
     *)
-      LIBTORCH_CUDA_TAG="cu121"
+      LIBTORCH_CUDA_TAG="cu128"
       echo "[warn] unsupported/unknown CUDA release '${rel}', defaulting to ${LIBTORCH_CUDA_TAG}"
       ;;
   esac
 }
+
+# ─── libtorch validation ───
 
 is_valid_libtorch() {
   local d="$1"
@@ -83,68 +117,69 @@ is_valid_libtorch() {
   return 0
 }
 
-detect_python_torch_root() {
-  if ! command -v python3 >/dev/null 2>&1; then
+# Check that a bundled libtorch matches the expected version.
+check_libtorch_version() {
+  local d="$1"
+  local ver_file="$d/build-version"
+  if [[ ! -f "$ver_file" ]]; then
+    # No version file — can't verify, assume ok
+    return 0
+  fi
+  local installed_ver
+  installed_ver="$(head -n1 "$ver_file" | cut -d+ -f1)"
+  if [[ "$installed_ver" != "$LIBTORCH_VERSION" ]]; then
+    echo "[warn] bundled libtorch is ${installed_ver} but need ${LIBTORCH_VERSION}"
     return 1
   fi
-  python3 - <<'PY' 2>/dev/null
-import os
-try:
-    import torch
-except Exception:
-    raise SystemExit(1)
-cuda = getattr(torch.version, "cuda", None)
-if not cuda:
-    raise SystemExit(2)
-print(os.path.dirname(torch.__file__))
-PY
+  return 0
 }
 
-download_libtorch() {
-  local dst="$ROOT/external/libtorch"
-  local tmp="$ROOT/external/.cache"
-  local arch
-  arch="$(uname -m)"
-  if [[ "$arch" != "x86_64" ]]; then
-    echo "[error] automatic libtorch download currently supports x86_64 only. Set LIBTORCH manually."
-    exit 1
-  fi
-  mkdir -p "$tmp"
+# ─── download / extract primitives ───
 
-  local url="$LIBTORCH_URL"
-  if [[ -z "$url" ]]; then
-    url="https://download.pytorch.org/libtorch/${LIBTORCH_CUDA_TAG}/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2B${LIBTORCH_CUDA_TAG}.zip"
-  fi
-  local zip="$tmp/libtorch-${LIBTORCH_VERSION}-${LIBTORCH_CUDA_TAG}.zip"
-
-  echo "[info] downloading libtorch from: $url"
+fetch_file() {
+  local url="$1" dst="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl --retry 5 --retry-delay 2 --retry-all-errors -fL "$url" -o "$zip"
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fL "$url" -o "$dst"
   elif command -v wget >/dev/null 2>&1; then
-    wget --tries=5 --waitretry=2 -O "$zip" "$url"
+    wget --tries=5 --waitretry=2 -O "$dst" "$url"
   else
-    echo "[error] need curl or wget to auto-download libtorch"
+    echo "[error] need curl or wget"
     exit 1
   fi
+}
 
-  echo "[info] extracting libtorch to external/"
-  cd "$ROOT/external"
+extract_zip() {
+  local archive="$1" dest="$2"
   if command -v unzip >/dev/null 2>&1; then
-    unzip -o "$zip" >/dev/null
+    unzip -o "$archive" -d "$dest" >/dev/null
   elif command -v bsdtar >/dev/null 2>&1; then
-    bsdtar -xf "$zip"
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 - "$zip" "$ROOT/external" <<'PY'
-import sys, zipfile, pathlib
-z = pathlib.Path(sys.argv[1])
-out = pathlib.Path(sys.argv[2])
-with zipfile.ZipFile(z) as f:
-    f.extractall(out)
-PY
+    bsdtar -xf "$archive" -C "$dest"
   else
-    echo "[error] need unzip, bsdtar, or python3 to extract libtorch archive"
+    echo "[error] need unzip or bsdtar to extract archives"
     exit 1
   fi
+}
+
+# ─── libtorch provisioning (architecture-aware) ───
+
+download_libtorch_x86_64() {
+  local cache="$ROOT/external/.cache"
+  local dst="$ROOT/external/libtorch"
+  mkdir -p "$cache"
+
+  # PyTorch ≥2.8 dropped the "cxx11-abi-" infix from the download filename.
+  # All Linux x86_64 shared builds now use cxx11 ABI by default.
+  local url="${LIBTORCH_URL:-https://download.pytorch.org/libtorch/${LIBTORCH_CUDA_TAG}/libtorch-shared-with-deps-${LIBTORCH_VERSION}%2B${LIBTORCH_CUDA_TAG}.zip}"
+  local zip="$cache/libtorch-${LIBTORCH_VERSION}-${LIBTORCH_CUDA_TAG}.zip"
+
+  echo "[info] x86_64: downloading libtorch from: $url"
+  fetch_file "$url" "$zip"
+
+  # Remove stale libtorch before extracting
+  rm -rf "$dst"
+
+  echo "[info] extracting libtorch"
+  extract_zip "$zip" "$ROOT/external"
 
   if ! is_valid_libtorch "$dst"; then
     echo "[error] downloaded libtorch is invalid or missing CUDA libraries: $dst"
@@ -153,32 +188,83 @@ PY
   echo "[info] libtorch ready at: $dst"
 }
 
+download_libtorch_aarch64() {
+  local cache="$ROOT/external/.cache"
+  local dst="$ROOT/external/libtorch"
+  mkdir -p "$cache"
+
+  if [[ -n "${LIBTORCH_URL}" ]]; then
+    # User-supplied URL — treat as a zip like x86_64
+    local zip="$cache/libtorch-${LIBTORCH_VERSION}-${LIBTORCH_CUDA_TAG}-aarch64.zip"
+    echo "[info] aarch64: downloading libtorch from override URL: $LIBTORCH_URL"
+    fetch_file "$LIBTORCH_URL" "$zip"
+    rm -rf "$dst"
+    extract_zip "$zip" "$ROOT/external"
+  else
+    # Download the aarch64 PyTorch wheel and extract C++ libraries from it.
+    # A .whl is a zip archive. The torch/ directory inside contains the same
+    # lib/, include/, and share/ layout that libtorch expects.
+    local whl_name="torch-${LIBTORCH_VERSION}%2B${LIBTORCH_CUDA_TAG}-${TORCH_CPYTHON_TAG}-${TORCH_CPYTHON_TAG}-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
+    local url="https://download.pytorch.org/whl/${LIBTORCH_CUDA_TAG}/${whl_name}"
+    local whl="$cache/torch-${LIBTORCH_VERSION}-${LIBTORCH_CUDA_TAG}-aarch64.whl"
+
+    echo "[info] aarch64: downloading torch wheel for C++ libraries"
+    echo "[info] url: $url"
+    fetch_file "$url" "$whl"
+
+    echo "[info] extracting C++ libraries from torch wheel"
+    local extract_dir="$cache/wheel_extract"
+    rm -rf "$extract_dir"
+    mkdir -p "$extract_dir"
+    extract_zip "$whl" "$extract_dir"
+
+    if [[ ! -d "$extract_dir/torch" ]]; then
+      echo "[error] wheel extraction did not produce torch/ directory"
+      exit 1
+    fi
+
+    # Move torch/ → external/libtorch (lib/, include/, share/ are already there)
+    rm -rf "$dst"
+    mv "$extract_dir/torch" "$dst"
+    rm -rf "$extract_dir"
+  fi
+
+  if ! is_valid_libtorch "$dst"; then
+    echo "[error] extracted libtorch is invalid or missing CUDA libraries: $dst"
+    echo "[hint] ensure the wheel/archive contains CUDA-enabled torch for aarch64"
+    exit 1
+  fi
+  echo "[info] libtorch ready at: $dst"
+}
+
 ensure_libtorch() {
+  # 1. User-supplied LIBTORCH env var (external install)
   if [[ -n "${LIBTORCH:-}" ]] && is_valid_libtorch "${LIBTORCH}"; then
     echo "[info] using LIBTORCH from env: ${LIBTORCH}"
     return 0
   fi
 
+  # 2. Already present in external/libtorch — but verify version matches
   if is_valid_libtorch "$ROOT/external/libtorch"; then
-    export LIBTORCH="$ROOT/external/libtorch"
-    echo "[info] using bundled libtorch: ${LIBTORCH}"
-    return 0
-  fi
-
-  if [[ "${LIBTORCH_ALLOW_PYTORCH}" == "1" ]]; then
-    local py_root
-    if py_root="$(detect_python_torch_root)"; then
-      if is_valid_libtorch "$py_root"; then
-        export LIBTORCH="$py_root"
-        echo "[info] using Python torch libraries: ${LIBTORCH}"
-        return 0
-      fi
+    if check_libtorch_version "$ROOT/external/libtorch"; then
+      export LIBTORCH="$ROOT/external/libtorch"
+      echo "[info] using bundled libtorch: ${LIBTORCH}"
+      return 0
+    else
+      echo "[info] bundled libtorch version mismatch, re-downloading"
     fi
   fi
 
-  download_libtorch
+  # 3. Download for this architecture
+  echo "[info] provisioning libtorch ${LIBTORCH_VERSION}+${LIBTORCH_CUDA_TAG} for ${ARCH}"
+  case "$ARCH" in
+    x86_64)  download_libtorch_x86_64 ;;
+    aarch64) download_libtorch_aarch64 ;;
+  esac
   export LIBTORCH="$ROOT/external/libtorch"
 }
+
+# ─── arg parsing ───
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -201,6 +287,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# ─── machine discovery ───
+
+echo "[info] architecture: ${ARCH}"
 
 need_cmd make
 need_cmd gcc
@@ -226,10 +316,12 @@ if [[ -z "${SM}" ]]; then
   exit 1
 fi
 
-if ! [[ "${SM}" =~ ^[0-9]{2}$ ]]; then
-  echo "[error] invalid --sm value '${SM}'. Expected two digits like 75, 80, 86, 89, 90."
+if ! [[ "${SM}" =~ ^[0-9]{2,3}$ ]]; then
+  echo "[error] invalid --sm value '${SM}'. Expected 2-3 digits like 75, 86, 90, 100, 120."
   exit 1
 fi
+
+# ─── export build environment ───
 
 export SM
 export GPU_SM="${SM}"
@@ -240,7 +332,10 @@ export LIBTORCH_BYPASS_VERSION_CHECK="${LIBTORCH_BYPASS_VERSION_CHECK:-1}"
 ensure_libtorch
 export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LIBTORCH}/lib:${LD_LIBRARY_PATH:-}"
 
+# ─── build ───
+
 echo "[info] using GPU SM: ${SM}"
+echo "[info] using libtorch: ${LIBTORCH}"
 STEPS=7
 echo "[1/${STEPS}] Building ferrite-os"
 cd "$ROOT/ferrite-os"
@@ -293,7 +388,8 @@ check_engine_scripts "$ROOT/finetune_engine" "finetune_engine"
 echo "[7/${STEPS}] Checking mathematics_engine scripts"
 check_engine_scripts "$ROOT/mathematics_engine" "mathematics_engine"
 
-echo "[ok] ferrite runtime build complete (sm_${SM})"
+echo "[ok] ferrite runtime build complete (sm_${SM}, ${ARCH})"
+echo "     libtorch:           ${LIBTORCH_VERSION}+${LIBTORCH_CUDA_TAG}"
 echo "     finetune_engine:    ready"
 echo "     mathematics_engine: ready"
 echo ""

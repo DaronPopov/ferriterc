@@ -5,7 +5,7 @@ use std::fmt;
 
 use ptx_runtime::{PtxRuntime, Result, Error};
 use crate::dtype::DType;
-use crate::shape::{Shape, Strides, contiguous_strides, elem_count, is_contiguous, size_bytes};
+use crate::shape::{Shape, Strides, contiguous_strides, elem_count, is_contiguous, size_bytes, checked_elem_count};
 use crate::storage::Storage;
 
 /// A multi-dimensional array stored on the GPU.
@@ -71,7 +71,9 @@ impl Tensor {
     pub fn new(shape: &[usize], dtype: DType, runtime: &Arc<PtxRuntime>) -> Result<Self> {
         let shape = Shape::from_slice(shape);
         let strides = contiguous_strides(&shape);
-        let len = elem_count(&shape);
+        let len = checked_elem_count(&shape).map_err(|msg| Error::Internal {
+            message: msg.to_string(),
+        })?;
         let storage = Storage::new(len, dtype, runtime)?;
         Ok(Self {
             storage,
@@ -86,7 +88,9 @@ impl Tensor {
     pub fn zeros(shape: &[usize], dtype: DType, runtime: &Arc<PtxRuntime>) -> Result<Self> {
         let shape = Shape::from_slice(shape);
         let strides = contiguous_strides(&shape);
-        let len = elem_count(&shape);
+        let len = checked_elem_count(&shape).map_err(|msg| Error::Internal {
+            message: msg.to_string(),
+        })?;
         let storage = Storage::zeros(len, dtype, runtime)?;
         Ok(Self {
             storage,
@@ -132,7 +136,9 @@ impl Tensor {
     ) -> Result<Self> {
         let shape = Shape::from_slice(shape);
         let strides = contiguous_strides(&shape);
-        let len = elem_count(&shape);
+        let len = checked_elem_count(&shape).map_err(|msg| Error::Internal {
+            message: msg.to_string(),
+        })?;
 
         if len != data.len() {
             return Err(Error::ShapeMismatch {
@@ -149,6 +155,51 @@ impl Tensor {
             offset: 0,
             dtype,
         })
+    }
+
+    /// Create a 1D tensor with evenly spaced values: [start, start+step, start+2*step, ...].
+    pub fn arange(start: f32, end: f32, step: f32, runtime: &Arc<PtxRuntime>) -> Result<Self> {
+        let n = ((end - start) / step).ceil() as usize;
+        if n == 0 {
+            return Self::new(&[0], DType::F32, runtime);
+        }
+        let tensor = Self::new(&[n], DType::F32, runtime)?;
+        let stream = runtime.next_stream();
+        unsafe {
+            ptx_sys::ptx_tensor_arange_f32(
+                tensor.data_ptr_typed::<f32>(),
+                n,
+                start,
+                step,
+                stream.raw(),
+            );
+        }
+        stream.synchronize()?;
+        Ok(tensor)
+    }
+
+    /// Create a 1D tensor with n evenly spaced values from start to end (inclusive).
+    pub fn linspace(start: f32, end: f32, steps: usize, runtime: &Arc<PtxRuntime>) -> Result<Self> {
+        if steps == 0 {
+            return Self::new(&[0], DType::F32, runtime);
+        }
+        if steps == 1 {
+            return Self::from_slice(&[start], &[1], DType::F32, runtime);
+        }
+        let step = (end - start) / (steps - 1) as f32;
+        let tensor = Self::new(&[steps], DType::F32, runtime)?;
+        let stream = runtime.next_stream();
+        unsafe {
+            ptx_sys::ptx_tensor_arange_f32(
+                tensor.data_ptr_typed::<f32>(),
+                steps,
+                start,
+                step,
+                stream.raw(),
+            );
+        }
+        stream.synchronize()?;
+        Ok(tensor)
     }
 
     /// Create an empty tensor with the same shape and dtype as another.
@@ -252,13 +303,48 @@ impl Tensor {
         self.to_vec::<f32>()
     }
 
+    /// Copy tensor data to host as i32.
+    pub fn to_vec_i32(&self) -> Result<Vec<i32>> {
+        if self.dtype != DType::I32 {
+            return Err(Error::DTypeMismatch {
+                expected: DType::I32.to_ptx(),
+                actual: self.dtype.to_ptx(),
+            });
+        }
+        self.to_vec::<i32>()
+    }
+
+    /// Copy tensor data to host as u32.
+    pub fn to_vec_u32(&self) -> Result<Vec<u32>> {
+        if self.dtype != DType::U32 {
+            return Err(Error::DTypeMismatch {
+                expected: DType::U32.to_ptx(),
+                actual: self.dtype.to_ptx(),
+            });
+        }
+        self.to_vec::<u32>()
+    }
+
+    /// Copy tensor data to host as u8.
+    pub fn to_vec_u8(&self) -> Result<Vec<u8>> {
+        if self.dtype != DType::U8 {
+            return Err(Error::DTypeMismatch {
+                expected: DType::U8.to_ptx(),
+                actual: self.dtype.to_ptx(),
+            });
+        }
+        self.to_vec::<u8>()
+    }
+
     // ========================================================================
     // Reshaping
     // ========================================================================
 
     /// Reshape the tensor (returns a view if possible).
     pub fn reshape(&self, new_shape: &[usize]) -> Result<Self> {
-        let new_elem_count: usize = new_shape.iter().product();
+        let new_elem_count: usize = checked_elem_count(new_shape).map_err(|msg| Error::Internal {
+            message: msg.to_string(),
+        })?;
         if new_elem_count != self.elem_count() {
             return Err(Error::ShapeMismatch {
                 expected: self.shape.to_vec(),
@@ -309,17 +395,140 @@ impl Tensor {
         self.reshape(&new_shape)
     }
 
+    /// Transpose two dimensions (returns a view — no data copy).
+    pub fn transpose(&self, dim0: usize, dim1: usize) -> Result<Self> {
+        if dim0 >= self.ndim() || dim1 >= self.ndim() {
+            return Err(Error::Internal {
+                message: format!("transpose dims ({}, {}) out of range for {} dims", dim0, dim1, self.ndim()),
+            });
+        }
+        let mut new_shape = self.shape.clone();
+        let mut new_strides = self.strides.clone();
+        new_shape.swap(dim0, dim1);
+        new_strides.swap(dim0, dim1);
+        Ok(Self {
+            storage: self.storage.clone(),
+            shape: new_shape,
+            strides: new_strides,
+            offset: self.offset,
+            dtype: self.dtype,
+        })
+    }
+
+    /// Transpose a 2D matrix (shorthand for transpose(0, 1)).
+    pub fn t(&self) -> Result<Self> {
+        if self.ndim() != 2 {
+            return Err(Error::Internal {
+                message: format!("t() requires 2D tensor, got {}D", self.ndim()),
+            });
+        }
+        self.transpose(0, 1)
+    }
+
+    /// Permute dimensions (returns a view — no data copy).
+    pub fn permute(&self, dims: &[usize]) -> Result<Self> {
+        if dims.len() != self.ndim() {
+            return Err(Error::Internal {
+                message: format!("permute requires {} dims, got {}", self.ndim(), dims.len()),
+            });
+        }
+        let mut new_shape = Shape::with_capacity(self.ndim());
+        let mut new_strides = Strides::with_capacity(self.ndim());
+        for &d in dims {
+            if d >= self.ndim() {
+                return Err(Error::Internal {
+                    message: format!("permute dim {} out of range for {} dims", d, self.ndim()),
+                });
+            }
+            new_shape.push(self.shape[d]);
+            new_strides.push(self.strides[d]);
+        }
+        Ok(Self {
+            storage: self.storage.clone(),
+            shape: new_shape,
+            strides: new_strides,
+            offset: self.offset,
+            dtype: self.dtype,
+        })
+    }
+
     /// Make the tensor contiguous (copy if necessary).
     pub fn contiguous(&self) -> Result<Self> {
         if self.is_contiguous() {
             return Ok(self.clone());
         }
 
-        // Need to copy data to make it contiguous
-        // TODO: Implement non-contiguous copy kernel
-        Err(Error::NotSupported {
-            message: "Non-contiguous copy not yet implemented".to_string(),
-        })
+        let n = self.elem_count();
+        let out = Self::new(self.shape(), self.dtype, self.runtime())?;
+        let stream = self.runtime().next_stream();
+
+        // Upload shape and strides to GPU for the kernel
+        let shape_bytes = self.ndim() * std::mem::size_of::<usize>();
+        let shape_gpu = self.runtime().alloc(shape_bytes)?;
+        let strides_gpu = self.runtime().alloc(shape_bytes)?;
+        unsafe {
+            shape_gpu.copy_from_host(
+                self.shape().as_ptr() as *const libc::c_void,
+                shape_bytes,
+            )?;
+            strides_gpu.copy_from_host(
+                self.strides().as_ptr() as *const libc::c_void,
+                shape_bytes,
+            )?;
+        }
+
+        match self.dtype {
+            DType::F32 => unsafe {
+                ptx_sys::ptx_tensor_strided_copy_f32(
+                    self.data_ptr_typed::<f32>(),
+                    out.data_ptr_typed::<f32>(),
+                    shape_gpu.as_ptr() as *const usize,
+                    strides_gpu.as_ptr() as *const usize,
+                    self.ndim() as i32,
+                    n,
+                    stream.raw(),
+                );
+            },
+            DType::F64 => unsafe {
+                ptx_sys::ptx_tensor_strided_copy_f64(
+                    self.data_ptr_typed::<f64>(),
+                    out.data_ptr_typed::<f64>(),
+                    shape_gpu.as_ptr() as *const usize,
+                    strides_gpu.as_ptr() as *const usize,
+                    self.ndim() as i32,
+                    n,
+                    stream.raw(),
+                );
+            },
+            DType::U8 => unsafe {
+                ptx_sys::ptx_tensor_strided_copy_u8(
+                    self.data_ptr_typed::<u8>(),
+                    out.data_ptr_typed::<u8>(),
+                    shape_gpu.as_ptr() as *const usize,
+                    strides_gpu.as_ptr() as *const usize,
+                    self.ndim() as i32,
+                    n,
+                    stream.raw(),
+                );
+            },
+            _ => {
+                return Err(Error::NotSupported {
+                    message: format!("contiguous() not yet supported for {:?}", self.dtype),
+                });
+            }
+        }
+
+        stream.synchronize()?;
+        Ok(out)
+    }
+
+    /// Return self if contiguous, else make a contiguous copy.
+    pub fn require_contiguous(&self) -> Result<Self> {
+        if self.is_contiguous() {
+            Ok(self.clone())
+        } else {
+            self.contiguous()
+        }
     }
 
     /// Create a deep copy of the tensor.

@@ -1,0 +1,201 @@
+
+FERRITERC SYSTEM STACK
+======================
+From silicon to application, every layer mapped to actual code.
+
+
+                     +-------------------------------------------------+
+                     |            APPLICATION SCRIPTS                   |
+                     |                                                  |
+                     |  finetune_engine/         mathematics_engine/    |
+                     |    scripting_finetune.rs     monte_carlo/        |
+                     |    loader/                   portfolio/          |
+                     |    checkpoint/               risk/               |
+                     |    eval/                     pde/                |
+                     |    scheduler/                matrix/             |
+                     |    merge/                    greeks/             |
+                     |    quantize/                                     |
+                     |    dataset/                                      |
+                     |    telemetry/                                    |
+                     |    distributed/                                  |
+                     |    architectures/                                |
+                     +-----------------------+-------------------------+
+                                             |
+                          ./ferrite-run <script.rs> [--torch]
+                                             |
+                     +-----------------------v-------------------------+
+                     |           FERRITE-GPU-LANG                      |
+                     |                                                  |
+                     |  lib.rs:  Program -> CompiledProgram             |
+                     |           GpuLangRuntime.execute()               |
+                     |           Op { Relu, Tanh, Sigmoid, Add, Mul }   |
+                     |                                                  |
+                     |  context.rs:  cpu(|c| { ... })                   |
+                     |              gpu(device, |g| { ... })            |
+                     |              CpuCtx / GpuCtx                    |
+                     |                                                  |
+                     |  tensor.rs:  CpuTensor<T> / GpuTensor<T>        |
+                     |              ToGpu / ToCpu traits                |
+                     |                                                  |
+                     |  cpu_tlsf.rs:  CpuTlsf (rlsf crate)            |
+                     |                global_cpu_tlsf() singleton       |
+                     |                                                  |
+                     |  cv.rs:       CvProgram / CvBuilder  [torch]    |
+                     |  dataflow.rs: RingBuffer / StageMetrics [torch]  |
+                     |  torch_bridge.rs: init_torch_tlsf()  [torch]    |
+                     +-----------+------------------+------------------+
+                                 |                  |
+              +------------------+        +---------+---------+
+              |                           |                   |
+   +----------v-----------+    +----------v-----+  +----------v--------+
+   |    EXTERNAL BRIDGES   |    | ptx-kernels    |  | ferrite-apps      |
+   |                       |    |                |  |                   |
+   | aten-ptx/             |    | guards.rs      |  | platform/         |
+   |   init_pytorch_tlsf() |    |  GuardedBuffer |  |   shm.rs          |
+   |   set_torch_stream()  |    |  KernelContext |  |   vfs.rs          |
+   |   get_fragmentation() |    |                |  |   vmm.rs          |
+   |                       |    | candle.rs      |  |   runtime.rs      |
+   | cudarc-ptx/           |    |  unary_f32::   |  |   telemetry.rs    |
+   |   CUDA driver interop |    |    relu/tanh/  |  |   clean_exit.rs   |
+   |                       |    |    sigmoid     |  |                   |
+   | ferrite-torch/        |    |  binary_f32::  |  | bins/             |
+   |   tch 0.22 wrappers   |    |    add/mul     |  |   gpu_nas         |
+   |                       |    |                |  |   vram_database    |
+   | ferrite-xla/          |    | sha256.rs      |  |   neural_fabric   |
+   |   XLA/JAX backend     |    |  GPU SHA-256   |  |   stream_compute  |
+   +-----------+-----------+    +--------+-------+  +-------------------+
+               |                         |
+               +------------+------------+
+                            |
+              +-------------v--------------+
+              |       PTX-RUNTIME          |
+              |     (Safe Rust Layer)       |
+              |                            |
+              |  runtime.rs                |
+              |    PtxRuntime              |
+              |      .alloc() -> GpuPtr    |
+              |      .free()               |
+              |      .next_stream()        |
+              |      .begin_capture()      |
+              |      .cublas()             |
+              |      .stats()              |
+              |      .validate_pool()      |
+              |    GLOBAL_RUNTIME          |
+              |                            |
+              |  memory.rs                 |
+              |    GpuPtr (Arc-wrapped)    |
+              |      .copy_from_host()     |
+              |      .copy_to_host()       |
+              |      .copy_from_device()   |
+              |      .zero() / .memset()   |
+              |    GpuSlice (non-owning)   |
+              |                            |
+              |  stream.rs                 |
+              |    StreamPool              |
+              |      .next() round-robin   |
+              |      .synchronize_all()    |
+              |    Stream / StreamPriority  |
+              |                            |
+              |  graph.rs                  |
+              |    CudaGraph / GraphCapture |
+              |                            |
+              |  cublas.rs                 |
+              |    CublasHandle            |
+              |      .sgemm() / .dgemm()   |
+              |                            |
+              |  telemetry.rs              |
+              |    Metrics (atomic)         |
+              |    OpTimer (RAII)           |
+              +-------------+--------------+
+                            |
+              +-------------v--------------+
+              |        PTX-SYS             |
+              |     (FFI Bindings)          |
+              |                            |
+              |  Opaque ptrs:              |
+              |    GPUHotRuntime           |
+              |    PTXStableRuntime        |
+              |    PTXTLSFAllocator        |
+              |                            |
+              |  Structs:                  |
+              |    TLSFBlock (free-list)    |
+              |    GPUHotConfig            |
+              |    PTXStableConfig (ABI)    |
+              |    GPUHotStats             |
+              |    TLSFPoolStats           |
+              |    TLSFHealthReport        |
+              |    GPUGraphHandle           |
+              |    PTXTaskQueue (ring buf)  |
+              |    VMMState (page table)    |
+              |    VFSState (inode tree)    |
+              |                            |
+              |  100+ extern "C" fns:      |
+              |    ptx_stable_init/alloc/   |
+              |      free/retain/release   |
+              |    gpu_hot_alloc/free       |
+              |    gpu_hot_get_stream       |
+              |    gpu_hot_begin/end_capture|
+              |    ptx_tensor_*_f32/f16     |
+              |    cublas*_v2               |
+              |    vmm_*/vfs_*             |
+              |    ptx_hook_init/disable    |
+              +-------------+--------------+
+                            |
+              +-------------v--------------+
+              |     FERRITE-OS CORE        |
+              |     (C / CUDA / C++)        |
+              |                            |
+              |  core/memory/              |
+              |    TLSF allocator impl     |
+              |    O(1) alloc/free         |
+              |    Block coalescing        |
+              |    Free-list management    |
+              |                            |
+              |  core/runtime/             |
+              |    GPUHotRuntime           |
+              |    100K stream pool        |
+              |    Priority scheduling     |
+              |    CUDA graph capture      |
+              |                            |
+              |  core/os/                  |
+              |    VFS (inode tree)         |
+              |    VMM (page table + swap) |
+              |    Task queue (ring buf)    |
+              |                            |
+              |  core/kernels/             |
+              |    Element-wise ops        |
+              |    Reductions              |
+              |    Activations             |
+              |    Softmax                 |
+              |    100+ tensor kernels     |
+              |                            |
+              |  core/hooks/               |
+              |    LD_PRELOAD intercept     |
+              |    cudaMalloc -> TLSF      |
+              |    cudaFree -> TLSF        |
+              |                            |
+              |  lib/                      |
+              |    libptx_os.so (2.5 MB)   |
+              |    libptx_hook.so (45 KB)  |
+              +-------------+--------------+
+                            |
+              +-------------v--------------+
+              |       CUDA DRIVER          |
+              |                            |
+              |  cudaStreamCreate          |
+              |  cudaMemcpy                |
+              |  cudaStreamSynchronize     |
+              |  cuBLAS / cuDNN / cuRAND   |
+              +-------------+--------------+
+                            |
+              +-------------v--------------+
+              |     NVIDIA GPU SILICON     |
+              |                            |
+              |  SMs (Streaming Multi-     |
+              |    processors)             |
+              |  CUDA Cores               |
+              |  Memory Controllers        |
+              |  L1/L2 Cache              |
+              |  PCIe / NVLink            |
+              +----------------------------+
+

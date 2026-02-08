@@ -12,8 +12,11 @@ shard-streamed execution, and wave-scheduled CUDA streams.
 Optional explicit SM:
 
 ```bash
-./install.sh --sm 86
+./install.sh --sm 86     # Ampere
+./install.sh --sm 100    # Blackwell
 ```
+
+Supported platforms: x86_64 and aarch64 Linux. Both auto-provision libtorch.
 
 ## What `install.sh` does
 
@@ -72,11 +75,9 @@ Installer resolves libtorch in this order:
 
 1. `LIBTORCH` env path
 2. `external/libtorch`
-3. Auto-download libtorch (CUDA tag auto-detected from local `nvcc`)
-4. Optional Python torch fallback (`LIBTORCH_ALLOW_PYTORCH=1`)
+3. Auto-download (x86_64: libtorch zip, aarch64: torch wheel → C++ lib extraction)
 
 Auto-download controls:
-- `LIBTORCH_VERSION` (default `2.3.0`)
-- `LIBTORCH_CUDA_TAG` (default `cu121`)
+- `LIBTORCH_VERSION` (default `2.9.0`)
+- `LIBTORCH_CUDA_TAG` (auto-detected from nvcc, e.g. `cu126`)
 - `LIBTORCH_URL` (full override)
-- `LIBTORCH_ALLOW_PYTORCH` (default `0`)

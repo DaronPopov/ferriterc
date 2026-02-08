@@ -108,6 +108,19 @@ pub enum OpCode {
     Matmul = 0xA0,
     BatchMatmul = 0xA1,
     Transpose = 0xA2,
+
+    // Gather/Scatter Operations (0xB0 - 0xB5)
+    Gather = 0xB0,
+    ScatterAdd = 0xB1,
+    IndexSelect = 0xB2,
+    IndexAdd = 0xB3,
+
+    // Scan/Prefix Operations (0xC0 - 0xC5)
+    CumSum = 0xC0,
+
+    // Sort/Select Operations (0xE0 - 0xEF)
+    Argsort = 0xE1,
+    TopK = 0xE2,
 }
 
 impl OpCode {
@@ -133,6 +146,24 @@ impl OpCode {
     pub fn is_reduction(&self) -> bool {
         let v = *self as u32;
         (0x50..0x60).contains(&v)
+    }
+
+    /// Check if this is a gather/scatter operation.
+    pub fn is_gather(&self) -> bool {
+        let v = *self as u32;
+        (0xB0..0xC0).contains(&v)
+    }
+
+    /// Check if this is a scan/prefix operation.
+    pub fn is_scan(&self) -> bool {
+        let v = *self as u32;
+        (0xC0..0xD0).contains(&v)
+    }
+
+    /// Check if this is a sort/select operation.
+    pub fn is_selection(&self) -> bool {
+        let v = *self as u32;
+        (0xE0..0xF0).contains(&v)
     }
 
     /// Check if this is an elementwise operation.
@@ -161,6 +192,8 @@ pub struct OpAttrs {
     pub target_dtype: Option<ptx_tensor::DType>,
     /// Transpose dimensions.
     pub transpose_dims: Option<(usize, usize)>,
+    /// K value for top-k selection.
+    pub k: Option<usize>,
 }
 
 impl OpAttrs {
@@ -185,6 +218,11 @@ impl OpAttrs {
 
     pub fn with_keepdim(mut self, keepdim: bool) -> Self {
         self.keepdim = keepdim;
+        self
+    }
+
+    pub fn with_k(mut self, k: usize) -> Self {
+        self.k = Some(k);
         self
     }
 }

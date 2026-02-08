@@ -26,6 +26,7 @@ pub use dtype::DType;
 pub use shape::{Shape, Strides};
 pub use storage::Storage;
 pub use tensor::Tensor;
+pub use ops::loss::Reduction;
 
 // Re-export runtime for convenience
 pub use ptx_runtime::{PtxRuntime, Error, Result};

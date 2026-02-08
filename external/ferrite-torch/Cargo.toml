@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 # PyTorch Rust bindings
-tch = "0.16"  # Matches LibTorch 2.3
+tch = "0.22"  # Matches LibTorch 2.9
 
 # PTX-OS Runtime
 ptx-runtime = { path = "../../ferrite-os/ptx-runtime" }

@@ -9,12 +9,15 @@
 //!   PTX_BENCH_K=1024
 //!   PTX_BENCH_ITERS=10
 //!   PTX_BENCH_WARMUP=2
+//!   PTX_BENCH_MAX_STREAMS=32
+//!   PTX_BENCH_POOL_FRACTION=0.70
+//!   PTX_BENCH_RESERVE_VRAM_MB=256
 
 use std::env;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ptx_runtime::PtxRuntime;
+use ptx_runtime::{PTX_STABLE_ABI_VERSION, PTXStableConfig, PtxRuntime};
 use ptx_tensor::{Tensor, DType, Result};
 
 fn parse_usize_env(key: &str, default: usize) -> usize {
@@ -24,19 +27,46 @@ fn parse_usize_env(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn parse_f32_env(key: &str, default: f32) -> f32 {
+    env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(default)
+}
+
 fn main() -> Result<()> {
     let m = parse_usize_env("PTX_BENCH_M", 1024);
     let n = parse_usize_env("PTX_BENCH_N", 1024);
     let k = parse_usize_env("PTX_BENCH_K", 1024);
     let iters = parse_usize_env("PTX_BENCH_ITERS", 10);
     let warmup = parse_usize_env("PTX_BENCH_WARMUP", 2);
+    let max_streams = parse_usize_env("PTX_BENCH_MAX_STREAMS", 32).max(1) as u32;
+    let pool_fraction = parse_f32_env("PTX_BENCH_POOL_FRACTION", 0.70);
+    let reserve_vram_mb = parse_usize_env("PTX_BENCH_RESERVE_VRAM_MB", 256) as u64;
 
     println!("=== PTX-OS Matmul Benchmark ===");
     println!("shape: [{}x{}] @ [{}x{}]", m, k, k, n);
     println!("iters: {}, warmup: {}", iters, warmup);
+    println!("max streams: {}", max_streams);
+    println!("pool fraction: {:.2}", pool_fraction);
+    println!("reserve VRAM: {} MB", reserve_vram_mb);
     println!();
 
-    let runtime = Arc::new(PtxRuntime::new(0)?);
+    let runtime_cfg = PTXStableConfig {
+        struct_size: std::mem::size_of::<PTXStableConfig>() as u32,
+        abi_version: PTX_STABLE_ABI_VERSION,
+        flags: 0,
+        device_id: 0,
+        pool_fraction,
+        fixed_pool_size: 0,
+        reserve_vram: reserve_vram_mb * 1024 * 1024,
+        max_streams,
+        quiet_init: 0,
+        enable_leak_detection: 1,
+        enable_pool_health: 1,
+        _reserved0: 0,
+    };
+    let runtime = Arc::new(PtxRuntime::with_stable_config(0, Some(runtime_cfg))?);
 
     let a = Tensor::full(&[m, k], 1.0, DType::F32, &runtime)?;
     let b = Tensor::full(&[k, n], 2.0, DType::F32, &runtime)?;

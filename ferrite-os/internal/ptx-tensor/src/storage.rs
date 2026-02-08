@@ -22,7 +22,9 @@ pub struct Storage {
 impl Storage {
     /// Create new storage with uninitialized data.
     pub fn new(len: usize, dtype: DType, runtime: &Arc<PtxRuntime>) -> Result<Self> {
-        let size_bytes = len * dtype.size_bytes();
+        let size_bytes = len.checked_mul(dtype.size_bytes()).ok_or_else(|| Error::Internal {
+            message: format!("storage size overflow: {} elements * {} bytes", len, dtype.size_bytes()),
+        })?;
         let ptr = runtime.alloc(size_bytes)?;
         Ok(Self {
             ptr: Arc::new(ptr),
@@ -93,7 +95,11 @@ impl Storage {
     }
 
     /// Copy data to host.
+    ///
+    /// Synchronizes all GPU streams before copying to ensure all pending
+    /// kernel writes are visible.
     pub fn to_host<T: Copy + Default>(&self) -> Result<Vec<T>> {
+        self.runtime.sync_all();
         let mut data = vec![T::default(); self.len];
         unsafe {
             self.ptr.copy_to_host(

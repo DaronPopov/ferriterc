@@ -202,6 +202,19 @@ pub enum PTXTensorOpcode {
     Copy = 0x90,
     Cast = 0x91,
     Fill = 0x92,
+
+    // Gather/Scatter Operations (0xB0 - 0xB5)
+    Gather = 0xB0,
+    ScatterAdd = 0xB1,
+    IndexSelect = 0xB2,
+    IndexAdd = 0xB3,
+
+    // Scan/Prefix Operations (0xC0 - 0xC5)
+    CumSum = 0xC0,
+
+    // Sort/Select Operations (0xE0 - 0xEF)
+    Argsort = 0xE1,
+    TopK = 0xE2,
 }
 
 // ============================================================================
@@ -975,6 +988,13 @@ extern "C" {
         n: size_t,
         stream: cudaStream_t,
     );
+    pub fn ptx_tensor_mod_f32(
+        a: *mut f32,
+        b: *mut f32,
+        out: *mut f32,
+        n: size_t,
+        stream: cudaStream_t,
+    );
 
     // Tensor Operations - Unary F32
     pub fn ptx_tensor_neg_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
@@ -991,6 +1011,13 @@ extern "C" {
     pub fn ptx_tensor_round_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
     pub fn ptx_tensor_sqr_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
     pub fn ptx_tensor_recip_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_log2_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_log10_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_tan_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_sinh_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_cosh_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_sign_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_erf_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
 
     // Tensor Operations - Activations F32
     pub fn ptx_tensor_relu_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
@@ -1015,6 +1042,9 @@ extern "C" {
     pub fn ptx_tensor_silu_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
     pub fn ptx_tensor_softplus_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
     pub fn ptx_tensor_mish_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_gelu_tanh_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_hardswish_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_hardsigmoid_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
 
     // Tensor Operations - Reductions F32
     pub fn ptx_tensor_reduce_sum_f32(
@@ -1047,6 +1077,97 @@ extern "C" {
         outer: size_t,
         reduce: size_t,
         inner: size_t,
+        stream: cudaStream_t,
+    );
+    pub fn ptx_tensor_reduce_prod_f32(
+        input: *mut f32,
+        out: *mut f32,
+        outer: size_t,
+        reduce: size_t,
+        inner: size_t,
+        stream: cudaStream_t,
+    );
+    pub fn ptx_tensor_reduce_argmax_f32(
+        input: *mut f32,
+        out: *mut i32,
+        outer: size_t,
+        reduce: size_t,
+        inner: size_t,
+        stream: cudaStream_t,
+    );
+    pub fn ptx_tensor_reduce_argmin_f32(
+        input: *mut f32,
+        out: *mut i32,
+        outer: size_t,
+        reduce: size_t,
+        inner: size_t,
+        stream: cudaStream_t,
+    );
+
+    // Tensor Operations - Gather/Scatter F32
+    pub fn ptx_tensor_gather_f32(
+        input: *mut f32,
+        indices: *mut i32,
+        out: *mut f32,
+        outer: size_t,
+        input_dim_size: size_t,
+        idx_dim_size: size_t,
+        inner: size_t,
+        stream: cudaStream_t,
+    );
+
+    // Tensor Operations - Scan/Prefix F32
+    pub fn ptx_tensor_cumsum_f32(
+        input: *mut f32,
+        out: *mut f32,
+        outer: size_t,
+        dim_size: size_t,
+        inner: size_t,
+        stream: cudaStream_t,
+    );
+
+    // Tensor Operations - IndexSelect/ScatterAdd/IndexAdd F32
+    pub fn ptx_tensor_index_select_f32(
+        input: *mut f32,
+        ids: *mut i32,
+        output: *mut f32,
+        left_size: size_t,
+        src_dim_size: size_t,
+        ids_dim_size: size_t,
+        right_size: size_t,
+        stream: cudaStream_t,
+    );
+    pub fn ptx_tensor_scatter_add_f32(
+        ids: *mut i32,
+        src: *mut f32,
+        output: *mut f32,
+        left_size: size_t,
+        src_dim_size: size_t,
+        dst_dim_size: size_t,
+        right_size: size_t,
+        stream: cudaStream_t,
+    );
+
+    // Tensor Operations - Argsort F32
+    pub fn ptx_tensor_argsort_f32(
+        input: *mut f32,
+        output: *mut u32,
+        nrows: size_t,
+        ncols: size_t,
+        ascending: libc::c_int,
+        stream: cudaStream_t,
+    );
+
+    // Tensor Operations - TopK/Selection F32
+    pub fn ptx_tensor_topk_f32(
+        input: *mut f32,
+        values_out: *mut f32,
+        indices_out: *mut i32,
+        outer: size_t,
+        dim_size: size_t,
+        inner: size_t,
+        k: size_t,
+        largest: libc::c_int,
         stream: cudaStream_t,
     );
 
@@ -1127,6 +1248,13 @@ extern "C" {
         n: size_t,
         stream: cudaStream_t,
     );
+    pub fn ptx_tensor_cmp_ne_f32(
+        a: *mut f32,
+        b: *mut f32,
+        out: *mut u8,
+        n: size_t,
+        stream: cudaStream_t,
+    );
 
     // Tensor Operations - Where/Select
     pub fn ptx_tensor_where_f32(
@@ -1141,6 +1269,23 @@ extern "C" {
     // Tensor Operations - Copy/Fill
     pub fn ptx_tensor_copy_f32(input: *mut f32, out: *mut f32, n: size_t, stream: cudaStream_t);
     pub fn ptx_tensor_fill_f32(out: *mut f32, n: size_t, value: f32, stream: cudaStream_t);
+
+    // Tensor Operations - Strided Copy (for making non-contiguous tensors contiguous)
+    pub fn ptx_tensor_strided_copy_f32(
+        input: *const f32, out: *mut f32,
+        shape: *const size_t, in_strides: *const size_t,
+        ndim: i32, n: size_t, stream: cudaStream_t,
+    );
+    pub fn ptx_tensor_strided_copy_f64(
+        input: *const f64, out: *mut f64,
+        shape: *const size_t, in_strides: *const size_t,
+        ndim: i32, n: size_t, stream: cudaStream_t,
+    );
+    pub fn ptx_tensor_strided_copy_u8(
+        input: *const u8, out: *mut u8,
+        shape: *const size_t, in_strides: *const size_t,
+        ndim: i32, n: size_t, stream: cudaStream_t,
+    );
     pub fn ptx_tensor_cast_f32_to_f16(
         input: *mut f32,
         out: *mut __half,
@@ -1153,6 +1298,52 @@ extern "C" {
         n: size_t,
         stream: cudaStream_t,
     );
+
+    // Tensor Operations - Scan (cumprod, cummax, cummin)
+    pub fn ptx_tensor_cumprod_f32(input: *mut f32, out: *mut f32, outer: size_t, dim_size: size_t, inner: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_cummax_f32(input: *mut f32, out: *mut f32, outer: size_t, dim_size: size_t, inner: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_cummin_f32(input: *mut f32, out: *mut f32, outer: size_t, dim_size: size_t, inner: size_t, stream: cudaStream_t);
+
+    // Tensor Operations - Cast (additional)
+    pub fn ptx_tensor_cast_f32_to_i32(input: *mut f32, out: *mut i32, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_cast_i32_to_f32(input: *mut i32, out: *mut f32, n: size_t, stream: cudaStream_t);
+
+    // Tensor Operations - Random
+    pub fn ptx_tensor_rand_f32(out: *mut f32, n: size_t, seed: u64, stream: cudaStream_t);
+    pub fn ptx_tensor_randn_f32(out: *mut f32, n: size_t, seed: u64, stream: cudaStream_t);
+
+    // Tensor Operations - Arange
+    pub fn ptx_tensor_arange_f32(out: *mut f32, n: size_t, start: f32, step: f32, stream: cudaStream_t);
+
+    // Tensor Operations - Logical (U8 boolean tensors)
+    pub fn ptx_tensor_logical_and_u8(a: *mut u8, b: *mut u8, out: *mut u8, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_logical_or_u8(a: *mut u8, b: *mut u8, out: *mut u8, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_logical_not_u8(input: *mut u8, out: *mut u8, n: size_t, stream: cudaStream_t);
+    pub fn ptx_tensor_logical_xor_u8(a: *mut u8, b: *mut u8, out: *mut u8, n: size_t, stream: cudaStream_t);
+
+    // Tensor Operations - Broadcast binary
+    pub fn ptx_tensor_broadcast_binary_f32(
+        a: *mut f32, b: *mut f32, out: *mut f32, n: size_t,
+        out_shape: *mut size_t, a_strides: *mut size_t, b_strides: *mut size_t,
+        ndim: i32, op: i32, stream: cudaStream_t,
+    );
+
+    // Tensor Operations - Pad
+    pub fn ptx_tensor_pad2d_f32(
+        input: *mut f32, out: *mut f32,
+        n: i32, c: i32, h: i32, w: i32,
+        pad_top: i32, pad_bottom: i32, pad_left: i32, pad_right: i32,
+        pad_value: f32, stream: cudaStream_t,
+    );
+
+    // Tensor Operations - Repeat/Tile
+    pub fn ptx_tensor_repeat_f32(
+        input: *mut f32, out: *mut f32, out_n: size_t,
+        in_shape: *mut size_t, out_shape: *mut size_t, ndim: i32, stream: cudaStream_t,
+    );
+
+    // Tensor Operations - Masked fill
+    pub fn ptx_tensor_masked_fill_f32(data: *mut f32, mask: *mut u8, value: f32, n: size_t, stream: cudaStream_t);
 
     // Tensor Operations - Scalar Broadcast F32
     pub fn ptx_tensor_add_scalar_f32(
@@ -1313,6 +1504,61 @@ extern "C" {
         out: *mut __half,
         batch: size_t,
         dim: size_t,
+        stream: cudaStream_t,
+    );
+
+    // Tensor Operations - Im2col / Col2im (Conv2d)
+    pub fn ptx_tensor_im2col_f32(
+        data_im: *const f32, data_col: *mut f32,
+        n: i32, c: i32, h: i32, w: i32,
+        kh: i32, kw: i32,
+        pad_h: i32, pad_w: i32,
+        stride_h: i32, stride_w: i32,
+        dilation_h: i32, dilation_w: i32,
+        h_out: i32, w_out: i32,
+        stream: cudaStream_t,
+    );
+    pub fn ptx_tensor_col2im_f32(
+        data_col: *const f32, data_im: *mut f32,
+        n: i32, c: i32, h: i32, w: i32,
+        kh: i32, kw: i32,
+        pad_h: i32, pad_w: i32,
+        stride_h: i32, stride_w: i32,
+        dilation_h: i32, dilation_w: i32,
+        h_out: i32, w_out: i32,
+        stream: cudaStream_t,
+    );
+
+    // Tensor Operations - Pooling
+    pub fn ptx_tensor_max_pool2d_f32(
+        input: *const f32, output: *mut f32,
+        n: i32, c: i32, h: i32, w: i32,
+        kh: i32, kw: i32,
+        stride_h: i32, stride_w: i32,
+        pad_h: i32, pad_w: i32,
+        h_out: i32, w_out: i32,
+        stream: cudaStream_t,
+    );
+    pub fn ptx_tensor_avg_pool2d_f32(
+        input: *const f32, output: *mut f32,
+        n: i32, c: i32, h: i32, w: i32,
+        kh: i32, kw: i32,
+        stride_h: i32, stride_w: i32,
+        pad_h: i32, pad_w: i32,
+        h_out: i32, w_out: i32,
+        stream: cudaStream_t,
+    );
+
+    // Tensor Operations - Optimizers
+    pub fn ptx_tensor_sgd_step_f32(
+        params: *mut f32, grads: *const f32, velocity: *mut f32,
+        n: size_t, lr: f32, momentum: f32, weight_decay: f32,
+        stream: cudaStream_t,
+    );
+    pub fn ptx_tensor_adam_step_f32(
+        params: *mut f32, grads: *const f32, m: *mut f32, v: *mut f32,
+        n: size_t, lr: f32, beta1: f32, beta2: f32, eps: f32, weight_decay: f32,
+        bc1: f32, bc2: f32,
         stream: cudaStream_t,
     );
 

@@ -17,55 +17,62 @@ pub enum ActivationOp {
     Silu,
     Softplus,
     Mish,
+    GeluTanh,
+    HardSwish,
+    HardSigmoid,
 }
 
 impl Tensor {
     /// Generic activation function (no parameters).
     fn activation_op(&self, op: ActivationOp) -> Result<Tensor> {
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let input = self.require_contiguous()?;
+        let output = input.empty_like()?;
+        let n = input.elem_count();
+        let stream = input.runtime().next_stream();
 
-        match self.dtype() {
+        match input.dtype() {
             DType::F32 => unsafe {
-                let input = self.data_ptr_typed::<f32>();
+                let inp = input.data_ptr_typed::<f32>();
                 let out = output.data_ptr_typed::<f32>();
 
                 match op {
-                    ActivationOp::Relu => ptx_sys::ptx_tensor_relu_f32(input, out, n, stream.raw()),
-                    ActivationOp::Relu6 => ptx_sys::ptx_tensor_relu6_f32(input, out, n, stream.raw()),
-                    ActivationOp::Selu => ptx_sys::ptx_tensor_selu_f32(input, out, n, stream.raw()),
-                    ActivationOp::Gelu => ptx_sys::ptx_tensor_gelu_f32(input, out, n, stream.raw()),
-                    ActivationOp::Sigmoid => ptx_sys::ptx_tensor_sigmoid_f32(input, out, n, stream.raw()),
-                    ActivationOp::Silu => ptx_sys::ptx_tensor_silu_f32(input, out, n, stream.raw()),
-                    ActivationOp::Softplus => ptx_sys::ptx_tensor_softplus_f32(input, out, n, stream.raw()),
-                    ActivationOp::Mish => ptx_sys::ptx_tensor_mish_f32(input, out, n, stream.raw()),
+                    ActivationOp::Relu => ptx_sys::ptx_tensor_relu_f32(inp, out, n, stream.raw()),
+                    ActivationOp::Relu6 => ptx_sys::ptx_tensor_relu6_f32(inp, out, n, stream.raw()),
+                    ActivationOp::Selu => ptx_sys::ptx_tensor_selu_f32(inp, out, n, stream.raw()),
+                    ActivationOp::Gelu => ptx_sys::ptx_tensor_gelu_f32(inp, out, n, stream.raw()),
+                    ActivationOp::Sigmoid => ptx_sys::ptx_tensor_sigmoid_f32(inp, out, n, stream.raw()),
+                    ActivationOp::Silu => ptx_sys::ptx_tensor_silu_f32(inp, out, n, stream.raw()),
+                    ActivationOp::Softplus => ptx_sys::ptx_tensor_softplus_f32(inp, out, n, stream.raw()),
+                    ActivationOp::Mish => ptx_sys::ptx_tensor_mish_f32(inp, out, n, stream.raw()),
+                    ActivationOp::GeluTanh => ptx_sys::ptx_tensor_gelu_tanh_f32(inp, out, n, stream.raw()),
+                    ActivationOp::HardSwish => ptx_sys::ptx_tensor_hardswish_f32(inp, out, n, stream.raw()),
+                    ActivationOp::HardSigmoid => ptx_sys::ptx_tensor_hardsigmoid_f32(inp, out, n, stream.raw()),
                     _ => return Err(Error::NotSupported {
                         message: format!("{:?} requires parameters", op),
                     }),
                 }
             },
             DType::F64 => unsafe {
-                let input = self.data_ptr_typed::<f64>();
+                let inp = input.data_ptr_typed::<f64>();
                 let out = output.data_ptr_typed::<f64>();
 
                 match op {
-                    ActivationOp::Relu => ptx_sys::ptx_tensor_relu_f64(input, out, n, stream.raw()),
-                    ActivationOp::Gelu => ptx_sys::ptx_tensor_gelu_f64(input, out, n, stream.raw()),
-                    ActivationOp::Sigmoid => ptx_sys::ptx_tensor_sigmoid_f64(input, out, n, stream.raw()),
+                    ActivationOp::Relu => ptx_sys::ptx_tensor_relu_f64(inp, out, n, stream.raw()),
+                    ActivationOp::Gelu => ptx_sys::ptx_tensor_gelu_f64(inp, out, n, stream.raw()),
+                    ActivationOp::Sigmoid => ptx_sys::ptx_tensor_sigmoid_f64(inp, out, n, stream.raw()),
                     _ => return Err(Error::NotSupported {
                         message: format!("{:?} not supported for F64", op),
                     }),
                 }
             },
             DType::F16 => unsafe {
-                let input = self.data_ptr_typed::<ptx_sys::__half>();
+                let inp = input.data_ptr_typed::<ptx_sys::__half>();
                 let out = output.data_ptr_typed::<ptx_sys::__half>();
 
                 match op {
-                    ActivationOp::Relu => ptx_sys::ptx_tensor_relu_f16(input, out, n, stream.raw()),
-                    ActivationOp::Gelu => ptx_sys::ptx_tensor_gelu_f16(input, out, n, stream.raw()),
-                    ActivationOp::Sigmoid => ptx_sys::ptx_tensor_sigmoid_f16(input, out, n, stream.raw()),
+                    ActivationOp::Relu => ptx_sys::ptx_tensor_relu_f16(inp, out, n, stream.raw()),
+                    ActivationOp::Gelu => ptx_sys::ptx_tensor_gelu_f16(inp, out, n, stream.raw()),
+                    ActivationOp::Sigmoid => ptx_sys::ptx_tensor_sigmoid_f16(inp, out, n, stream.raw()),
                     _ => return Err(Error::NotSupported {
                         message: format!("{:?} not supported for F16", op),
                     }),
@@ -98,13 +105,14 @@ impl Tensor {
             });
         }
 
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let input = self.require_contiguous()?;
+        let output = input.empty_like()?;
+        let n = input.elem_count();
+        let stream = input.runtime().next_stream();
 
         unsafe {
             ptx_sys::ptx_tensor_leaky_relu_f32(
-                self.data_ptr_typed::<f32>(),
+                input.data_ptr_typed::<f32>(),
                 output.data_ptr_typed::<f32>(),
                 n,
                 alpha,
@@ -124,13 +132,14 @@ impl Tensor {
             });
         }
 
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let input = self.require_contiguous()?;
+        let output = input.empty_like()?;
+        let n = input.elem_count();
+        let stream = input.runtime().next_stream();
 
         unsafe {
             ptx_sys::ptx_tensor_elu_f32(
-                self.data_ptr_typed::<f32>(),
+                input.data_ptr_typed::<f32>(),
                 output.data_ptr_typed::<f32>(),
                 n,
                 alpha,
@@ -175,5 +184,20 @@ impl Tensor {
     /// Mish activation: x * tanh(softplus(x))
     pub fn mish(&self) -> Result<Tensor> {
         self.activation_op(ActivationOp::Mish)
+    }
+
+    /// GELU with tanh approximation (same as PyTorch's gelu(approximate='tanh')).
+    pub fn gelu_tanh(&self) -> Result<Tensor> {
+        self.activation_op(ActivationOp::GeluTanh)
+    }
+
+    /// HardSwish: x * min(max(x+3, 0), 6) / 6
+    pub fn hardswish(&self) -> Result<Tensor> {
+        self.activation_op(ActivationOp::HardSwish)
+    }
+
+    /// HardSigmoid: min(max(x/6 + 0.5, 0), 1)
+    pub fn hardsigmoid(&self) -> Result<Tensor> {
+        self.activation_op(ActivationOp::HardSigmoid)
     }
 }

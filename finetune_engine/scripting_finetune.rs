@@ -431,6 +431,7 @@ fn encode_text_to_vec(text: &str, len: i64, seed: u64) -> Tensor {
 fn main() -> Result<()> {
     let cfg = parse_args()?;
 
+    aten_ptx::ensure_libtorch_cuda_loaded();
     if !tch::Cuda::is_available() {
         println!("CUDA not available");
         return Ok(());

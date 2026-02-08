@@ -55,9 +55,12 @@ impl Tensor {
             });
         }
 
+        let input = self.require_contiguous()?;
+        let rhs = other.require_contiguous()?;
+
         // Create output tensor
         let out_shape = Shape::from_slice(&[m, n]);
-        let out_storage = Storage::new(m * n, self.dtype(), self.runtime())?;
+        let out_storage = Storage::new(m * n, input.dtype(), input.runtime())?;
         let output = Tensor::from_storage(
             out_storage,
             out_shape.clone(),
@@ -67,14 +70,14 @@ impl Tensor {
 
         // Get or create cuBLAS handle
         let gemm = Gemm::new()?;
-        let stream = self.runtime().next_stream();
+        let stream = input.runtime().next_stream();
         gemm.set_stream(&stream)?;
 
-        match self.dtype() {
+        match input.dtype() {
             DType::F32 => unsafe {
                 gemm.matmul_f32(
-                    self.data_ptr_typed::<f32>(),
-                    other.data_ptr_typed::<f32>(),
+                    input.data_ptr_typed::<f32>(),
+                    rhs.data_ptr_typed::<f32>(),
                     output.data_ptr_typed::<f32>(),
                     m,
                     n,
@@ -123,9 +126,12 @@ impl Tensor {
             });
         }
 
+        let input = self.require_contiguous()?;
+        let rhs = other.require_contiguous()?;
+
         // Create output tensor
         let out_shape = Shape::from_slice(&[batch, m, n]);
-        let out_storage = Storage::new(batch * m * n, self.dtype(), self.runtime())?;
+        let out_storage = Storage::new(batch * m * n, input.dtype(), input.runtime())?;
         let output = Tensor::from_storage(
             out_storage,
             out_shape.clone(),
@@ -135,14 +141,14 @@ impl Tensor {
 
         // Get or create cuBLAS handle
         let gemm = Gemm::new()?;
-        let stream = self.runtime().next_stream();
+        let stream = input.runtime().next_stream();
         gemm.set_stream(&stream)?;
 
-        match self.dtype() {
+        match input.dtype() {
             DType::F32 => unsafe {
                 gemm.bmm_f32(
-                    self.data_ptr_typed::<f32>(),
-                    other.data_ptr_typed::<f32>(),
+                    input.data_ptr_typed::<f32>(),
+                    rhs.data_ptr_typed::<f32>(),
                     output.data_ptr_typed::<f32>(),
                     batch,
                     m,
@@ -159,45 +165,22 @@ impl Tensor {
         Ok(output)
     }
 
-    /// Transpose the last two dimensions.
-    ///
-    /// For 2D: (M, N) -> (N, M)
-    /// For 3D: (B, M, N) -> (B, N, M)
-    pub fn transpose(&self) -> Result<Tensor> {
-        match self.ndim() {
-            2 => {
-                let _m = self.shape()[0];
-                let _n = self.shape()[1];
-                // TODO: Implement actual transpose kernel
-                // For now, return error
-                Err(Error::NotSupported {
-                    message: "transpose not yet implemented".to_string(),
-                })
-            }
-            _ => Err(Error::NotSupported {
-                message: "transpose only supports 2D tensors".to_string(),
-            }),
-        }
-    }
+    // transpose() is now in tensor.rs with proper (dim0, dim1) signature.
+    // Use .t() for 2D matrix transpose, or .transpose(dim0, dim1) for general case.
 
     /// Linear layer: out = x @ weight.T + bias
     ///
     /// - x: (*, in_features)
     /// - weight: (out_features, in_features)
     /// - bias: (out_features,) or None
-    pub fn linear(&self, _weight: &Tensor, _bias: Option<&Tensor>) -> Result<Tensor> {
-        // For now, just do matmul
-        // TODO: fused linear kernel for better performance
-
-        // x: (batch, in_features) @ weight.T: (in_features, out_features) = (batch, out_features)
-        // We need weight.T, but we can compute x @ weight.T as (weight @ x.T).T
-        // Or we can adjust the GEMM call
-
-        // Actually for row-major: C = A @ B.T can be done by swapping args in cuBLAS
-        // Let's just error for now until we have transpose
-        Err(Error::NotSupported {
-            message: "linear layer requires transpose, not yet implemented".to_string(),
-        })
+    /// - Returns: (*, out_features)
+    pub fn linear(&self, weight: &Tensor, bias: Option<&Tensor>) -> Result<Tensor> {
+        let wt = weight.t()?.contiguous()?;
+        let out = self.matmul(&wt)?;
+        match bias {
+            Some(b) => out.broadcast_add(b),
+            None => Ok(out),
+        }
     }
 }
 

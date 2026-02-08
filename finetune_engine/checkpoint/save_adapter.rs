@@ -348,6 +348,7 @@ fn main() -> Result<()> {
             println!("[checkpoint] round-trip validation passed");
         }
         "load" => {
+            aten_ptx::ensure_libtorch_cuda_loaded();
             let device = if tch::Cuda::is_available() {
                 Device::Cuda(0)
             } else {

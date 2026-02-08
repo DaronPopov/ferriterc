@@ -18,13 +18,14 @@ fi
 OUT_FILE=""
 DO_BUILD=1
 BASELINE=0
+WORKSPACE_DIR="$ROOT_DIR"
 
 usage() {
   cat <<USAGE
 Usage: $0 [--no-build] [--baseline] [--out <file>]
 
   --no-build   Skip build step
-  --baseline   Enable cudaMalloc/cudaFree baseline in alloc benchmark
+  --baseline   Enable baseline env flags for compatible benchmarks
   --out FILE   Write results to FILE (default: benchmarks/ptx_bench_YYYYMMDD_HHMMSS.txt)
 USAGE
 }
@@ -80,9 +81,32 @@ run_cmd() {
   echo "" | tee -a "$OUT_FILE"
 }
 
+run_example_if_exists() {
+  local title="$1"
+  local example_path="$2"
+  local cmd="$3"
+
+  if [ ! -f "$example_path" ]; then
+    echo "=== $title ===" | tee -a "$OUT_FILE"
+    echo "SKIP: missing example file: $example_path" | tee -a "$OUT_FILE"
+    echo "" | tee -a "$OUT_FILE"
+    return 0
+  fi
+
+  run_cmd "$title" bash -lc "cd '$WORKSPACE_DIR' && $cmd"
+}
+
 {
   echo "PTX-OS Benchmark Run"
   echo "Timestamp: $(date)"
+  echo "Host: $(hostname)"
+  echo "Workspace: $WORKSPACE_DIR"
+  if command -v git >/dev/null 2>&1; then
+    echo "Commit: $(git -C "$WORKSPACE_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+  fi
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    echo "GPU: $(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader | head -n1)"
+  fi
   echo ""
   echo "Environment:"
   "$ENV_SH" --format env --quiet
@@ -98,11 +122,34 @@ if [ "$BASELINE" -eq 1 ]; then
   export PTX_BENCH_ASYNC=1
 fi
 
-run_cmd "Allocator Benchmark" bash -lc "cd '$ROOT_DIR/rust' && cargo run --release -p ptx-runtime --example bench_alloc"
-run_cmd "Async Free Benchmark" bash -lc "cd '$ROOT_DIR/rust' && cargo run --release -p ptx-runtime --example bench_async_free"
-run_cmd "Pipeline Benchmark" bash -lc "cd '$ROOT_DIR/rust' && cargo run --release -p ptx-runtime --example bench_pipeline"
-run_cmd "Dynamic-Shape Benchmark" bash -lc "cd '$ROOT_DIR/rust' && cargo run --release -p ptx-tensor --example bench_dynamic_shapes"
-run_cmd "Elementwise Ops Benchmark" bash -lc "cd '$ROOT_DIR/rust' && cargo run --release -p ptx-tensor --example bench_ops"
-run_cmd "Matmul Benchmark" bash -lc "cd '$ROOT_DIR/rust' && cargo run --release -p ptx-tensor --example bench_matmul"
+run_example_if_exists \
+  "Runtime Jitter Benchmark" \
+  "$ROOT_DIR/ptx-runtime/examples/jitter_benchmark.rs" \
+  "cargo run --release -p ptx-runtime --example jitter_benchmark"
+
+run_example_if_exists \
+  "Fused Kernel Benchmark" \
+  "$ROOT_DIR/ptx-runtime/examples/fused_kernel_benchmark.rs" \
+  "cargo run --release -p ptx-runtime --example fused_kernel_benchmark"
+
+run_example_if_exists \
+  "Candle Performance Benchmark" \
+  "$ROOT_DIR/ptx-runtime/examples/candle_performance_benchmark.rs" \
+  "cargo run --release -p ptx-runtime --example candle_performance_benchmark"
+
+run_example_if_exists \
+  "Dynamic-Shape Benchmark" \
+  "$ROOT_DIR/internal/ptx-tensor/examples/bench_dynamic_shapes.rs" \
+  "cargo run --release -p ptx-tensor --example bench_dynamic_shapes"
+
+run_example_if_exists \
+  "Elementwise Ops Benchmark" \
+  "$ROOT_DIR/internal/ptx-tensor/examples/bench_ops.rs" \
+  "cargo run --release -p ptx-tensor --example bench_ops"
+
+run_example_if_exists \
+  "Matmul Benchmark" \
+  "$ROOT_DIR/internal/ptx-tensor/examples/bench_matmul.rs" \
+  "cargo run --release -p ptx-tensor --example bench_matmul"
 
 echo "Results saved to: $OUT_FILE" | tee -a "$OUT_FILE"

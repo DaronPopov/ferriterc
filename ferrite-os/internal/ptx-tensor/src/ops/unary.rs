@@ -11,57 +11,75 @@ pub enum UnaryOp {
     Abs,
     Exp,
     Log,
+    Log2,
+    Log10,
     Sqrt,
     Rsqrt,
     Sin,
     Cos,
+    Tan,
     Tanh,
+    Sinh,
+    Cosh,
     Ceil,
     Floor,
     Round,
+    Sign,
     Sqr,
     Recip,
+    Erf,
 }
 
 impl Tensor {
     /// Generic unary operation.
     fn unary_op(&self, op: UnaryOp) -> Result<Tensor> {
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let input = self.require_contiguous()?;
+        let output = input.empty_like()?;
+        let n = input.elem_count();
+        if n == 0 {
+            return Ok(output);
+        }
+        let stream = input.runtime().next_stream();
 
-        match self.dtype() {
+        match input.dtype() {
             DType::F32 => unsafe {
-                let input = self.data_ptr_typed::<f32>();
+                let inp = input.data_ptr_typed::<f32>();
                 let out = output.data_ptr_typed::<f32>();
 
                 match op {
-                    UnaryOp::Neg => ptx_sys::ptx_tensor_neg_f32(input, out, n, stream.raw()),
-                    UnaryOp::Abs => ptx_sys::ptx_tensor_abs_f32(input, out, n, stream.raw()),
-                    UnaryOp::Exp => ptx_sys::ptx_tensor_exp_f32(input, out, n, stream.raw()),
-                    UnaryOp::Log => ptx_sys::ptx_tensor_log_f32(input, out, n, stream.raw()),
-                    UnaryOp::Sqrt => ptx_sys::ptx_tensor_sqrt_f32(input, out, n, stream.raw()),
-                    UnaryOp::Rsqrt => ptx_sys::ptx_tensor_rsqrt_f32(input, out, n, stream.raw()),
-                    UnaryOp::Sin => ptx_sys::ptx_tensor_sin_f32(input, out, n, stream.raw()),
-                    UnaryOp::Cos => ptx_sys::ptx_tensor_cos_f32(input, out, n, stream.raw()),
-                    UnaryOp::Tanh => ptx_sys::ptx_tensor_tanh_f32(input, out, n, stream.raw()),
-                    UnaryOp::Ceil => ptx_sys::ptx_tensor_ceil_f32(input, out, n, stream.raw()),
-                    UnaryOp::Floor => ptx_sys::ptx_tensor_floor_f32(input, out, n, stream.raw()),
-                    UnaryOp::Round => ptx_sys::ptx_tensor_round_f32(input, out, n, stream.raw()),
-                    UnaryOp::Sqr => ptx_sys::ptx_tensor_sqr_f32(input, out, n, stream.raw()),
-                    UnaryOp::Recip => ptx_sys::ptx_tensor_recip_f32(input, out, n, stream.raw()),
+                    UnaryOp::Neg => ptx_sys::ptx_tensor_neg_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Abs => ptx_sys::ptx_tensor_abs_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Exp => ptx_sys::ptx_tensor_exp_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Log => ptx_sys::ptx_tensor_log_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Log2 => ptx_sys::ptx_tensor_log2_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Log10 => ptx_sys::ptx_tensor_log10_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Sqrt => ptx_sys::ptx_tensor_sqrt_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Rsqrt => ptx_sys::ptx_tensor_rsqrt_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Sin => ptx_sys::ptx_tensor_sin_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Cos => ptx_sys::ptx_tensor_cos_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Tan => ptx_sys::ptx_tensor_tan_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Tanh => ptx_sys::ptx_tensor_tanh_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Sinh => ptx_sys::ptx_tensor_sinh_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Cosh => ptx_sys::ptx_tensor_cosh_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Ceil => ptx_sys::ptx_tensor_ceil_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Floor => ptx_sys::ptx_tensor_floor_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Round => ptx_sys::ptx_tensor_round_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Sign => ptx_sys::ptx_tensor_sign_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Sqr => ptx_sys::ptx_tensor_sqr_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Recip => ptx_sys::ptx_tensor_recip_f32(inp, out, n, stream.raw()),
+                    UnaryOp::Erf => ptx_sys::ptx_tensor_erf_f32(inp, out, n, stream.raw()),
                 }
             },
             DType::F64 => unsafe {
-                let input = self.data_ptr_typed::<f64>();
+                let inp = input.data_ptr_typed::<f64>();
                 let out = output.data_ptr_typed::<f64>();
 
                 match op {
-                    UnaryOp::Neg => ptx_sys::ptx_tensor_neg_f64(input, out, n, stream.raw()),
-                    UnaryOp::Exp => ptx_sys::ptx_tensor_exp_f64(input, out, n, stream.raw()),
-                    UnaryOp::Log => ptx_sys::ptx_tensor_log_f64(input, out, n, stream.raw()),
-                    UnaryOp::Sqrt => ptx_sys::ptx_tensor_sqrt_f64(input, out, n, stream.raw()),
-                    UnaryOp::Tanh => ptx_sys::ptx_tensor_tanh_f64(input, out, n, stream.raw()),
+                    UnaryOp::Neg => ptx_sys::ptx_tensor_neg_f64(inp, out, n, stream.raw()),
+                    UnaryOp::Exp => ptx_sys::ptx_tensor_exp_f64(inp, out, n, stream.raw()),
+                    UnaryOp::Log => ptx_sys::ptx_tensor_log_f64(inp, out, n, stream.raw()),
+                    UnaryOp::Sqrt => ptx_sys::ptx_tensor_sqrt_f64(inp, out, n, stream.raw()),
+                    UnaryOp::Tanh => ptx_sys::ptx_tensor_tanh_f64(inp, out, n, stream.raw()),
                     _ => return Err(Error::NotSupported {
                         message: format!("{:?} not supported for F64", op),
                     }),
@@ -146,6 +164,41 @@ impl Tensor {
         self.unary_op(UnaryOp::Recip)
     }
 
+    /// Base-2 logarithm.
+    pub fn log2(&self) -> Result<Tensor> {
+        self.unary_op(UnaryOp::Log2)
+    }
+
+    /// Base-10 logarithm.
+    pub fn log10(&self) -> Result<Tensor> {
+        self.unary_op(UnaryOp::Log10)
+    }
+
+    /// Tangent.
+    pub fn tan(&self) -> Result<Tensor> {
+        self.unary_op(UnaryOp::Tan)
+    }
+
+    /// Hyperbolic sine.
+    pub fn sinh(&self) -> Result<Tensor> {
+        self.unary_op(UnaryOp::Sinh)
+    }
+
+    /// Hyperbolic cosine.
+    pub fn cosh(&self) -> Result<Tensor> {
+        self.unary_op(UnaryOp::Cosh)
+    }
+
+    /// Sign function (-1, 0, or 1).
+    pub fn sign(&self) -> Result<Tensor> {
+        self.unary_op(UnaryOp::Sign)
+    }
+
+    /// Gauss error function.
+    pub fn erf(&self) -> Result<Tensor> {
+        self.unary_op(UnaryOp::Erf)
+    }
+
     /// Copy tensor data.
     pub fn copy(&self) -> Result<Tensor> {
         if self.dtype() != DType::F32 {
@@ -154,13 +207,14 @@ impl Tensor {
             });
         }
 
-        let output = self.empty_like()?;
-        let n = self.elem_count();
-        let stream = self.runtime().next_stream();
+        let input = self.require_contiguous()?;
+        let output = input.empty_like()?;
+        let n = input.elem_count();
+        let stream = input.runtime().next_stream();
 
         unsafe {
             ptx_sys::ptx_tensor_copy_f32(
-                self.data_ptr_typed::<f32>(),
+                input.data_ptr_typed::<f32>(),
                 output.data_ptr_typed::<f32>(),
                 n,
                 stream.raw(),

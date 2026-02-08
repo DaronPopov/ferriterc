@@ -1,0 +1,211 @@
+
+FERRITERC: THE PROCESSOR
+=========================
+How Ferriterc turns a GPU into a new kind of machine.
+
+
+=== WHAT NVIDIA BUILT (the silicon) ===
+
+  +-------------------------------------------------------------------+
+  |                    NVIDIA GPU DIE                                  |
+  |                                                                    |
+  |  +------+  +------+  +------+  +------+     +------+             |
+  |  | SM 0 |  | SM 1 |  | SM 2 |  | SM 3 | ... | SM N |             |
+  |  | 128  |  | 128  |  | 128  |  | 128  |     | 128  |             |
+  |  |cores |  |cores |  |cores |  |cores |     |cores |             |
+  |  |      |  |      |  |      |  |      |     |      |             |
+  |  |warp  |  |warp  |  |warp  |  |warp  |     |warp  |             |
+  |  |sched |  |sched |  |sched |  |sched |     |sched |             |
+  |  +--+---+  +--+---+  +--+---+  +--+---+     +--+---+             |
+  |     |         |         |         |             |                  |
+  |  +--+---+  +--+---+  +--+---+  +--+---+     +--+---+             |
+  |  |L1/SM |  |L1/SM |  |L1/SM |  |L1/SM |     |L1/SM |             |
+  |  +--+---+  +--+---+  +--+---+  +--+---+     +--+---+             |
+  |     |         |         |         |             |                  |
+  |     +---------+---------+---------+------+------+                  |
+  |                                          |                         |
+  |                                   +------v------+                  |
+  |                                   |   L2 Cache  |                  |
+  |                                   +------+------+                  |
+  |                                          |                         |
+  |  +---------------------------------------v-----------------------+ |
+  |  |               Memory Controllers                              | |
+  |  |    GDDR6/GDDR6X/HBM2e/HBM3                                   | |
+  |  +---------------------------------------------------------------+ |
+  |                                                                    |
+  |  VRAM: 8 GB (3070) / 24 GB (4090) / 80 GB (H100) / 192 GB (B200) |
+  +-------------------------------------------------------------------+
+
+  NVIDIA says: "This is a graphics processor. Launch kernels."
+
+
+=== WHAT NVIDIA PROVIDES (standard CUDA model) ===
+
+  +-----------------------------------+
+  |  CUDA Programming Model           |
+  |                                    |
+  |  cudaMalloc(size) .... ~500 us     |   <-- slow
+  |  cudaFree(ptr)                     |
+  |  cudaStreamCreate() .. 10-32 max   |   <-- limited
+  |  kernel<<<grid,block>>>(args)      |
+  |  cudaDeviceSynchronize()           |   <-- full stop
+  |                                    |
+  |  Mental model:                     |
+  |    VRAM = fixed box                |
+  |    Fill it. Compute. Read back.    |
+  |    If it doesn't fit, give up.     |
+  +-----------------------------------+
+
+
+=== WHAT FERRITERC REPLACES (the software processor) ===
+
+  Every component NVIDIA provides is replaced:
+
+  NVIDIA Component          Ferriterc Replacement           Improvement
+  ========================  ==============================  ===========
+  cudaMalloc (~500 us)      TLSF O(1) (0.238 us)           4,200x
+  10-32 streams             100,000 streams                 3,000x
+  Fixed VRAM box            Virtual memory + wave sched     unbounded
+  No memory management      VFS + VMM + page swap           OS-grade
+  No multi-process          Daemon + SysV IPC               shared GPU
+  Manual kernel dispatch    Graph compiler + auto-fusion    optimized
+  No autodiff               Tape-based reverse-mode AD      built-in
+
+
+=== THE FERRITERC PROCESSOR ===
+
+  +-----------------------------------------------------------------+
+  |                  FERRITERC PROCESSOR                             |
+  |              (software-defined, on GPU silicon)                  |
+  |                                                                  |
+  |  INSTRUCTION SET (OpCode 0x00-0xA2):                            |
+  |  +------------------------------------------------------------+ |
+  |  | Input | Add | Sub | Mul | Div | Relu | Sigmoid | Gelu |    | |
+  |  | Exp | Log | Sqrt | Tanh | Softmax | Matmul | BatchMatmul | | |
+  |  | ReduceSum | ReduceMean | Cast | Affine | Clamp | Where |   | |
+  |  | 70+ more operations, each a first-class instruction        | |
+  |  +------------------------------------------------------------+ |
+  |                                                                  |
+  |  MEMORY SUBSYSTEM:                                               |
+  |  +------------------------------------------------------------+ |
+  |  |                                                             | |
+  |  |  +--TLSF Allocator---------+  +--Virtual Memory Manager--+ | |
+  |  |  | O(1) alloc: 0.238 us    |  | 16384 pages x 64 KB      | | |
+  |  |  | O(1) free: coalescing   |  | = 1 GB virtual space     | | |
+  |  |  | Zero fragmentation      |  | Page fault -> CPU swap   | | |
+  |  |  | FL=32, SL=16 bitmaps    |  | 256 swap regions         | | |
+  |  |  +--------------------------+  +---------------------------+ | |
+  |  |                                                             | |
+  |  |  +--Virtual File System-----------------------------------+ | |
+  |  |  | Inode tree (POSIX-like)                                 | | |
+  |  |  | read / write / stat / mkdir / rmdir / unlink            | | |
+  |  |  | File handles with seek offsets                          | | |
+  |  |  | Tensor-addressed storage                                | | |
+  |  |  +---------------------------------------------------------+ | |
+  |  +------------------------------------------------------------+ |
+  |                                                                  |
+  |  SCHEDULER:                                                      |
+  |  +------------------------------------------------------------+ |
+  |  |                                                             | |
+  |  |  StreamPool: 100,000 concurrent execution contexts          | |
+  |  |                                                             | |
+  |  |  +--Stream 0---+  +--Stream 1---+      +--Stream 99999-+   | |
+  |  |  | Independent |  | Independent |      | Independent    |   | |
+  |  |  | ordering    |  | ordering    | .... | ordering       |   | |
+  |  |  | Own allocs  |  | Own allocs  |      | Own allocs     |   | |
+  |  |  | Own kernels |  | Own kernels |      | Own kernels    |   | |
+  |  |  +-------------+  +-------------+      +----------------+   | |
+  |  |                                                             | |
+  |  |  Dispatch: round-robin (atomic fetch_add, lock-free)        | |
+  |  |  Priorities: Realtime > High > Normal > Low                 | |
+  |  |  Sync: per-stream or global barrier                         | |
+  |  +------------------------------------------------------------+ |
+  |                                                                  |
+  |  EXECUTION ENGINE:                                               |
+  |  +------------------------------------------------------------+ |
+  |  |                                                             | |
+  |  |  Wave Scheduler:                                            | |
+  |  |    Data of any size -> bounded VRAM window                  | |
+  |  |    Shard -> stream -> compute -> free -> next shard         | |
+  |  |    Sync between waves                                       | |
+  |  |                                                             | |
+  |  |  CUDA Graph Capture:                                        | |
+  |  |    Record operation sequence once                           | |
+  |  |    Replay N times with zero dispatch overhead               | |
+  |  |                                                             | |
+  |  |  Compiler:                                                  | |
+  |  |    Graph IR -> Dead Code Elim -> Constant Fold              | |
+  |  |    -> Operator Fusion -> Memory Planning -> CUDA Graph      | |
+  |  |                                                             | |
+  |  |  Autograd:                                                  | |
+  |  |    Forward tape recording                                   | |
+  |  |    Reverse-mode automatic differentiation                   | |
+  |  |    30+ gradient functions (chain rule)                      | |
+  |  |                                                             | |
+  |  +------------------------------------------------------------+ |
+  |                                                                  |
+  |  OS SERVICES:                                                    |
+  |  +------------------------------------------------------------+ |
+  |  |  Task Queue: ring buffer, 1024 entries, spin lock           | |
+  |  |  IPC: System V shared memory, daemon architecture           | |
+  |  |  Telemetry: atomic counters, RAII timing, tracing           | |
+  |  |  Health: leak detection, corruption detection, watchdog     | |
+  |  |  Hooks: LD_PRELOAD intercepts (cudaMalloc -> TLSF)          | |
+  |  +------------------------------------------------------------+ |
+  |                                                                  |
+  +-----------------------------------------------------------------+
+                            |
+                    runs on top of
+                            |
+  +-----------------------------------------------------------------+
+  |                   NVIDIA GPU SILICON                             |
+  |  (SMs, CUDA cores, memory controllers, cache, PCIe/NVLink)     |
+  +-----------------------------------------------------------------+
+
+
+=== COMPARISON TO EXISTING PROCESSOR TYPES ===
+
+                    Core     Programmable   Streaming    Virtual    OS
+                    Count    Per-Core       Execution    Memory     Services
+  ============================================================================
+  CPU               8-128    FULL           no           yes        yes
+  GPU (CUDA)        1000s    SIMT (locked)  no           no         no
+  TPU               systolic FIXED          yes          no         no
+  Cerebras WSE      850K     partial        yes          yes        no
+  -----------------------------------------------------------------------
+  FERRITERC         1000s    FULL (100K     yes (wave    yes (VMM   yes (VFS
+                             streams)       scheduling)  + swap)    IPC, task
+                                                                    queue)
+
+
+=== SCALING BEHAVIOR ===
+
+  The processor adapts to any GPU without code changes:
+
+  +--RTX 3070---+   +--RTX 4090---+   +--H100------+   +--B200------+
+  | 8 GB VRAM   |   | 24 GB VRAM  |   | 80 GB VRAM |   | 192 GB VRAM|
+  | 46 SMs      |   | 128 SMs     |   | 132 SMs    |   | 192 SMs    |
+  | SM 86       |   | SM 89       |   | SM 90      |   | SM 100     |
+  +------+------+   +------+------+   +------+------+  +------+-----+
+         |                 |                 |                |
+         v                 v                 v                v
+  +------+------+   +------+------+   +------+------+  +------+-----+
+  | TLSF pool:  |   | TLSF pool:  |   | TLSF pool:  |  | TLSF pool: |
+  |  ~7 GB      |   |  ~22 GB     |   |  ~75 GB     |  |  ~180 GB   |
+  | Shard waves:|   | Shard waves:|   | Shard waves:|  | Shard waves|
+  |  many small |   |  fewer med  |   |  few large  |  |  minimal   |
+  | Streams:    |   | Streams:    |   | Streams:    |  | Streams:   |
+  |  same 100K  |   |  same 100K  |   |  same 100K  |  |  same 100K |
+  | Alloc time: |   | Alloc time: |   | Alloc time: |  | Alloc time:|
+  |  0.238 us   |   |  0.238 us   |   |  0.238 us   |  |  0.238 us  |
+  +-------------+   +-------------+   +-------------+  +------------+
+
+  Same code. Same binary. Different GPU. Automatic scaling.
+
+  On bigger GPU:
+    - Larger TLSF pool -> bigger shards per wave
+    - Fewer waves needed -> less overhead
+    - More SMs -> more parallel kernels per wave
+    - Alloc latency: unchanged (O(1) is O(1))
+    - Stream count: unchanged (100K is enough for anything)
+

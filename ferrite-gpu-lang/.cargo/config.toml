@@ -14,5 +14,13 @@ rustflags = [
   "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../../external/libtorch/lib",
 ]
 
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+  "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../../../ferrite-os/lib",
+  "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../../ferrite-os/lib",
+  "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../../../external/libtorch/lib",
+  "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../../external/libtorch/lib",
+]
+
 [env]
 LD_LIBRARY_PATH = { value = "../ferrite-os/lib:../external/libtorch/lib:${LD_LIBRARY_PATH}", force = false, relative = true }

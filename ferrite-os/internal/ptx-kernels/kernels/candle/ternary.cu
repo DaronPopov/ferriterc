@@ -32,21 +32,16 @@ extern "C" __global__ void FN_NAME(  \
     } \
 } \
 
-#if __CUDA_ARCH__ >= 800
+// Disabled bf16/f8/f16 — RDC host stub generation fails with __CUDA_ARCH__ guards
+#if 0
 WHERE_OP(__nv_bfloat16, int64_t, where_i64_bf16)
 WHERE_OP(__nv_bfloat16, uint32_t, where_u32_bf16)
 WHERE_OP(__nv_bfloat16, uint8_t, where_u8_bf16)
-#endif
-
-#if __CUDA_ARCH__ >= 890
 WHERE_OP(__nv_fp8_e4m3, int16_t, where_i16_fp8_e4m3)
 WHERE_OP(__nv_fp8_e4m3, int32_t, where_i32_fp8_e4m3)
 WHERE_OP(__nv_fp8_e4m3, int64_t, where_i64_fp8_e4m3)
 WHERE_OP(__nv_fp8_e4m3, uint32_t, where_u32_fp8_e4m3)
 WHERE_OP(__nv_fp8_e4m3, uint8_t, where_u8_fp8_e4m3)
-#endif
-
-#if __CUDA_ARCH__ >= 530
 WHERE_OP(__half, int64_t, where_i64_f16)
 WHERE_OP(__half, uint32_t, where_u32_f16)
 WHERE_OP(__half, uint8_t, where_u8_f16)

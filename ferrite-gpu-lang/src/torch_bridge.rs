@@ -20,6 +20,7 @@ pub fn init_torch_tlsf(device_id: i32, pool_fraction: f32) -> Result<()> {
 }
 
 pub fn torch_cuda_available() -> bool {
+    aten_ptx::ensure_libtorch_cuda_loaded();
     tch::Cuda::is_available()
 }
 

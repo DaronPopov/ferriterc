@@ -15,7 +15,7 @@ ptx-runtime = { path = "../../ferrite-os/ptx-runtime" }
 ptx-sys = { path = "../../ferrite-os/internal/ptx-sys" }
 
 # PyTorch
-tch = "0.16"
+tch = "0.22"
 
 # Utilities
 anyhow = "1.0"

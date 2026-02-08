@@ -19,18 +19,26 @@ pub fn contiguous_strides(shape: &[usize]) -> Strides {
         return strides;
     }
 
-    let mut stride = 1;
+    let mut stride: usize = 1;
     for &dim in shape.iter().rev() {
         strides.push(stride);
-        stride *= dim;
+        stride = stride.saturating_mul(dim);
     }
     strides.reverse();
     strides
 }
 
-/// Calculate the total number of elements from a shape.
+/// Calculate the total number of elements from a shape (unchecked, may overflow).
 pub fn elem_count(shape: &[usize]) -> usize {
     shape.iter().product()
+}
+
+/// Calculate the total number of elements with overflow checking.
+/// Returns Err on overflow instead of silently wrapping.
+pub fn checked_elem_count(shape: &[usize]) -> std::result::Result<usize, &'static str> {
+    shape.iter().try_fold(1usize, |acc, &dim| {
+        acc.checked_mul(dim).ok_or("shape element count overflow")
+    })
 }
 
 /// Check if strides indicate a contiguous tensor.
@@ -49,6 +57,13 @@ pub fn is_contiguous(shape: &[usize], strides: &[usize]) -> bool {
 /// Compute the size in bytes for a tensor with given shape and element size.
 pub fn size_bytes(shape: &[usize], elem_size: usize) -> usize {
     elem_count(shape) * elem_size
+}
+
+/// Compute the size in bytes with overflow checking.
+pub fn checked_size_bytes(shape: &[usize], elem_size: usize) -> std::result::Result<usize, &'static str> {
+    checked_elem_count(shape)?
+        .checked_mul(elem_size)
+        .ok_or("shape size_bytes overflow")
 }
 
 /// Broadcast shapes following NumPy broadcasting rules.

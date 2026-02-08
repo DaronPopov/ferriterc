@@ -410,6 +410,103 @@ impl Graph {
     }
 
     // ========================================================================
+    // Gather/Scatter operations
+    // ========================================================================
+
+    pub fn gather(&mut self, input: TensorId, indices: TensorId, dim: i32) -> TensorId {
+        let idx_shape = self.tensors[&indices].shape.clone();
+        let dtype = self.tensors[&input].dtype;
+        self.add_op(
+            OpCode::Gather,
+            &[input, indices],
+            &idx_shape,
+            dtype,
+            OpAttrs::new().with_reduce_dim(dim),
+        )
+    }
+
+    /// Index-select — select slices along a dimension by index.
+    /// Output shape: input shape with dim replaced by ids_dim_size.
+    pub fn index_select(&mut self, input: TensorId, indices: TensorId, dim: i32) -> TensorId {
+        let idx_shape = self.tensors[&indices].shape.clone();
+        let dtype = self.tensors[&input].dtype;
+        self.add_op(
+            OpCode::IndexSelect,
+            &[input, indices],
+            &idx_shape,
+            dtype,
+            OpAttrs::new().with_reduce_dim(dim),
+        )
+    }
+
+    /// Argsort — returns uint32 indices that sort each row.
+    /// Input viewed as [nrows, ncols]; ascending controls direction.
+    pub fn argsort(&mut self, input: TensorId, dim: i32, ascending: bool) -> TensorId {
+        let shape = self.tensors[&input].shape.clone();
+        self.add_op(
+            OpCode::Argsort,
+            &[input],
+            &shape,
+            DType::U32,
+            OpAttrs::new()
+                .with_reduce_dim(dim)
+                .with_scalar_a(if ascending { 1.0 } else { 0.0 }),
+        )
+    }
+
+    /// Where — element-wise conditional: out[i] = cond[i] ? true_val[i] : false_val[i]
+    pub fn where_cond(&mut self, cond: TensorId, true_val: TensorId, false_val: TensorId) -> TensorId {
+        let shape = self.tensors[&true_val].shape.clone();
+        let dtype = self.tensors[&true_val].dtype;
+        self.add_op(
+            OpCode::Where,
+            &[cond, true_val, false_val],
+            &shape,
+            dtype,
+            OpAttrs::default(),
+        )
+    }
+
+    // ========================================================================
+    // Scan/Prefix operations
+    // ========================================================================
+
+    pub fn cumsum(&mut self, input: TensorId, dim: i32) -> TensorId {
+        let shape = self.tensors[&input].shape.clone();
+        let dtype = self.tensors[&input].dtype;
+        self.add_op(
+            OpCode::CumSum,
+            &[input],
+            &shape,
+            dtype,
+            OpAttrs::new().with_reduce_dim(dim),
+        )
+    }
+
+    // ========================================================================
+    // Sort/Select operations
+    // ========================================================================
+
+    /// TopK — returns the values tensor (dim-th dimension replaced by k).
+    pub fn topk(&mut self, input: TensorId, k: usize, dim: i32, largest: bool) -> TensorId {
+        let mut shape = self.tensors[&input].shape.clone();
+        let ndim = shape.len() as i32;
+        let d = if dim < 0 { ndim + dim } else { dim } as usize;
+        shape[d] = k;
+        let dtype = self.tensors[&input].dtype;
+        self.add_op(
+            OpCode::TopK,
+            &[input],
+            &shape,
+            dtype,
+            OpAttrs::new()
+                .with_reduce_dim(dim)
+                .with_k(k)
+                .with_scalar_a(if largest { 1.0 } else { 0.0 }),
+        )
+    }
+
+    // ========================================================================
     // Softmax
     // ========================================================================
 

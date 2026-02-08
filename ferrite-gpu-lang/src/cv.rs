@@ -238,7 +238,7 @@ fn get_value(values: &[Option<Tensor>], id: CvValueId) -> Result<&Tensor> {
         .ok_or_else(|| anyhow!("invalid cv node reference {}", id.index()))
 }
 
-fn yolo_decode(pred: &Tensor, spec: YoloDecodeSpec) -> Result<Tensor> {
+pub fn yolo_decode(pred: &Tensor, spec: YoloDecodeSpec) -> Result<Tensor> {
     let sz = pred.size();
     if sz.is_empty() {
         return Err(anyhow!("yolo decode expects rank >= 2 tensor"));
@@ -288,7 +288,7 @@ fn yolo_decode(pred: &Tensor, spec: YoloDecodeSpec) -> Result<Tensor> {
     Ok(out.index_select(0, &idx))
 }
 
-fn nms_cpu(dets: &Tensor, spec: NmsSpec) -> Result<Tensor> {
+pub fn nms_cpu(dets: &Tensor, spec: NmsSpec) -> Result<Tensor> {
     let device = dets.device();
     let dets = dets
         .to_device(Device::Cpu)
@@ -350,7 +350,7 @@ fn nms_cpu(dets: &Tensor, spec: NmsSpec) -> Result<Tensor> {
         .to_kind(Kind::Float))
 }
 
-fn iou_xyxy(a: &[f32; 6], b: &[f32; 6]) -> f32 {
+pub fn iou_xyxy(a: &[f32; 6], b: &[f32; 6]) -> f32 {
     let x1 = a[0].max(b[0]);
     let y1 = a[1].max(b[1]);
     let x2 = a[2].min(b[2]);

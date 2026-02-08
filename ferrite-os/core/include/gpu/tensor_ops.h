@@ -99,6 +99,19 @@ typedef enum PTXTensorOpcode {
     PTX_OP_CAST         = 0x91,
     PTX_OP_FILL         = 0x92,
 
+    // Gather/Scatter Operations (0xB0 - 0xB5)
+    PTX_OP_GATHER       = 0xB0,
+    PTX_OP_SCATTER_ADD  = 0xB1,
+    PTX_OP_INDEX_SELECT = 0xB2,
+    PTX_OP_INDEX_ADD    = 0xB3,
+
+    // Scan/Prefix Operations (0xC0 - 0xC5)
+    PTX_OP_CUMSUM       = 0xC0,
+
+    // Sort/Select Operations (0xE0 - 0xEF)
+    PTX_OP_ARGSORT      = 0xE1,
+    PTX_OP_TOPK         = 0xE2,
+
 } PTXTensorOpcode;
 
 // ============================================================================
@@ -206,6 +219,22 @@ void ptx_tensor_reduce_sum_f32(float* in, float* out, size_t outer, size_t reduc
 void ptx_tensor_reduce_mean_f32(float* in, float* out, size_t outer, size_t reduce, size_t inner, cudaStream_t stream);
 void ptx_tensor_reduce_max_f32(float* in, float* out, size_t outer, size_t reduce, size_t inner, cudaStream_t stream);
 void ptx_tensor_reduce_min_f32(float* in, float* out, size_t outer, size_t reduce, size_t inner, cudaStream_t stream);
+
+// Gather/Scatter Operations
+void ptx_tensor_gather_f32(float* in, int32_t* indices, float* out, size_t outer, size_t input_dim_size, size_t idx_dim_size, size_t inner, cudaStream_t stream);
+void ptx_tensor_index_select_f32(float* in, int32_t* ids, float* out, size_t left_size, size_t src_dim_size, size_t ids_dim_size, size_t right_size, cudaStream_t stream);
+void ptx_tensor_scatter_add_f32(int32_t* ids, float* src, float* out, size_t left_size, size_t src_dim_size, size_t dst_dim_size, size_t right_size, cudaStream_t stream);
+
+// Scan/Prefix Operations
+void ptx_tensor_cumsum_f32(float* in, float* out, size_t outer, size_t dim_size, size_t inner, cudaStream_t stream);
+
+// Argsort/Sort Operations
+void ptx_tensor_argsort_f32(float* in, uint32_t* out, size_t nrows, size_t ncols, int ascending, cudaStream_t stream);
+
+// TopK/Selection Operations
+void ptx_tensor_topk_f32(float* in, float* values_out, int32_t* indices_out,
+                          size_t outer, size_t dim_size, size_t inner,
+                          size_t k, int largest, cudaStream_t stream);
 
 // Softmax Operations
 void ptx_tensor_softmax_f32(float* in, float* out, size_t batch, size_t dim, cudaStream_t stream);

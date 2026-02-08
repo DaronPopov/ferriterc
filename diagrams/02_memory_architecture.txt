@@ -1,0 +1,236 @@
+
+FERRITERC MEMORY ARCHITECTURE
+==============================
+How memory is managed from CPU heap through GPU VRAM.
+
+
+=== CPU SIDE ===
+
+  +-----------------------------------------------------------------+
+  |                     CPU PROCESS MEMORY                          |
+  |                                                                 |
+  |  +-----------------------------------------------------------+ |
+  |  |  CpuTlsf  (cpu_tlsf.rs)                                   | |
+  |  |                                                            | |
+  |  |  global_cpu_tlsf() -> &'static Arc<CpuTlsf>               | |
+  |  |    OnceLock singleton, leaked arena (256 MB default)        | |
+  |  |                                                            | |
+  |  |  Inner: rlsf::Tlsf<'static, u32, u32, 20, 16>             | |
+  |  |    FL_INDEX = 20  (first-level bitmap)                     | |
+  |  |    SL_INDEX = 16  (second-level bitmap)                    | |
+  |  |                                                            | |
+  |  |  .allocate(bytes, align) -> NonNull<u8>   [O(1)]           | |
+  |  |  .deallocate(ptr, bytes, align)           [O(1)]           | |
+  |  |                                                            | |
+  |  |  Stats:                                                    | |
+  |  |    arena_bytes / alloc_calls / free_calls                  | |
+  |  |    failed_alloc_calls / current_allocated / peak_allocated | |
+  |  +-----------------------------------------------------------+ |
+  |                          |                                      |
+  |          +---------------v----------------+                     |
+  |          |   CpuStorage<T> enum           |                     |
+  |          |                                |                     |
+  |          |   Vec(Vec<T>)     -- standard  |                     |
+  |          |   Tlsf(TlsfStorage<T>)         |                     |
+  |          |     ptr: NonNull<u8>           |                     |
+  |          |     len: usize                 |                     |
+  |          |     allocator: Arc<CpuTlsf>   |                     |
+  |          +---------------+----------------+                     |
+  |                          |                                      |
+  |          +---------------v----------------+                     |
+  |          |   CpuTensor<T>                 |                     |
+  |          |     shape: Vec<usize>          |                     |
+  |          |     storage: CpuStorage<T>     |                     |
+  |          |                                |                     |
+  |          |  .new(shape, data)             |                     |
+  |          |  .with_allocator(ctx, shape, f) |                    |
+  |          |  .data() -> &[T]              |                     |
+  |          +--------------------------------+                     |
+  +-----------------------------------------------------------------+
+                             |
+                  ToGpu: .to_gpu(ctx)
+                    ptr.copy_from_host(data, size)
+                    cudaMemcpy(..., HostToDevice)
+                             |
+=== GPU SIDE ===             v
+
+  +-----------------------------------------------------------------+
+  |                        GPU VRAM                                 |
+  |                                                                 |
+  |  +-----------------------------------------------------------+ |
+  |  |  TLSF Allocator  (core/memory/)                           | |
+  |  |                                                            | |
+  |  |  Two-Level Segregated Fit:                                 | |
+  |  |    FL_INDEX_MAX = 32  (first-level: log2 size class)       | |
+  |  |    SL_INDEX_COUNT = 16 (second-level: linear subdivision)  | |
+  |  |                                                            | |
+  |  |  TLSFBlock:                                                | |
+  |  |    +--------+------+-------+--------+--------+-------+    | |
+  |  |    |device_ | size | magic | prev_  | next_  | prev_ |    | |
+  |  |    |  ptr   |      |       | phys   | phys   | free  |    | |
+  |  |    +--------+------+-------+--------+--------+-------+    | |
+  |  |    | next_  | hash_| is_   | is_    | is_    | alloc |    | |
+  |  |    | free   | next | free  | last   | pinned | _id   |    | |
+  |  |    +--------+------+-------+--------+--------+-------+    | |
+  |  |    | alloc_file | alloc_line | alloc_timestamp |           | |
+  |  |    +------------+------------+-----------------+           | |
+  |  |                                                            | |
+  |  |  Allocation:    O(1)  ~0.238 us                            | |
+  |  |    1. fl = floor(log2(size))                               | |
+  |  |    2. sl = (size >> (fl - SL_LOG2)) & (SL_COUNT - 1)      | |
+  |  |    3. Search bitmap[fl][sl..] for free block               | |
+  |  |    4. Split if oversized, update free lists                | |
+  |  |    5. Return device_ptr                                    | |
+  |  |                                                            | |
+  |  |  Deallocation:  O(1)                                       | |
+  |  |    1. Mark block free                                      | |
+  |  |    2. Coalesce with prev_phys if free                      | |
+  |  |    3. Coalesce with next_phys if free                      | |
+  |  |    4. Insert merged block into free list                   | |
+  |  |    5. Update bitmaps                                       | |
+  |  +-----------------------------------------------------------+ |
+  |                          |                                      |
+  |  +-----------------------------------------------------------+ |
+  |  |  PTXStableRuntime  (ABI-versioned interface)               | |
+  |  |                                                            | |
+  |  |  ptx_stable_init(config) -> *mut PTXStableRuntime          | |
+  |  |  ptx_stable_alloc(rt, size, &mut ptr) -> status            | |
+  |  |  ptx_stable_free(rt, ptr) -> status                        | |
+  |  |  ptx_stable_retain(rt)   -- increment refcount             | |
+  |  |  ptx_stable_release(rt)  -- decrement, destroy at 0        | |
+  |  +-----------------------------------------------------------+ |
+  |                          |                                      |
+  |  +-----------------------------------------------------------+ |
+  |  |  GPUHotRuntime  (internal runtime)                         | |
+  |  |                                                            | |
+  |  |  gpu_hot_alloc(rt, size) -> *mut c_void                    | |
+  |  |  gpu_hot_free(rt, ptr)                                     | |
+  |  |  gpu_hot_alloc_async(rt, size, stream) -> ptr  [stream-    | |
+  |  |  gpu_hot_free_async(rt, ptr, stream)            ordered]   | |
+  |  |  gpu_hot_poll_deferred(rt, freed_count)                    | |
+  |  |  gpu_hot_owns_ptr(rt, ptr) -> bool                         | |
+  |  +-----------------------------------------------------------+ |
+  +-----------------------------------------------------------------+
+                             |
+                    Wrapped by Rust:
+                             |
+  +-----------------------------------------------------------------+
+  |  GpuPtr  (ptx-runtime/memory.rs)                               |
+  |                                                                 |
+  |    ptr: NonNull<c_void>         -- GPU device pointer           |
+  |    size: usize                  -- allocation size              |
+  |    runtime: Arc<PtxRuntimeInner> -- prevents runtime drop       |
+  |                                                                 |
+  |    impl Drop:                                                   |
+  |      ptx_stable_free(self.runtime.stable, self.ptr)             |
+  |                                                                 |
+  |    .copy_from_host(data, size)   cudaMemcpy(H2D)               |
+  |    .copy_to_host(buf, size)      cudaMemcpy(D2H)               |
+  |    .copy_from_device(src)        cudaMemcpy(D2D)               |
+  |    .zero()                       cudaMemset(0)                 |
+  +-----------------------------------------------------------------+
+                             |
+  +-----------------------------------------------------------------+
+  |  Storage  (ptx-tensor/storage.rs)                              |
+  |                                                                 |
+  |    ptr: Arc<GpuPtr>            -- shared ownership              |
+  |    len: usize                  -- element count                |
+  |    dtype: DType                -- F32/F16/BF16/...             |
+  |    runtime: Arc<PtxRuntime>                                     |
+  |                                                                 |
+  |    Clone = Arc::clone (shallow, shares allocation)              |
+  |    deep_clone() = new alloc + device-to-device copy            |
+  +-----------------------------------------------------------------+
+                             |
+  +-----------------------------------------------------------------+
+  |  Tensor  (ptx-tensor/tensor.rs)                                |
+  |                                                                 |
+  |    storage: Storage            -- shared GPU allocation         |
+  |    shape: SmallVec<[usize; 8]> -- up to 8 dims on stack        |
+  |    strides: SmallVec<[usize; 8]>                               |
+  |    offset: usize               -- element offset into storage  |
+  |    dtype: DType                                                 |
+  |                                                                 |
+  |    Clone = shallow (same storage, same memory)                  |
+  |    100+ ops dispatch to ptx_tensor_*_f32 kernels               |
+  +-----------------------------------------------------------------+
+                             |
+  +-----------------------------------------------------------------+
+  |  GpuTensor<T>  (ferrite-gpu-lang/tensor.rs)                    |
+  |                                                                 |
+  |    shape: Vec<usize>                                            |
+  |    numel: usize                                                 |
+  |    ptr: GpuPtr                 -- owns allocation               |
+  |    _marker: PhantomData<T>     -- type safety                  |
+  |                                                                 |
+  |    .relu(ctx) -> GpuTensor<f32>   via ptx_kernels              |
+  |    ToCpu: .to_cpu() -> CpuTensor<T>                             |
+  +-----------------------------------------------------------------+
+
+
+=== VIRTUAL MEMORY SYSTEM ===
+
+  +-----------------------------------------------------------------+
+  |  VMMState  (ptx-sys, core/os/)                                 |
+  |                                                                 |
+  |  page_table: [VMMPage; 16384]                                   |
+  |    VMM_PAGE_SIZE = 64 KB                                        |
+  |    Total addressable: 16384 * 64 KB = 1 GB virtual              |
+  |                                                                 |
+  |  Each page:                                                     |
+  |    +----------+-----------+----------+---------+                |
+  |    | resident | swapped   | device_  | swap_   |                |
+  |    | (bool)   | (bool)    | ptr      | region  |                |
+  |    +----------+-----------+----------+---------+                |
+  |                                                                 |
+  |  swap_regions: [SwapRegion; 256]                                |
+  |    CPU-side backing store for evicted pages                     |
+  |                                                                 |
+  |  Page fault flow:                                               |
+  |    1. Access non-resident page                                  |
+  |    2. Find victim page (not pinned)                             |
+  |    3. cudaMemcpy victim GPU->CPU (swap out)                     |
+  |    4. cudaMemcpy requested CPU->GPU (swap in)                   |
+  |    5. Update page table                                         |
+  |    6. Increment fault counter                                   |
+  +-----------------------------------------------------------------+
+
+
+=== HOOK SYSTEM (LD_PRELOAD) ===
+
+  +-----------------------------------------------------------------+
+  |  libptx_hook.so  (core/hooks/)                                 |
+  |                                                                 |
+  |  Intercepts:                                                    |
+  |    cudaMalloc(ptr, size)  -->  TLSF alloc                       |
+  |    cudaFree(ptr)          -->  TLSF free                        |
+  |                                                                 |
+  |  Effect: PyTorch / any CUDA library automatically               |
+  |          uses TLSF instead of CUDA's allocator                  |
+  |                                                                 |
+  |  ptx_hook_init(runtime)   -- install intercepts                 |
+  |  ptx_hook_disable()       -- restore originals                  |
+  +-----------------------------------------------------------------+
+
+
+=== OWNERSHIP MODEL ===
+
+  Allocation flows downward, deallocation flows upward via Drop:
+
+  Variable (ptx-autograd)
+    |  owns
+    v
+  Tensor (ptx-tensor)
+    |  owns
+    v
+  Storage (ptx-tensor)
+    |  Arc<GpuPtr>  -- shared, last ref triggers free
+    v
+  GpuPtr (ptx-runtime)
+    |  Drop -> ptx_stable_free()
+    v
+  TLSF Block (core/memory)
+    |  coalesce + return to free list
+    v
+  Physical VRAM
+

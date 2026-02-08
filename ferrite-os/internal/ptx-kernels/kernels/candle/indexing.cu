@@ -307,7 +307,10 @@ extern "C" __global__ void FN_NAME(  \
 ) { scatter_add_f8(ids, inp, out, left_size, src_dim_size, dst_dim_size, right_size); } \
 
 
-#if __CUDA_ARCH__ >= 800
+// Disabled bf16/f8/f16 variants — RDC host stub generation fails with
+// __CUDA_ARCH__ guards.  F32 variants below are sufficient for now.
+#if 0
+// bf16 (arch >= 800)
 IS_OP(__nv_bfloat16, int64_t, is_i64_bf16)
 IS_OP(__nv_bfloat16, uint32_t, is_u32_bf16)
 IS_OP(__nv_bfloat16, uint8_t, is_u8_bf16)
@@ -323,9 +326,7 @@ SA_OP(__nv_bfloat16, uint8_t, sa_u8_bf16)
 S_OP(__nv_bfloat16, int64_t, s_i64_bf16)
 S_OP(__nv_bfloat16, uint32_t, s_u32_bf16)
 S_OP(__nv_bfloat16, uint8_t, s_u8_bf16)
-#endif
-
-#if __CUDA_ARCH__ >= 890
+// f8 (arch >= 890)
 IS_OP(__nv_fp8_e4m3, int16_t, is_i16_f8_e4m3)
 IS_OP(__nv_fp8_e4m3, int32_t, is_i32_f8_e4m3)
 IS_OP(__nv_fp8_e4m3, int64_t, is_i64_f8_e4m3)
@@ -346,9 +347,7 @@ SA_OP_F8(__nv_fp8_e4m3, int32_t, sa_i32_f8_e4m3)
 SA_OP_F8(__nv_fp8_e4m3, int64_t, sa_i64_f8_e4m3)
 SA_OP_F8(__nv_fp8_e4m3, uint32_t, sa_u32_f8_e4m3)
 SA_OP_F8(__nv_fp8_e4m3, uint8_t, sa_u8_f8_e4m3)
-#endif
-
-#if __CUDA_ARCH__ >= 530
+// f16 (arch >= 530)
 IS_OP(__half, int64_t, is_i64_f16)
 IS_OP(__half, uint32_t, is_u32_f16)
 IS_OP(__half, uint8_t, is_u8_f16)

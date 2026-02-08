@@ -83,16 +83,17 @@ For a detailed guide to the repository structure, see [NAVIGATION.md](NAVIGATION
 
 ### Hardware
 - NVIDIA GPU with Compute Capability 7.5 or higher
-  - Turing (RTX 20xx, GTX 16xx)
-  - Ampere (RTX 30xx, A100, A6000)
-  - Ada Lovelace (RTX 40xx)
-  - Hopper (H100)
+  - Turing (RTX 20xx, GTX 16xx) — SM 75
+  - Ampere (RTX 30xx, A100, A6000) — SM 80/86
+  - Ada Lovelace (RTX 40xx) — SM 89
+  - Hopper (H100) — SM 90
+  - Blackwell (B100, B200, GB200) — SM 100/120
 - Minimum 6GB VRAM (8GB+ recommended for large workloads)
 
 ### Software
 - CUDA Toolkit 11.0 or higher
 - Rust 1.70 or higher
-- Linux operating system (tested on Ubuntu 22.04 LTS)
+- Linux operating system (tested on Ubuntu 22.04 LTS; x86_64 and aarch64)
 - GCC/Clang compiler with C++11 support
 
 ## Installation
@@ -113,6 +114,8 @@ Common compute capabilities:
 - **A100 (Ampere)**: `--sm 80`
 - **RTX 20xx (Turing)**: `--sm 75` (2080 Ti, 2070)
 - **H100 (Hopper)**: `--sm 90`
+- **B100/B200 (Blackwell)**: `--sm 100`
+- **GB200 (Blackwell Ultra)**: `--sm 120`
 
 ### Manual Build
 

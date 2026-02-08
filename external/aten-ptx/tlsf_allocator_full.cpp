@@ -1,5 +1,6 @@
 // Complete PyTorch TLSF Allocator Implementation
 // Implements ALL required methods from c10::cuda::CUDACachingAllocator::CUDAAllocator
+// Compatible with PyTorch 2.9.0+
 
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/cuda/CUDAStream.h>
@@ -22,17 +23,24 @@ namespace c10 {
 namespace cuda {
 namespace CUDACachingAllocator {
 
+// Bring Stat/StatType into scope from their 2.9.0 location (c10::CachingAllocator)
+using c10::CachingAllocator::Stat;
+using c10::CachingAllocator::StatType;
+using c10::CachingAllocator::StatArray;
+
 class TLSFAllocator : public CUDAAllocator {
 private:
     int device_id_;
     bool initialized_;
+    bool enabled_;
     std::mutex mutex_;
     std::unordered_map<void*, size_t> allocations_;
     size_t peak_allocated_;
     size_t current_allocated_;
 
 public:
-    TLSFAllocator() : device_id_(0), initialized_(false), peak_allocated_(0), current_allocated_(0) {}
+    TLSFAllocator() : device_id_(0), initialized_(false), enabled_(true),
+                       peak_allocated_(0), current_allocated_(0) {}
 
     // REQUIRED: Basic allocation
     void* raw_alloc(size_t nbytes) override {
@@ -86,6 +94,12 @@ public:
         return initialized_;
     }
 
+    // REQUIRED: Get memory fraction
+    double getMemoryFraction(c10::DeviceIndex device) override {
+        (void)device;
+        return 0.70;  // Report our configured pool fraction
+    }
+
     // REQUIRED: Set memory fraction
     void setMemoryFraction(double fraction, c10::DeviceIndex device) override {
         // Could reinitialize with new fraction, but for now just note it
@@ -93,9 +107,20 @@ public:
         (void)device;
     }
 
-    // REQUIRED: Empty cache (no-op for TLSF)
-    void emptyCache() override {
-        // TLSF doesn't cache
+    // REQUIRED: Enable/disable allocator
+    void enable(bool value) override {
+        enabled_ = value;
+    }
+
+    // REQUIRED: Check if enabled
+    bool isEnabled() const override {
+        return enabled_;
+    }
+
+    // REQUIRED: Empty cache (signature changed in 2.9.0 — now takes MempoolId_t)
+    void emptyCache(MempoolId_t mempool_id = {0, 0}) override {
+        (void)mempool_id;
+        // TLSF doesn't cache — no-op
     }
 
     // REQUIRED: Cache info
@@ -124,9 +149,9 @@ public:
     }
 
     // REQUIRED: Get device stats
-    DeviceStats getDeviceStats(c10::DeviceIndex device) override {
+    c10::CachingDeviceAllocator::DeviceStats getDeviceStats(c10::DeviceIndex device) override {
         (void)device;
-        DeviceStats stats;
+        c10::CachingDeviceAllocator::DeviceStats stats;
 
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -174,8 +199,9 @@ public:
         peak_allocated_ = current_allocated_;
     }
 
-    // REQUIRED: Snapshot
-    SnapshotInfo snapshot() override {
+    // REQUIRED: Snapshot (signature changed in 2.9.0 — now takes MempoolId_t)
+    SnapshotInfo snapshot(MempoolId_t mempool_id = {0, 0}) override {
+        (void)mempool_id;
         return SnapshotInfo();  // Return empty snapshot
     }
 
@@ -202,22 +228,30 @@ public:
         (void)mempool_id;
     }
 
+    // REQUIRED: Share IPC handle (new in 2.9.0)
+    ShareableHandle shareIpcHandle(void* ptr) override {
+        (void)ptr;
+        return ShareableHandle{0, ""};  // IPC not supported
+    }
+
     // REQUIRED: Get IPC device pointer
     std::shared_ptr<void> getIpcDevPtr(std::string handle) override {
         (void)handle;
         return nullptr;  // IPC not supported
     }
 
-    // REQUIRED: Record history
+    // REQUIRED: Record history (signature changed in 2.9.0 — added clearHistory param)
     void recordHistory(
         bool enabled,
         CreateContextFn context_recorder,
         size_t alloc_trace_max_entries,
-        RecordContext when) override {
+        RecordContext when,
+        bool clearHistory) override {
         (void)enabled;
         (void)context_recorder;
         (void)alloc_trace_max_entries;
         (void)when;
+        (void)clearHistory;
         // History recording not implemented
     }
 
@@ -324,7 +358,7 @@ extern "C" {
             // Set the global allocator pointer directly!
             allocator.store(g_tlsf_allocator, std::memory_order_release);
 
-            std::cout << "[aten-ptx] ✅ TLSF allocator registered!" << std::endl;
+            std::cout << "[aten-ptx] TLSF allocator registered!" << std::endl;
             std::cout << "[aten-ptx] All PyTorch CUDA ops now use TLSF!" << std::endl;
         }
     }
