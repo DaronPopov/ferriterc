@@ -6,6 +6,8 @@ shard-streamed execution, and wave-scheduled CUDA streams.
 ## One-Line Install
 
 ```bash
+git clone https://github.com/DaronPopov/ferriterc.git
+cd ferriterc
 ./install.sh
 ```
 
