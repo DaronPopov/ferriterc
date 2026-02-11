@@ -2,16 +2,28 @@
 
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::error::{Error, Result};
+
+/// Tracks total bytes leaked due to failed GPU frees (observable for health monitoring).
+static LEAKED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns the total number of GPU bytes leaked due to failed free operations.
+pub fn leaked_bytes() -> usize {
+    LEAKED_BYTES.load(Ordering::Relaxed)
+}
 
 /// A smart pointer to GPU memory with automatic deallocation.
 ///
 /// When a `GpuPtr` is dropped, it automatically frees the GPU memory
-/// through the PTX-OS runtime.
+/// through the PTX-OS runtime. Optionally tracks which tenant owns this
+/// allocation for multi-tenant VRAM accounting.
 pub struct GpuPtr {
     ptr: NonNull<libc::c_void>,
     size: usize,
     runtime: Arc<PtxRuntimeInner>,
+    /// The tenant that owns this allocation (None for legacy untracked allocations).
+    tenant_id: Option<u64>,
 }
 
 // Internal runtime reference for GpuPtr
@@ -26,9 +38,11 @@ impl Drop for PtxRuntimeInner {
             unsafe {
                 let status = ptx_sys::ptx_stable_release(self.stable);
                 if status != ptx_sys::PTXStableStatus::Ok {
+                    LEAKED_BYTES.fetch_add(0, Ordering::Relaxed); // mark runtime leak event
                     tracing::error!(
                         status = status as i32,
-                        "Failed to release stable runtime"
+                        leaked_bytes = LEAKED_BYTES.load(Ordering::Relaxed),
+                        "Failed to release stable runtime — runtime resources leaked"
                     );
                 }
             }
@@ -54,8 +68,30 @@ impl GpuPtr {
         runtime: Arc<PtxRuntimeInner>,
     ) -> Result<Self> {
         NonNull::new(ptr)
-            .map(|ptr| Self { ptr, size, runtime })
+            .map(|ptr| Self { ptr, size, runtime, tenant_id: None })
             .ok_or(Error::AllocationFailed { size })
+    }
+
+    /// Create a new GpuPtr from a raw pointer with tenant ownership tracking.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`GpuPtr::new`]. Additionally, the caller must ensure that
+    /// tenant VRAM accounting has been updated before calling this.
+    pub(crate) unsafe fn new_for_tenant(
+        ptr: *mut libc::c_void,
+        size: usize,
+        runtime: Arc<PtxRuntimeInner>,
+        tenant_id: u64,
+    ) -> Result<Self> {
+        NonNull::new(ptr)
+            .map(|ptr| Self { ptr, size, runtime, tenant_id: Some(tenant_id) })
+            .ok_or(Error::AllocationFailed { size })
+    }
+
+    /// Get the tenant ID that owns this allocation, if tenant-tracked.
+    pub fn tenant_id(&self) -> Option<u64> {
+        self.tenant_id
     }
 
     /// Get the raw pointer.
@@ -171,10 +207,13 @@ impl Drop for GpuPtr {
         unsafe {
             let status = ptx_sys::ptx_stable_free(self.runtime.stable, self.ptr.as_ptr());
             if status != ptx_sys::PTXStableStatus::Ok {
-                tracing::warn!(
+                LEAKED_BYTES.fetch_add(self.size, Ordering::Relaxed);
+                tracing::error!(
                     status = status as i32,
                     ptr = ?self.ptr.as_ptr(),
-                    "Stable free failed during GpuPtr drop"
+                    size = self.size,
+                    total_leaked = LEAKED_BYTES.load(Ordering::Relaxed),
+                    "Stable free failed during GpuPtr drop — memory leaked"
                 );
             }
         }

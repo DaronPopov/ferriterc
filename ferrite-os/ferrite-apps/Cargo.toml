@@ -32,3 +32,11 @@ path = "src/bin/checkpoint_engine.rs"
 [[bin]]
 name = "gpu_nas"
 path = "src/bin/gpu_nas.rs"
+
+[[bin]]
+name = "gpu_logwatch"
+path = "src/bin/gpu_logwatch.rs"
+
+[[bin]]
+name = "dataflow_proof"
+path = "src/bin/dataflow_proof.rs"

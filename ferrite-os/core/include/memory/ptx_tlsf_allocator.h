@@ -87,6 +87,12 @@ typedef struct PTXTLSFAllocator {
 
     // Allocation ID counter
     uint32_t next_alloc_id;
+
+    // Per-owner memory tracking
+    TLSFOwnerStats owner_stats;
+
+    // Allocation event ring buffer
+    TLSFEventRing event_ring;
 } PTXTLSFAllocator;
 
 // ============================================================================
@@ -106,6 +112,14 @@ void* ptx_tlsf_alloc_debug(PTXTLSFAllocator* allocator, size_t size,
                             const char* file, int line);
 void ptx_tlsf_free(PTXTLSFAllocator* allocator, void* ptr);
 void* ptx_tlsf_realloc(PTXTLSFAllocator* allocator, void* ptr, size_t new_size);
+
+// Per-owner allocation API
+void* ptx_tlsf_alloc_owned(PTXTLSFAllocator* allocator, size_t size, uint32_t owner_id);
+void ptx_tlsf_free_owner(PTXTLSFAllocator* allocator, uint32_t owner_id);
+void ptx_tlsf_get_owner_stats(PTXTLSFAllocator* allocator, TLSFOwnerStats* stats);
+
+// Allocation event API
+void ptx_tlsf_get_events(PTXTLSFAllocator* allocator, TLSFEventRing* ring_out);
 
 // Debug allocation macro
 #ifdef TLSF_DEBUG

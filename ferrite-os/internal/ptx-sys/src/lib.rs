@@ -23,6 +23,7 @@ pub type cudaStream_t = *mut c_void;
 pub type cudaGraph_t = *mut c_void;
 pub type cudaGraphExec_t = *mut c_void;
 pub type cudaError_t = c_int;
+pub type cudaGraphicsResource_t = *mut c_void;
 
 // CUDA driver API context handle
 pub type CUcontext = *mut c_void;
@@ -379,6 +380,7 @@ pub struct TLSFBlock {
     pub alloc_file: *const c_char,
     pub alloc_line: c_int,
     pub alloc_timestamp: u64,
+    pub owner_id: u32,
 }
 
 #[repr(C)]
@@ -538,18 +540,36 @@ pub struct PTXSystemState {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone)]
 pub struct GPUHotStats {
     pub vram_allocated: size_t,
     pub vram_used: size_t,
     pub vram_free: size_t,
     pub gpu_utilization: f32,
+    pub mem_utilization: f32,
+    pub sm_clock_mhz: u32,
+    pub mem_clock_mhz: u32,
+    pub power_w: f32,
+    pub temperature_c: i32,
+    pub nvml_valid: bool,
+    pub hw_ops_per_sec: f32,
+    pub gflops_total: f32,
+    pub cupti_valid: bool,
     pub active_streams: c_int,
+    pub stream_poll_count: c_int,
+    pub stream_busy: [u8; 128],
     pub registered_kernels: c_int,
     pub shm_count: c_int,
     pub total_ops: u64,
     pub avg_latency_us: f32,
     pub watchdog_tripped: bool,
+}
+
+impl Default for GPUHotStats {
+    fn default() -> Self {
+        // SAFETY: all-zeros is valid for this C struct (matches memset behavior)
+        unsafe { std::mem::zeroed() }
+    }
 }
 
 #[repr(C)]
@@ -607,6 +627,55 @@ impl Default for TLSFPoolStats {
             is_healthy: false,
             needs_defrag: false,
         }
+    }
+}
+
+pub const TLSF_MAX_OWNERS: usize = 64;
+pub const TLSF_EVENT_RING_SIZE: usize = 256;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TLSFOwnerUsage {
+    pub owner_id: u32,
+    pub allocated_bytes: size_t,
+    pub block_count: u32,
+}
+
+#[repr(C)]
+#[derive(Clone)]
+pub struct TLSFOwnerStats {
+    pub owners: [TLSFOwnerUsage; TLSF_MAX_OWNERS],
+    pub num_owners: u32,
+}
+
+impl Default for TLSFOwnerStats {
+    fn default() -> Self {
+        unsafe { std::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TLSFAllocEvent {
+    pub timestamp: u64,
+    pub size: size_t,
+    pub owner_id: u32,
+    pub alloc_id: u32,
+    pub event_type: u8,
+    pub _pad: [u8; 3],
+}
+
+#[repr(C)]
+#[derive(Clone)]
+pub struct TLSFEventRing {
+    pub events: [TLSFAllocEvent; TLSF_EVENT_RING_SIZE],
+    pub head: u32,
+    pub count: u32,
+}
+
+impl Default for TLSFEventRing {
+    fn default() -> Self {
+        unsafe { std::mem::zeroed() }
     }
 }
 
@@ -801,6 +870,18 @@ extern "C" {
     pub fn gpu_hot_get_max_allocatable(runtime: *mut GPUHotRuntime) -> size_t;
     pub fn gpu_hot_owns_ptr(runtime: *mut GPUHotRuntime, ptr: *mut c_void) -> bool;
 
+    // Per-owner allocation API
+    pub fn gpu_hot_alloc_owned(
+        runtime: *mut GPUHotRuntime,
+        size: size_t,
+        owner_id: u32,
+    ) -> *mut c_void;
+    pub fn gpu_hot_free_owner(runtime: *mut GPUHotRuntime, owner_id: u32);
+    pub fn gpu_hot_get_owner_stats(runtime: *mut GPUHotRuntime, stats: *mut TLSFOwnerStats);
+
+    // Allocation event log
+    pub fn gpu_hot_get_alloc_events(runtime: *mut GPUHotRuntime, ring_out: *mut TLSFEventRing);
+
     // CUDA Allocation Hook API
     pub fn ptx_hook_init(runtime: *mut GPUHotRuntime, verbose: bool);
     pub fn ptx_hook_disable();
@@ -889,6 +970,12 @@ extern "C" {
 
     // PTX-OS Kernel Boot
     pub fn ptx_os_boot_persistent_kernel(runtime: *mut GPUHotRuntime);
+    pub fn ptx_os_submit_task(
+        runtime: *mut GPUHotRuntime,
+        opcode: u32,
+        priority: u32,
+        args: *mut *mut c_void,
+    ) -> c_int;
 
     // Context Export API
     pub fn gpu_hot_get_context(runtime: *mut GPUHotRuntime) -> *mut c_void;
@@ -915,6 +1002,8 @@ extern "C" {
         faults: *mut u64,
         evictions: *mut u64,
     );
+    pub fn gpu_hot_set_vmm(runtime: *mut GPUHotRuntime, vmm: *mut VMMState);
+    pub fn vmm_evict_for_alloc(vmm: *mut VMMState, needed_size: size_t) -> c_int;
 
     // VFS API
     pub fn vfs_init(runtime: *mut GPUHotRuntime) -> *mut VFSState;
@@ -1750,6 +1839,29 @@ extern "C" {
     pub fn cudaFree(devPtr: *mut c_void) -> cudaError_t;
     pub fn cudaStreamCreate(pStream: *mut cudaStream_t) -> cudaError_t;
     pub fn cudaStreamDestroy(stream: cudaStream_t) -> cudaError_t;
+
+    // CUDA-OpenGL interop (for zero-copy graphics visualization).
+    pub fn cudaGraphicsGLRegisterBuffer(
+        resource: *mut cudaGraphicsResource_t,
+        buffer: u32,
+        flags: u32,
+    ) -> cudaError_t;
+    pub fn cudaGraphicsUnregisterResource(resource: cudaGraphicsResource_t) -> cudaError_t;
+    pub fn cudaGraphicsMapResources(
+        count: c_int,
+        resources: *mut cudaGraphicsResource_t,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+    pub fn cudaGraphicsUnmapResources(
+        count: c_int,
+        resources: *mut cudaGraphicsResource_t,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+    pub fn cudaGraphicsResourceGetMappedPointer(
+        devPtr: *mut *mut c_void,
+        size: *mut size_t,
+        resource: cudaGraphicsResource_t,
+    ) -> cudaError_t;
 }
 
 // cudaError_t constants
@@ -1763,6 +1875,11 @@ pub const cudaMemcpyHostToDevice: c_int = 1;
 pub const cudaMemcpyDeviceToHost: c_int = 2;
 pub const cudaMemcpyDeviceToDevice: c_int = 3;
 pub const cudaMemcpyDefault: c_int = 4;
+
+// cudaGraphicsRegisterFlags
+pub const cudaGraphicsRegisterFlagsNone: u32 = 0;
+pub const cudaGraphicsRegisterFlagsReadOnly: u32 = 1;
+pub const cudaGraphicsRegisterFlagsWriteDiscard: u32 = 2;
 
 // ============================================================================
 // PyTorch Allocator Bridge (experimental)

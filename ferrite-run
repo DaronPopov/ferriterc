@@ -110,6 +110,29 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+resolve_cuda_feature() {
+  if [[ -n "${CUDARC_CUDA_FEATURE:-}" ]]; then
+    echo "$CUDARC_CUDA_FEATURE"
+    return 0
+  fi
+
+  local compat_script="$ROOT/scripts/resolve_cuda_compat.sh"
+  if [[ -x "$compat_script" ]]; then
+    local out
+    out="$("$compat_script" --format env --quiet 2>/dev/null || true)"
+    local k v
+    while IFS='=' read -r k v; do
+      if [[ "$k" == "CUDARC_CUDA_FEATURE" && -n "$v" ]]; then
+        echo "$v"
+        return 0
+      fi
+    done <<< "$out"
+  fi
+
+  echo "cuda-12080"
+  return 0
+}
+
 # Auto-detect --torch if script uses tch, aten_ptx, or anyhow.
 if [[ "$TORCH" == "false" ]]; then
   if grep -qE 'use (tch|aten_ptx|anyhow)' "$SCRIPT_PATH" 2>/dev/null; then
@@ -145,7 +168,9 @@ if [[ "$RELEASE" == "true" ]]; then
   CARGO_CMD+=(--release)
 fi
 if [[ "$TORCH" == "true" ]]; then
-  CARGO_CMD+=(--features torch)
+  CUDA_FEATURE="$(resolve_cuda_feature)"
+  echo "[ferrite-run] selected CUDA feature: ${CUDA_FEATURE}"
+  CARGO_CMD+=(--no-default-features --features "torch,${CUDA_FEATURE}")
 fi
 CARGO_CMD+=(--example "$EXAMPLE_NAME")
 

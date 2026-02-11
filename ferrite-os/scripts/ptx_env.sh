@@ -100,6 +100,29 @@ cuda_lib_dir() {
   fi
 }
 
+cupti_lib_dir() {
+  local base="$1"
+  local arch
+  arch="$(uname -m)"
+  if [ "$arch" = "x86_64" ] && [ -d "$base/targets/x86_64-linux/lib" ]; then
+    if [ -f "$base/targets/x86_64-linux/lib/libcupti.so" ] || [ -f "$base/targets/x86_64-linux/lib/libcupti.so.12" ]; then
+      echo "$base/targets/x86_64-linux/lib"
+      return 0
+    fi
+  fi
+  if [ "$arch" = "aarch64" ] && [ -d "$base/targets/aarch64-linux/lib" ]; then
+    if [ -f "$base/targets/aarch64-linux/lib/libcupti.so" ] || [ -f "$base/targets/aarch64-linux/lib/libcupti.so.12" ]; then
+      echo "$base/targets/aarch64-linux/lib"
+      return 0
+    fi
+  fi
+  if [ -d "$base/extras/CUPTI/lib64" ]; then
+    echo "$base/extras/CUPTI/lib64"
+    return 0
+  fi
+  return 1
+}
+
 nvcc_path() {
   local base="$1"
   if [ -x "$base/bin/nvcc" ]; then
@@ -170,6 +193,7 @@ if [ -z "$CUDA_PATH_RESOLVED" ]; then
 fi
 
 CUDA_LIB="$(cuda_lib_dir "$CUDA_PATH_RESOLVED")"
+CUPTI_LIB="$(cupti_lib_dir "$CUDA_PATH_RESOLVED" || true)"
 NVCC_BIN="$(nvcc_path "$CUDA_PATH_RESOLVED" || true)"
 CUDA_VERSION="$(cuda_version "$NVCC_BIN")"
 
@@ -200,6 +224,7 @@ case "$FORMAT" in
   env)
     echo "CUDA_PATH=$CUDA_PATH_RESOLVED"
     echo "CUDA_LIB=$CUDA_LIB"
+    [ -n "$CUPTI_LIB" ] && echo "CUPTI_LIB=$CUPTI_LIB"
     [ -n "$NVCC_BIN" ] && echo "NVCC=$NVCC_BIN"
     [ -n "$CUDA_VERSION" ] && echo "CUDA_VERSION=$CUDA_VERSION"
     [ -n "$GPU_SM" ] && echo "GPU_SM=$GPU_SM"
@@ -209,6 +234,7 @@ case "$FORMAT" in
   make)
     echo "CUDA_PATH:=$CUDA_PATH_RESOLVED"
     echo "CUDA_LIB:=$CUDA_LIB"
+    [ -n "$CUPTI_LIB" ] && echo "CUPTI_LIB:=$CUPTI_LIB"
     [ -n "$NVCC_BIN" ] && echo "NVCC:=$NVCC_BIN"
     [ -n "$CUDA_VERSION" ] && echo "CUDA_VERSION:=$CUDA_VERSION"
     [ -n "$GPU_SM" ] && echo "GPU_SM:=$GPU_SM"
@@ -217,6 +243,7 @@ case "$FORMAT" in
     ;;
   json)
     printf '{"CUDA_PATH":"%s","CUDA_LIB":"%s"' "$CUDA_PATH_RESOLVED" "$CUDA_LIB"
+    if [ -n "$CUPTI_LIB" ]; then printf ',"CUPTI_LIB":"%s"' "$CUPTI_LIB"; fi
     if [ -n "$NVCC_BIN" ]; then printf ',"NVCC":"%s"' "$NVCC_BIN"; fi
     if [ -n "$CUDA_VERSION" ]; then printf ',"CUDA_VERSION":"%s"' "$CUDA_VERSION"; fi
     if [ -n "$GPU_SM" ]; then printf ',"GPU_SM":"%s"' "$GPU_SM"; fi

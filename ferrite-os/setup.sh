@@ -22,6 +22,95 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+sudo_cmd() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+    else
+        log_error "Need root privileges (or sudo) to install CUPTI"
+        exit 1
+    fi
+}
+
+has_cupti() {
+    if ldconfig -p 2>/dev/null | grep -q 'libcupti\.so'; then
+        return 0
+    fi
+    if [ -f "$CUDA_PATH/targets/x86_64-linux/lib/libcupti.so" ] || \
+       [ -f "$CUDA_PATH/targets/aarch64-linux/lib/libcupti.so" ] || \
+       [ -f "$CUDA_PATH/extras/CUPTI/lib64/libcupti.so" ]; then
+        return 0
+    fi
+    return 1
+}
+
+resolve_cupti_lib_dir() {
+    local arch
+    arch="$(uname -m)"
+    if [ "$arch" = "x86_64" ] && [ -d "$CUDA_PATH/targets/x86_64-linux/lib" ]; then
+        echo "$CUDA_PATH/targets/x86_64-linux/lib"
+        return 0
+    fi
+    if [ "$arch" = "aarch64" ] && [ -d "$CUDA_PATH/targets/aarch64-linux/lib" ]; then
+        echo "$CUDA_PATH/targets/aarch64-linux/lib"
+        return 0
+    fi
+    if [ -d "$CUDA_PATH/extras/CUPTI/lib64" ]; then
+        echo "$CUDA_PATH/extras/CUPTI/lib64"
+        return 0
+    fi
+    return 1
+}
+
+install_cupti_linux() {
+    local mm_dash="$1"
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo_cmd apt-get update -y
+        sudo_cmd apt-get install -y "cuda-cupti-${mm_dash}" || \
+        sudo_cmd apt-get install -y "cuda-cupti-dev-${mm_dash}" || \
+        sudo_cmd apt-get install -y "cuda-command-line-tools-${mm_dash}" || \
+        sudo_cmd apt-get install -y nvidia-cuda-toolkit || return 1
+        return 0
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo_cmd dnf install -y "cuda-cupti-${mm_dash}" "cuda-cupti-devel-${mm_dash}" || \
+        sudo_cmd dnf install -y cuda-toolkit || return 1
+        return 0
+    elif command -v yum >/dev/null 2>&1; then
+        sudo_cmd yum install -y "cuda-cupti-${mm_dash}" "cuda-cupti-devel-${mm_dash}" || \
+        sudo_cmd yum install -y cuda-toolkit || return 1
+        return 0
+    elif command -v pacman >/dev/null 2>&1; then
+        sudo_cmd pacman -Sy --noconfirm cuda cuda-tools || return 1
+        return 0
+    elif command -v zypper >/dev/null 2>&1; then
+        sudo_cmd zypper --non-interactive install "cuda-cupti-${mm_dash}" || \
+        sudo_cmd zypper --non-interactive install cuda-toolkit || return 1
+        return 0
+    fi
+    return 1
+}
+
+ensure_cupti() {
+    if has_cupti; then
+        log_info "CUPTI detected"
+        return 0
+    fi
+    local mm_dash
+    mm_dash="$(echo "$DETECTED_VERSION" | cut -d. -f1,2 | tr '.' '-')"
+    if [ -z "$mm_dash" ] || [ "$mm_dash" = "unknown" ]; then
+        mm_dash="12-0"
+    fi
+    log_warn "CUPTI not found; attempting auto-install for CUDA ${mm_dash}"
+    if install_cupti_linux "$mm_dash" && has_cupti; then
+        log_info "CUPTI installed successfully"
+        return 0
+    fi
+    log_error "Failed to install CUPTI automatically"
+    log_error "Install package: cuda-cupti-${mm_dash} (or cuda-cupti-dev-${mm_dash})"
+    exit 1
+}
+
 # Parse arguments
 CUDA_VERSION=""
 SM=""
@@ -142,6 +231,12 @@ log_info "Found CUDA $DETECTED_VERSION at $CUDA_PATH"
 
 export CUDA_PATH
 export CUDA_HOME="$CUDA_PATH"
+ensure_cupti
+CUPTI_LIB_DIR="$(resolve_cupti_lib_dir || true)"
+if [ -n "$CUPTI_LIB_DIR" ]; then
+    export CUPTI_LIB_DIR
+    export LD_LIBRARY_PATH="$CUPTI_LIB_DIR:${LD_LIBRARY_PATH:-}"
+fi
 
 # Detect or verify GPU compute capability
 if [ -n "$SM" ]; then

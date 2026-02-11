@@ -1,70 +1,62 @@
-# Install Guide
+# Ferrite Install (Simple)
 
-## Quick Start
+Repository:
+`https://github.com/DaronPopov/ferriterc`
+
+## 1) Clone
+
+```bash
+git clone https://github.com/DaronPopov/ferriterc.git
+cd ferriterc
+```
+
+## 2) Install (Auto)
 
 ```bash
 ./install.sh
 ```
 
-If SM auto-detect fails:
+If auto SM detection fails:
 
 ```bash
 ./install.sh --sm 86
 ```
 
-Blackwell GPUs:
+That is enough for most machines.
+
+## 3) Install (Pinned Exact Versions/Links)
+
+Use this when you want full manual control of external binaries.
 
 ```bash
-./install.sh --sm 100   # B100/B200
-./install.sh --sm 120   # GB200
+./install.sh --pins "sm=89,libtorch_url=https://download.pytorch.org/libtorch/cu126/libtorch-shared-with-deps-2.9.0%2Bcu126.zip,libtorch_tag=cu126,cudarc_feature=cuda-12060"
 ```
 
-## Requirements
-
-- Linux (x86_64 or aarch64)
-- NVIDIA GPU + driver
-- CUDA toolkit (`nvcc` in `PATH`)
-- Rust toolchain (`cargo`)
-- `make`, `gcc`
-
-## Behavior
-
-`install.sh` is self-contained in this repo folder:
-
-- builds runtime/libs locally
-- resolves/provisions libtorch automatically
-- builds Torch + XLA integrations
-- validates runtime script execution
-
-No global project files are required outside this directory.
-
-## Optional Environment
-
-- `SM` / `CUDA_SM` / `GPU_SM`: force compute capability
-- `LIBTORCH`: explicit libtorch root
-- `LIBTORCH_VERSION`: default `2.9.0`
-- `LIBTORCH_CUDA_TAG`: auto-detected from nvcc (e.g. `cu126`)
-- `LIBTORCH_URL`: custom download URL
-- `TORCH_CPYTHON_TAG`: default `cp311` (aarch64 wheel selection only)
-
-## aarch64 (Grace Blackwell / Grace Hopper / Jetson)
-
-On aarch64, the installer downloads the PyTorch wheel and extracts C++ libraries
-from it (no Python runtime needed). This works automatically:
+Equivalent explicit flags:
 
 ```bash
-./install.sh --sm 100   # Grace Blackwell GB200
+./install.sh --sm 89 \
+  --libtorch-url "https://download.pytorch.org/libtorch/cu126/libtorch-shared-with-deps-2.9.0%2Bcu126.zip" \
+  --libtorch-tag cu126 \
+  --cudarc-feature cuda-12060
 ```
 
-To override, set `LIBTORCH` to an existing libtorch root or use `LIBTORCH_URL`
-to point at a custom archive.
-
-## Verify Manually
+## 4) Optional: Start on Boot
 
 ```bash
-cd ferrite-gpu-lang
-cargo run --release --example script_runtime
-cargo run --release --features torch --example script_cv_detect
-cd ../external/ferrite-xla
-cargo run --release --example xla_allocator_test
+./install.sh --enable-service
 ```
+
+## 5) Run
+
+```bash
+./ferrite-run finetune_engine/scripting_finetune.rs
+```
+
+## Notes
+
+- Linux only (`x86_64` / `aarch64`)
+- Requires NVIDIA driver + CUDA toolkit (`nvcc` present)
+- Installer auto-handles host build tooling, Rust toolchain, CUPTI, and libtorch provisioning
+- No precompiled Ferrite binaries are fetched; installer builds this repository from source
+- No Python torch install is required (aarch64 path extracts C++ libtorch artifacts only)

@@ -89,6 +89,7 @@ typedef struct TLSFBlock {
     const char* alloc_file;
     int alloc_line;
     uint64_t alloc_timestamp;
+    uint32_t owner_id;
 } TLSFBlock;
 
 // ============================================================================
@@ -354,8 +355,19 @@ typedef struct GPUHotStats {
     size_t vram_allocated;
     size_t vram_used;
     size_t vram_free;
-    float gpu_utilization;
-    int active_streams;
+    float gpu_utilization;      // SM utilization (%)
+    float mem_utilization;      // Memory controller utilization (%)
+    uint32_t sm_clock_mhz;      // Current SM clock
+    uint32_t mem_clock_mhz;     // Current memory clock
+    float power_w;              // Instant power draw
+    int32_t temperature_c;      // GPU temperature
+    bool nvml_valid;            // True when NVML hardware poll succeeded
+    float hw_ops_per_sec;       // CUPTI counter rate (operations/sec)
+    float gflops_total;         // True counter-based GFLOPS when CUPTI is active
+    bool cupti_valid;           // True when CUPTI counters are active
+    int active_streams;         // Count of streams with pending GPU work
+    int stream_poll_count;      // How many streams were polled (min(num_streams, 1024))
+    uint8_t stream_busy[128];   // Bitmask — bit i set = stream i has pending work (up to 1024)
     int registered_kernels;
     int shm_count;
     uint64_t total_ops;
@@ -400,6 +412,44 @@ typedef struct TLSFPoolStats {
     bool is_healthy;
     bool needs_defrag;
 } TLSFPoolStats;
+
+// ============================================================================
+// Per-Owner Memory Tracking
+// ============================================================================
+
+#define TLSF_MAX_OWNERS 64
+
+typedef struct TLSFOwnerUsage {
+    uint32_t owner_id;
+    size_t allocated_bytes;
+    uint32_t block_count;
+} TLSFOwnerUsage;
+
+typedef struct TLSFOwnerStats {
+    TLSFOwnerUsage owners[TLSF_MAX_OWNERS];
+    uint32_t num_owners;
+} TLSFOwnerStats;
+
+// ============================================================================
+// Allocation Event Ring Buffer
+// ============================================================================
+
+#define TLSF_EVENT_RING_SIZE 256
+
+typedef struct TLSFAllocEvent {
+    uint64_t timestamp;
+    size_t size;
+    uint32_t owner_id;
+    uint32_t alloc_id;
+    uint8_t event_type;   // 0=alloc, 1=free, 2=realloc
+    uint8_t _pad[3];
+} TLSFAllocEvent;
+
+typedef struct TLSFEventRing {
+    TLSFAllocEvent events[TLSF_EVENT_RING_SIZE];
+    uint32_t head;    // next write position (mod RING_SIZE)
+    uint32_t count;   // total events ever written
+} TLSFEventRing;
 
 // ============================================================================
 // TLSF Health Report
@@ -491,6 +541,14 @@ void gpu_hot_poll_deferred(GPUHotRuntime* runtime, int max_drain);
 bool gpu_hot_can_allocate(GPUHotRuntime* runtime, size_t size);
 size_t gpu_hot_get_max_allocatable(GPUHotRuntime* runtime);
 bool gpu_hot_owns_ptr(GPUHotRuntime* runtime, void* ptr);
+
+// Per-owner allocation API
+void* gpu_hot_alloc_owned(GPUHotRuntime* runtime, size_t size, uint32_t owner_id);
+void gpu_hot_free_owner(GPUHotRuntime* runtime, uint32_t owner_id);
+void gpu_hot_get_owner_stats(GPUHotRuntime* runtime, TLSFOwnerStats* stats);
+
+// Allocation event log
+void gpu_hot_get_alloc_events(GPUHotRuntime* runtime, TLSFEventRing* ring_out);
 
 // ============================================================================
 // CUDA Allocation Hook API (intercepts cuMemAlloc/cudaMalloc)
@@ -593,6 +651,7 @@ void  gpu_hot_export_context(GPUHotRuntime* runtime);
 // ============================================================================
 
 void ptx_os_boot_persistent_kernel(GPUHotRuntime* runtime);
+int ptx_os_submit_task(GPUHotRuntime* runtime, uint32_t opcode, uint32_t priority, void* args[PTX_MAX_TASK_ARGS]);
 
 // ============================================================================
 // VMM API
@@ -608,6 +667,8 @@ void vmm_pin_page(VMMState* vmm, void* addr);
 void vmm_unpin_page(VMMState* vmm, void* addr);
 void vmm_get_stats(VMMState* vmm, uint64_t* resident, uint64_t* swapped,
                    uint64_t* faults, uint64_t* evictions);
+void gpu_hot_set_vmm(GPUHotRuntime* runtime, VMMState* vmm);
+int vmm_evict_for_alloc(VMMState* vmm, size_t needed_size);
 
 // ============================================================================
 // VFS API

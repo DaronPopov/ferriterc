@@ -9,6 +9,8 @@ use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 
+mod policy;
+
 static INIT: Once = Once::new();
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static GLOBAL_RUNTIME: OnceLock<Arc<PtxRuntime>> = OnceLock::new();
@@ -29,13 +31,7 @@ fn runtime() -> Option<&'static Arc<PtxRuntime>> {
 #[unsafe(no_mangle)]
 pub extern "C" fn tlsf_init_ffi(device_id: i32) {
     INIT.call_once(|| {
-        let cfg = PTXStableConfig {
-            max_streams: 8,
-            pool_fraction: 0.70,
-            enable_pool_health: 1,
-            enable_leak_detection: 1,
-            ..Default::default()
-        };
+        let cfg: PTXStableConfig = policy::XlaTlsfPolicy::default().stable_config();
 
         match PtxRuntime::with_stable_config(device_id, Some(cfg)) {
             Ok(rt) => {

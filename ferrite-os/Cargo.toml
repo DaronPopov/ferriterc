@@ -10,6 +10,7 @@ members = [
     "internal/ptx-autograd",
     "internal/ptx-compiler",
     "internal/ptx-daemon",
+    "internal/ptx-renderd",
     "internal/ptx-runner",
     "internal/ptx-kernels",
 ]

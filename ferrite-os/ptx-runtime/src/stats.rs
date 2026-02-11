@@ -1,6 +1,7 @@
 //! Runtime statistics and operation counting.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use crate::telemetry::{DiagnosticEvent, DiagnosticStatus};
 
 /// Global operation counter for tracking tensor operations.
 static OPS_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -27,4 +28,26 @@ pub fn get_ops_count() -> u64 {
 #[inline]
 pub fn reset_ops_count() {
     OPS_COUNTER.store(0, Ordering::Relaxed);
+}
+
+/// Emit a health diagnostic based on whether operations are flowing.
+pub fn ops_health_diagnostic() -> DiagnosticEvent {
+    let ops = get_ops_count();
+    if ops == 0 {
+        DiagnosticEvent::new(
+            "runtime.stats",
+            DiagnosticStatus::WARN,
+            "RT-STATS-0001",
+            "operation counter is zero",
+            "verify workload dispatch path if this is unexpected",
+        )
+    } else {
+        DiagnosticEvent::new(
+            "runtime.stats",
+            DiagnosticStatus::PASS,
+            "RT-STATS-0002",
+            format!("operation counter active: {}", ops),
+            "none",
+        )
+    }
 }

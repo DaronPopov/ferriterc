@@ -38,12 +38,18 @@ pub enum LangError {
     },
     #[error("transfer error: {message}")]
     Transfer { message: String },
+    #[cfg(feature = "capture")]
+    #[error("capture error: {message}")]
+    Capture { message: String },
+    #[cfg(feature = "capture")]
+    #[error("camera not opened: {reason}")]
+    CameraNotOpened { reason: String },
     #[error(transparent)]
     Runtime(#[from] ptx_runtime::Error),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ValueId(usize);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ValueId(pub(crate) usize);
 
 impl ValueId {
     pub fn index(self) -> usize {
@@ -51,7 +57,7 @@ impl ValueId {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Op {
     Input { shape: Vec<usize> },
     Relu(ValueId),
@@ -59,19 +65,31 @@ pub enum Op {
     Sigmoid(ValueId),
     Add { lhs: ValueId, rhs: ValueId },
     Mul { lhs: ValueId, rhs: ValueId },
+    Sub { lhs: ValueId, rhs: ValueId },
+    Div { lhs: ValueId, rhs: ValueId },
+    FillLike { value: f64, like: ValueId },
     CumSum { input: ValueId, dim: usize },
     TopK { input: ValueId, k: usize, dim: usize, largest: bool },
+    // ── fused ops (graph optimizer output) ─────────────────
+    /// relu(add(lhs, rhs)) — one output buffer, two kernel launches.
+    FusedReluAdd { lhs: ValueId, rhs: ValueId },
+    /// relu(mul(lhs, rhs))
+    FusedReluMul { lhs: ValueId, rhs: ValueId },
+    /// sigmoid(add(lhs, rhs))
+    FusedSigmoidAdd { lhs: ValueId, rhs: ValueId },
+    /// tanh(add(lhs, rhs))
+    FusedTanhAdd { lhs: ValueId, rhs: ValueId },
 }
 
-#[derive(Clone, Debug)]
-struct Node {
-    op: Op,
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Node {
+    pub(crate) op: Op,
 }
 
 #[derive(Clone, Debug)]
 pub struct Program {
-    nodes: Vec<Node>,
-    output: Option<ValueId>,
+    pub(crate) nodes: Vec<Node>,
+    pub(crate) output: Option<ValueId>,
 }
 
 impl Program {
@@ -107,6 +125,18 @@ impl Program {
 
     pub fn mul(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId {
         self.push(Op::Mul { lhs, rhs })
+    }
+
+    pub fn sub(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId {
+        self.push(Op::Sub { lhs, rhs })
+    }
+
+    pub fn div(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId {
+        self.push(Op::Div { lhs, rhs })
+    }
+
+    pub fn fill_like(&mut self, value: f64, like: ValueId) -> ValueId {
+        self.push(Op::FillLike { value, like })
     }
 
     pub fn cumsum(&mut self, input: ValueId, dim: usize) -> ValueId {
@@ -161,14 +191,22 @@ impl Program {
                     let n = numel(&shape);
                     (shape, n)
                 }
-                Op::Add { lhs, rhs } | Op::Mul { lhs, rhs } => {
+                Op::Add { lhs, rhs }
+                | Op::Mul { lhs, rhs }
+                | Op::Sub { lhs, rhs }
+                | Op::Div { lhs, rhs }
+                | Op::FusedReluAdd { lhs, rhs }
+                | Op::FusedReluMul { lhs, rhs }
+                | Op::FusedSigmoidAdd { lhs, rhs }
+                | Op::FusedTanhAdd { lhs, rhs } => {
                     let lhs_shape = get_shape(&shapes, *lhs)?;
                     let rhs_shape = get_shape(&shapes, *rhs)?;
                     if lhs_shape != rhs_shape {
-                        let op_name = if matches!(&node.op, Op::Add { .. }) {
-                            "add"
-                        } else {
-                            "mul"
+                        let op_name = match &node.op {
+                            Op::Add { .. } | Op::FusedReluAdd { .. } | Op::FusedSigmoidAdd { .. } | Op::FusedTanhAdd { .. } => "add",
+                            Op::Sub { .. } => "sub",
+                            Op::Div { .. } => "div",
+                            _ => "mul",
                         };
                         return Err(LangError::ShapeMismatch {
                             op: op_name,
@@ -178,6 +216,11 @@ impl Program {
                     }
                     let n = numel(&lhs_shape);
                     (lhs_shape, n)
+                }
+                Op::FillLike { like, .. } => {
+                    let shape = get_shape(&shapes, *like)?;
+                    let n = numel(&shape);
+                    (shape, n)
                 }
             };
 
@@ -207,7 +250,7 @@ impl Default for Program {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CompiledProgram {
     nodes: Vec<Node>,
     shapes: Vec<Vec<usize>>,
@@ -226,6 +269,49 @@ impl CompiledProgram {
 
     pub fn output_shape(&self) -> &[usize] {
         &self.shapes[self.output.index()]
+    }
+
+    /// Number of nodes in the computation graph.
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Total elements across all intermediate tensors.
+    pub fn total_elements(&self) -> usize {
+        self.numels.iter().sum()
+    }
+
+    /// Number of input tensors.
+    pub fn input_count(&self) -> usize {
+        self.input_ids.len()
+    }
+
+    /// Summary of operations in the graph: op name → count.
+    pub fn op_summary(&self) -> Vec<(&'static str, usize)> {
+        let mut counts = std::collections::HashMap::new();
+        for node in &self.nodes {
+            let name = match &node.op {
+                Op::Input { .. } => "input",
+                Op::Relu(_) => "relu",
+                Op::Tanh(_) => "tanh",
+                Op::Sigmoid(_) => "sigmoid",
+                Op::Add { .. } => "add",
+                Op::Mul { .. } => "mul",
+                Op::Sub { .. } => "sub",
+                Op::Div { .. } => "div",
+                Op::FillLike { .. } => "fill_like",
+                Op::CumSum { .. } => "cumsum",
+                Op::TopK { .. } => "topk",
+                Op::FusedReluAdd { .. } => "fused_relu_add",
+                Op::FusedReluMul { .. } => "fused_relu_mul",
+                Op::FusedSigmoidAdd { .. } => "fused_sigmoid_add",
+                Op::FusedTanhAdd { .. } => "fused_tanh_add",
+            };
+            *counts.entry(name).or_insert(0usize) += 1;
+        }
+        let mut out: Vec<_> = counts.into_iter().collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1));
+        out
     }
 }
 
@@ -283,6 +369,35 @@ impl GpuLangRuntime {
         runtime.export_for_hook();
         runtime.export_context();
         Ok(Self { runtime })
+    }
+
+    pub fn from_runtime(runtime: Arc<PtxRuntime>) -> Self {
+        Self { runtime }
+    }
+
+    pub fn with_max_streams(device_id: i32, max_streams: u32) -> Result<Self> {
+        let config = ptx_runtime::PTXStableConfig {
+            struct_size: std::mem::size_of::<ptx_runtime::PTXStableConfig>() as u32,
+            abi_version: ptx_runtime::PTX_STABLE_ABI_VERSION,
+            flags: 0,
+            device_id,
+            pool_fraction: 0.70,
+            fixed_pool_size: 0,
+            reserve_vram: 256 * 1024 * 1024,
+            max_streams,
+            quiet_init: 0,
+            enable_leak_detection: 1,
+            enable_pool_health: 1,
+            _reserved0: 0,
+        };
+        let runtime = Arc::new(PtxRuntime::with_stable_config(device_id, Some(config))?);
+        runtime.export_for_hook();
+        runtime.export_context();
+        Ok(Self { runtime })
+    }
+
+    pub fn num_streams(&self) -> usize {
+        self.runtime.num_streams()
     }
 
     pub fn runtime(&self) -> &Arc<PtxRuntime> {
@@ -421,6 +536,52 @@ impl GpuLangRuntime {
                     }
                     out
                 }
+                Op::Sub { lhs, rhs } => {
+                    let l = slots[lhs.index()]
+                        .as_ref()
+                        .ok_or(LangError::InvalidNodeRef(lhs.index()))?;
+                    let r = slots[rhs.index()]
+                        .as_ref()
+                        .ok_or(LangError::InvalidNodeRef(rhs.index()))?;
+                    let out = self.runtime.alloc(bytes)?;
+                    unsafe {
+                        binary_f32::sub(
+                            l.as_ptr_typed::<f32>(),
+                            r.as_ptr_typed::<f32>(),
+                            out.as_ptr_typed::<f32>(),
+                            numel,
+                            stream.raw(),
+                        );
+                    }
+                    out
+                }
+                Op::Div { lhs, rhs } => {
+                    let l = slots[lhs.index()]
+                        .as_ref()
+                        .ok_or(LangError::InvalidNodeRef(lhs.index()))?;
+                    let r = slots[rhs.index()]
+                        .as_ref()
+                        .ok_or(LangError::InvalidNodeRef(rhs.index()))?;
+                    let out = self.runtime.alloc(bytes)?;
+                    unsafe {
+                        binary_f32::div(
+                            l.as_ptr_typed::<f32>(),
+                            r.as_ptr_typed::<f32>(),
+                            out.as_ptr_typed::<f32>(),
+                            numel,
+                            stream.raw(),
+                        );
+                    }
+                    out
+                }
+                Op::FillLike { value, .. } => {
+                    let out = self.runtime.alloc(bytes)?;
+                    let host = vec![*value as f32; numel];
+                    unsafe {
+                        out.copy_from_host(host.as_ptr() as *const c_void, bytes)?;
+                    }
+                    out
+                }
                 Op::CumSum { input, dim } => {
                     let inp = slots[input.index()]
                         .as_ref()
@@ -469,6 +630,48 @@ impl GpuLangRuntime {
                     }
                     out
                 }
+
+                // ── fused ops: binary + unary in one buffer ──
+                Op::FusedReluAdd { lhs, rhs } => {
+                    let l = slots[lhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(lhs.index()))?;
+                    let r = slots[rhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(rhs.index()))?;
+                    let out = self.runtime.alloc(bytes)?;
+                    unsafe {
+                        binary_f32::add(l.as_ptr_typed::<f32>(), r.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
+                        unary_f32::relu(out.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
+                    }
+                    out
+                }
+                Op::FusedReluMul { lhs, rhs } => {
+                    let l = slots[lhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(lhs.index()))?;
+                    let r = slots[rhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(rhs.index()))?;
+                    let out = self.runtime.alloc(bytes)?;
+                    unsafe {
+                        binary_f32::mul(l.as_ptr_typed::<f32>(), r.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
+                        unary_f32::relu(out.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
+                    }
+                    out
+                }
+                Op::FusedSigmoidAdd { lhs, rhs } => {
+                    let l = slots[lhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(lhs.index()))?;
+                    let r = slots[rhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(rhs.index()))?;
+                    let out = self.runtime.alloc(bytes)?;
+                    unsafe {
+                        binary_f32::add(l.as_ptr_typed::<f32>(), r.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
+                        unary_f32::sigmoid(out.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
+                    }
+                    out
+                }
+                Op::FusedTanhAdd { lhs, rhs } => {
+                    let l = slots[lhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(lhs.index()))?;
+                    let r = slots[rhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(rhs.index()))?;
+                    let out = self.runtime.alloc(bytes)?;
+                    unsafe {
+                        binary_f32::add(l.as_ptr_typed::<f32>(), r.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
+                        unary_f32::tanh(out.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
+                    }
+                    out
+                }
             };
 
             slots[i] = Some(out_ptr);
@@ -514,21 +717,48 @@ fn numel(shape: &[usize]) -> usize {
     shape.iter().product()
 }
 
+// ── Modules ──────────────────────────────────────────────────────
+
 pub use ferrite_apps as apps;
-pub mod context;
-pub mod cpu_tlsf;
-pub mod tensor;
-#[cfg(feature = "torch")]
-pub use context::gpu_anyhow;
-pub use context::{cpu, gpu, CpuCtx, GpuCtx};
-pub use cpu_tlsf::CpuTlsfStats;
-pub use tensor::{CpuTensor, GpuTensor, ToCpu, ToGpu};
+
+pub mod runtime;
+pub mod jit;
 
 #[cfg(feature = "torch")]
-pub mod cv;
+pub mod torch;
+
+#[cfg(feature = "capture")]
+pub mod capture;
+
+// ── Backwards-compatible module re-exports ───────────────────────
+//
+// Existing code using `ferrite_gpu_lang::context::*`,
+// `ferrite_gpu_lang::tensor::*`, etc. continues to work.
+
+pub use runtime::context;
+pub use runtime::cpu_tlsf;
+pub use runtime::tensor;
 
 #[cfg(feature = "torch")]
-pub mod dataflow;
-
+pub use torch::cv;
 #[cfg(feature = "torch")]
-pub mod torch_bridge;
+pub use torch::dataflow;
+#[cfg(feature = "torch")]
+pub use torch::bridge as torch_bridge;
+
+// ── Type-level re-exports ────────────────────────────────────────
+
+pub use runtime::context::{cpu, gpu, fer, CpuCtx, FerCtx, FerStats, GpuCtx, HasAllocator, HasRuntime};
+#[cfg(feature = "torch")]
+pub use runtime::context::{gpu_anyhow, fer_anyhow};
+pub use runtime::cpu_tlsf::CpuTlsfStats;
+pub use runtime::tensor::{CpuTensor, GpuTensor, ToCpu, ToGpu};
+
+#[cfg(feature = "capture")]
+pub use capture::camera::{Camera, CameraConfig, CameraSource};
+#[cfg(feature = "capture")]
+pub use capture::frame::{Frame, FrameMeta, FramePool, PixelFormat};
+#[cfg(feature = "capture")]
+pub use capture::convert::{frame_to_host_tensor, Normalize};
+#[cfg(all(feature = "capture", feature = "torch"))]
+pub use capture::bridge::FrameToTensor;

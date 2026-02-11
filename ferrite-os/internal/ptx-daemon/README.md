@@ -33,6 +33,11 @@ ferrite-daemon is a persistent system service that manages the Ferrite-OS GPU ru
 - **Health Checks**: Health endpoint for monitoring
 - **Live Watch Mode**: Real-time metrics display
 
+### TUI Visual System
+
+- **Visual Design Guide**: `internal/ptx-daemon/TUI_VISUAL_DESIGN_GUIDE.md`
+- **Style Review Checklist**: `internal/ptx-daemon/TUI_STYLE_REVIEW_CHECKLIST.md`
+
 ### Security
 
 - **Unix Socket Communication**: Local-only IPC

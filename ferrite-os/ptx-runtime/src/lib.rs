@@ -28,6 +28,8 @@ pub mod error;
 pub mod stats;
 pub mod telemetry;
 pub mod resilience;
+pub mod scheduler;
+pub mod job;
 
 pub use device::Device;
 pub use runtime::PtxRuntime;

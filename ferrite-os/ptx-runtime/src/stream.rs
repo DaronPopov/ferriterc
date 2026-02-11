@@ -67,10 +67,12 @@ impl StreamPool {
     }
 
     /// Get the next stream in round-robin order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pool is empty. An empty pool is a fatal configuration error.
     pub fn next(&self) -> Stream {
-        if self.streams.is_empty() {
-            return Stream::new(std::ptr::null_mut(), -1);
-        }
+        assert!(!self.streams.is_empty(), "StreamPool::next() called on empty pool");
         let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.streams.len();
         self.streams[idx]
     }
@@ -96,6 +98,36 @@ impl StreamPool {
             stream.synchronize()?;
         }
         Ok(())
+    }
+
+    /// Acquire the next stream on behalf of a tenant, checking the tenant's stream quota.
+    ///
+    /// This performs a quota check against the tenant's current active stream count
+    /// and quota limit. If the quota allows, it returns the next round-robin stream.
+    ///
+    /// # Arguments
+    ///
+    /// * `tenant_active_streams` - Current number of streams held by the tenant.
+    /// * `tenant_max_streams` - Maximum number of streams the tenant is allowed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::QuotaExceeded` if the tenant has reached its stream limit.
+    pub fn acquire_for_tenant(
+        &self,
+        tenant_id: u64,
+        tenant_active_streams: u64,
+        tenant_max_streams: u64,
+    ) -> Result<Stream> {
+        if tenant_active_streams >= tenant_max_streams {
+            return Err(Error::QuotaExceeded {
+                tenant_id,
+                resource: "streams".to_string(),
+                limit: tenant_max_streams,
+                current: tenant_active_streams,
+            });
+        }
+        Ok(self.next())
     }
 }
 

@@ -424,3 +424,27 @@ void vmm_print_page_table(VMMState* vmm) {
     }
     printf("====================================\n\n");
 }
+
+// ============================================================================
+// VMM Eviction for Allocation Pressure
+// ============================================================================
+
+int vmm_evict_for_alloc(VMMState* vmm, size_t needed_size) {
+    if (!vmm) return -1;
+
+    size_t freed = 0;
+    while (freed < needed_size) {
+        VMMPageEntry* lru = vmm_find_lru_page(vmm);
+        if (!lru) {
+            return (freed >= needed_size) ? 0 : -1;
+        }
+
+        size_t page_size = lru->size;
+        if (vmm_swap_out(vmm, lru->original_addr) != 0) {
+            return -1;
+        }
+        freed += page_size;
+    }
+
+    return 0;
+}

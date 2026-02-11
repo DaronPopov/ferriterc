@@ -5,6 +5,79 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticStatus {
+    PASS,
+    WARN,
+    FAIL,
+}
+
+impl DiagnosticStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PASS => "PASS",
+            Self::WARN => "WARN",
+            Self::FAIL => "FAIL",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagnosticEvent {
+    pub component: &'static str,
+    pub status: DiagnosticStatus,
+    pub code: &'static str,
+    pub summary: String,
+    pub remediation: String,
+}
+
+impl DiagnosticEvent {
+    pub fn new(
+        component: &'static str,
+        status: DiagnosticStatus,
+        code: &'static str,
+        summary: impl Into<String>,
+        remediation: impl Into<String>,
+    ) -> Self {
+        Self {
+            component,
+            status,
+            code,
+            summary: summary.into(),
+            remediation: remediation.into(),
+        }
+    }
+}
+
+pub fn emit_diag(diag: &DiagnosticEvent) {
+    match diag.status {
+        DiagnosticStatus::PASS => tracing::info!(
+            component = diag.component,
+            status = diag.status.as_str(),
+            code = diag.code,
+            summary = %diag.summary,
+            remediation = %diag.remediation,
+            "diagnostic"
+        ),
+        DiagnosticStatus::WARN => tracing::warn!(
+            component = diag.component,
+            status = diag.status.as_str(),
+            code = diag.code,
+            summary = %diag.summary,
+            remediation = %diag.remediation,
+            "diagnostic"
+        ),
+        DiagnosticStatus::FAIL => tracing::error!(
+            component = diag.component,
+            status = diag.status.as_str(),
+            code = diag.code,
+            summary = %diag.summary,
+            remediation = %diag.remediation,
+            "diagnostic"
+        ),
+    }
+}
+
 /// Global metrics counters
 pub struct Metrics {
     pub allocations: AtomicU64,
@@ -148,7 +221,13 @@ pub fn init() {
         .with(fmt_layer)
         .init();
 
-    tracing::info!("Ferrite-OS telemetry initialized");
+    emit_diag(&DiagnosticEvent::new(
+        "runtime.telemetry",
+        DiagnosticStatus::PASS,
+        "RT-TELEM-0001",
+        "Ferrite-OS telemetry initialized",
+        "none",
+    ));
 }
 
 /// Initialize telemetry with file logging
@@ -184,7 +263,13 @@ pub fn init_with_file(log_dir: &str) -> std::io::Result<()> {
         .with(file_layer)
         .init();
 
-    tracing::info!(log_dir, "Ferrite-OS telemetry initialized with file logging");
+    emit_diag(&DiagnosticEvent::new(
+        "runtime.telemetry",
+        DiagnosticStatus::PASS,
+        "RT-TELEM-0002",
+        format!("Ferrite-OS telemetry initialized with file logging at {}", log_dir),
+        "none",
+    ));
     Ok(())
 }
 

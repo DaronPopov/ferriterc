@@ -56,7 +56,14 @@ __global__ void ptx_os_kernel(PTXSystemState* state) {
                         case 0: // NOP
                             break;
                             
-                        case 1: // COMPUTE
+                        case 1: // COMPUTE - dispatch kernel via function pointer in args[0]
+                            {
+                                typedef void (*compute_fn_t)(void**, int);
+                                compute_fn_t fn = (compute_fn_t)task->args[0];
+                                if (fn) {
+                                    fn<<<1, 256>>>(&task->args[1], task->priority);
+                                }
+                            }
                             break;
                             
                         case 3: // SHUTDOWN
@@ -65,6 +72,8 @@ __global__ void ptx_os_kernel(PTXSystemState* state) {
 
                         case 4: // SWAP_IN (Virtual Memory Manager)
                             printf("[GPU-VMM] Swapping task_id %d back to Resident VRAM\n", task->task_id);
+                            // Signal host to perform VMM swap via signal_mask bit 2
+                            atomicOr((unsigned long long*)&state->signal_mask, 0x4ULL);
                             break;
 
                         case 5: // VFS_MOUNT (Tensor Filesystem)

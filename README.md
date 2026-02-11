@@ -1,9 +1,9 @@
 # ferriterc
 
-Self-contained GPU compute runtime with O(1) TLSF memory management,
-shard-streamed execution, and wave-scheduled CUDA streams.
+`ferriterc` is a CUDA-focused runtime and tooling stack built in Rust/CUDA.
+It builds from source in this repository and links to external libtorch binaries.
 
-## One-Line Install
+## Install
 
 ```bash
 git clone https://github.com/DaronPopov/ferriterc.git
@@ -11,14 +11,51 @@ cd ferriterc
 ./install.sh
 ```
 
-Optional explicit SM:
+## Requirements
+
+- Linux (`x86_64` or `aarch64`)
+- NVIDIA GPU driver
+- CUDA toolkit (`nvcc` available in `PATH`)
+
+`install.sh` handles:
+- host build tools (when missing, via distro package manager)
+- Rust toolchain bootstrap (when missing)
+- CUPTI installation attempt (Linux package managers)
+- libtorch provisioning and extraction
+- source builds only (no precompiled ferrite binaries)
+
+No Python torch install is required.
+
+## Install Options
+
+Set SM explicitly:
 
 ```bash
-./install.sh --sm 86     # Ampere
-./install.sh --sm 100    # Blackwell
+./install.sh --sm 86
 ```
 
-Supported platforms: x86_64 and aarch64 Linux. Both auto-provision libtorch.
+Enable boot-time daemon service:
+
+```bash
+./install.sh --enable-service
+```
+
+Pin exact external artifacts/features:
+
+```bash
+./install.sh --pins "sm=89,libtorch_url=https://download.pytorch.org/libtorch/cu126/libtorch-shared-with-deps-2.9.0%2Bcu126.zip,libtorch_tag=cu126,cudarc_feature=cuda-12060"
+```
+
+Equivalent explicit flags:
+
+```bash
+./install.sh --sm 89 \
+  --libtorch-url "https://download.pytorch.org/libtorch/cu126/libtorch-shared-with-deps-2.9.0%2Bcu126.zip" \
+  --libtorch-tag cu126 \
+  --cudarc-feature cuda-12060
+```
+
+CUDA compatibility is selected from `compat.toml` based on detected toolkit version.
 
 ## What `install.sh` does
 
@@ -43,7 +80,7 @@ Supported platforms: x86_64 and aarch64 Linux. Both auto-provision libtorch.
 
 ```
 ferriterc/
-  ferrite-os/            GPU OS runtime (TLSF allocator, 100K streams, IPC)
+  ferrite-os/            GPU runtime core (TLSF allocator, stream/runtime plumbing, IPC)
   ferrite-gpu-lang/      Rust GPU scripting layer
   external/
     aten-ptx/            PyTorch ATen TLSF allocator bridge
@@ -51,7 +88,7 @@ ferriterc/
     ferrite-torch/       Torch integration examples
     ferrite-xla/         XLA backend integration
   finetune_engine/       ML fine-tuning control plane
-    scripting_finetune   Shard-streamed LoRA fine-tuning
+    scripting_finetune   LoRA fine-tuning script entrypoint
     checkpoint/          Adapter checkpoint save/load
     loader/              Safetensors shard loader
     eval/                Validation loop
@@ -61,14 +98,14 @@ ferriterc/
     dataset/             Packed sequence batching
     telemetry/           Training metrics + divergence detection
     distributed/         Multi-GPU wave scheduling
-    architectures/       Novel architectures (streaming MoE)
-  mathematics_engine/    Quantitative finance / large-scale computation
-    monte_carlo/         50M+ path Monte Carlo option pricing
-    portfolio/           Streaming covariance for 10K+ asset universes
-    risk/                VaR/CVaR via millions of streamed scenarios
+    architectures/       Model architecture experiments
+  mathematics_engine/    Quantitative finance compute modules
+    monte_carlo/         Monte Carlo pricing
+    portfolio/           Covariance and portfolio analytics
+    risk/                VaR/CVaR workflows
     pde/                 Finite difference PDE solver (Black-Scholes)
-    matrix/              Block-Cholesky, LU, eigenvalue decomposition
-    greeks/              Full Greeks surface for 100K+ instrument books
+    matrix/              Matrix decomposition/linear algebra routines
+    greeks/              Greeks computation workflows
 ```
 
 ## LibTorch Provisioning
@@ -81,5 +118,6 @@ Installer resolves libtorch in this order:
 
 Auto-download controls:
 - `LIBTORCH_VERSION` (default `2.9.0`)
-- `LIBTORCH_CUDA_TAG` (auto-detected from nvcc, e.g. `cu126`)
+- `LIBTORCH_CUDA_TAG` (auto-selected from `compat.toml`, or override manually)
+- `CUDARC_CUDA_FEATURE` (auto-selected from `compat.toml`, or override manually)
 - `LIBTORCH_URL` (full override)

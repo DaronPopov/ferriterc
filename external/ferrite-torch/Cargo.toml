@@ -14,10 +14,24 @@ tch = "0.22"  # Matches LibTorch 2.9
 ptx-runtime = { path = "../../ferrite-os/ptx-runtime" }
 ptx-sys = { path = "../../ferrite-os/internal/ptx-sys" }
 aten-ptx = { path = "../aten-ptx" }
-cudarc = { path = "../cudarc-ptx", features = ["ptx-alloc", "cuda-12080"] }
+cudarc = { path = "../cudarc-ptx", features = ["ptx-alloc"] }
 
 # Utilities
 anyhow = "1.0"
+
+[features]
+default = ["cuda-12080"]
+cuda-11080 = ["cudarc/cuda-11080"]
+cuda-12000 = ["cudarc/cuda-12000"]
+cuda-12010 = ["cudarc/cuda-12010"]
+cuda-12020 = ["cudarc/cuda-12020"]
+cuda-12030 = ["cudarc/cuda-12030"]
+cuda-12040 = ["cudarc/cuda-12040"]
+cuda-12050 = ["cudarc/cuda-12050"]
+cuda-12060 = ["cudarc/cuda-12060"]
+cuda-12080 = ["cudarc/cuda-12080"]
+cuda-12090 = ["cudarc/cuda-12090"]
+cuda-13000 = ["cudarc/cuda-13000"]
 
 [[example]]
 name = "torch_basic"

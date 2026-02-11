@@ -52,3 +52,15 @@ log_dir = "/var/log/ferrite-os"
 # Client timeout in seconds (default: 30)
 # Maximum time to wait for client requests
 client_timeout_secs = 30
+
+# Directory to watch for .fer script files (default: none)
+# When set, .fer files created/modified in this directory are auto-compiled and executed
+# script_watch_dir = "/home/user/ferrite-scripts"
+
+# Skip TUI dashboard, run original headless behavior (default: false)
+# Also auto-enabled when stdout is not a TTY
+headless = false
+
+# GPU device name for TUI header display (default: "GPU {id}")
+# Set via FERRITE_GPU_NAME env var or nvidia-smi
+# gpu_name = "RTX 3070"

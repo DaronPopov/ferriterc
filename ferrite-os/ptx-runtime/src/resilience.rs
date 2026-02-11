@@ -5,6 +5,7 @@
 
 use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
+use crate::telemetry::{emit_diag, DiagnosticEvent, DiagnosticStatus};
 
 /// Retry policy for transient failures
 #[derive(Debug, Clone)]
@@ -77,12 +78,24 @@ impl RetryPolicy {
                         error = %e,
                         "Operation failed"
                     );
+                    emit_diag(&DiagnosticEvent::new(
+                        "runtime.resilience",
+                        DiagnosticStatus::WARN,
+                        "RT-RES-0001",
+                        format!(
+                            "retryable operation failed on attempt {}/{}: {}",
+                            attempt + 1,
+                            self.max_attempts,
+                            e
+                        ),
+                        "operation will retry with backoff; verify persistent failures",
+                    ));
                     last_error = Some(e);
                 }
             }
         }
 
-        Err(last_error.unwrap())
+        Err(last_error.expect("RetryPolicy::execute called with max_attempts=0"))
     }
 }
 
@@ -158,6 +171,16 @@ impl CircuitBreaker {
                     threshold = self.failure_threshold,
                     "Circuit breaker opened"
                 );
+                emit_diag(&DiagnosticEvent::new(
+                    "runtime.resilience",
+                    DiagnosticStatus::WARN,
+                    "RT-RES-0002",
+                    format!(
+                        "circuit breaker opened at failure count {} (threshold {})",
+                        failures, self.failure_threshold
+                    ),
+                    "investigate upstream operation failures before load increases",
+                ));
                 self.state.store(1, Ordering::Release); // Open
                 *self.last_failure_time.lock() = Some(Instant::now());
                 self.successes.store(0, Ordering::Release);
@@ -178,6 +201,13 @@ impl CircuitBreaker {
 
                 if elapsed >= self.timeout {
                     tracing::info!("Circuit breaker entering half-open state");
+                    emit_diag(&DiagnosticEvent::new(
+                        "runtime.resilience",
+                        DiagnosticStatus::PASS,
+                        "RT-RES-0003",
+                        "circuit breaker entering half-open state",
+                        "none",
+                    ));
                     self.state.store(2, Ordering::Release); // HalfOpen
                     self.failures.store(0, Ordering::Release);
                     true

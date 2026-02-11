@@ -38,6 +38,8 @@ impl CudaGraph {
     pub fn launch(&self, stream: &Stream) -> Result<()> {
         unsafe {
             ptx_sys::gpu_hot_launch_graph(self.runtime, self.graph_id, stream.raw());
+            let err = ptx_sys::cudaGetLastError();
+            Error::check_cuda(err)?;
         }
         Ok(())
     }
@@ -46,6 +48,8 @@ impl CudaGraph {
     pub fn launch_default(&self) -> Result<()> {
         unsafe {
             ptx_sys::gpu_hot_launch_graph(self.runtime, self.graph_id, std::ptr::null_mut());
+            let err = ptx_sys::cudaGetLastError();
+            Error::check_cuda(err)?;
         }
         Ok(())
     }
