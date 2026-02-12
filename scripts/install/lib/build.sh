@@ -11,7 +11,8 @@ check_engine_scripts() {
     NAME="$(echo "$NAME" | sed 's/[^a-zA-Z0-9_]/_/g')"
     LINK="$ROOT/ferrite-gpu-lang/examples/${NAME}.rs"
     ln -sf "$script" "$LINK"
-    if ! cargo check --release --no-default-features --features "torch,${CUDARC_CUDA_FEATURE}" --example "$NAME" 2>/dev/null; then
+    if ! LIBTORCH="${LIBTORCH}" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+         cargo check --release --no-default-features --features "torch,${CUDARC_CUDA_FEATURE}" --example "$NAME" 2>/dev/null; then
       echo "  [warn] $(basename "$script") failed to check"
       diag_emit "installer.build" "WARN" "INS-BLD-0001" "example check failed: $(basename "$script")" "inspect example compile errors"
       all_ok=false
@@ -45,6 +46,12 @@ run_build() {
 
     echo "[3/${STEPS}] Installing ferrite command"
   else
+    if [[ -z "${LIBTORCH:-}" ]] || ! is_valid_libtorch "${LIBTORCH}"; then
+      echo "[error] LIBTORCH is not set or invalid — cannot build torch-dependent crates"
+      echo "[hint]  run the installer without --core-only, or set LIBTORCH= to a valid libtorch directory"
+      diag_emit "installer.build" "FAIL" "INS-BLD-0010" "LIBTORCH not set or invalid for full build" "ensure libtorch is provisioned before build"
+      exit 1
+    fi
     echo "[info] using libtorch: ${LIBTORCH}"
     local STEPS=9
 
@@ -54,11 +61,13 @@ run_build() {
 
     echo "[2/${STEPS}] Building ferrite-gpu-lang (torch feature)"
     cd "$ROOT/ferrite-gpu-lang"
-    cargo build --release --no-default-features --features "torch,${CUDARC_CUDA_FEATURE}"
+    LIBTORCH="${LIBTORCH}" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+      cargo build --release --no-default-features --features "torch,${CUDARC_CUDA_FEATURE}"
 
     echo "[3/${STEPS}] Building external/ferrite-torch examples"
     cd "$ROOT/external/ferrite-torch"
-    cargo build --release --examples --no-default-features --features "${CUDARC_CUDA_FEATURE}"
+    LIBTORCH="${LIBTORCH}" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+      cargo build --release --examples --no-default-features --features "${CUDARC_CUDA_FEATURE}"
 
     echo "[4/${STEPS}] Building external/ferrite-xla example"
     cd "$ROOT/external/ferrite-xla"
@@ -66,7 +75,8 @@ run_build() {
 
     echo "[5/${STEPS}] Validating ferrite-gpu-lang torch+xla scripts"
     cd "$ROOT/ferrite-gpu-lang"
-    cargo run --release --no-default-features --features "torch,${CUDARC_CUDA_FEATURE}" --example script_cv_detect >/dev/null
+    LIBTORCH="${LIBTORCH}" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+      cargo run --release --no-default-features --features "torch,${CUDARC_CUDA_FEATURE}" --example script_cv_detect >/dev/null
 
     echo "[6/${STEPS}] Checking finetune_engine scripts"
     cd "$ROOT/ferrite-gpu-lang"
