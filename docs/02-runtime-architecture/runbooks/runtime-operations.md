@@ -23,6 +23,9 @@ cd ferrite-os/internal/ptx-daemon
 cargo run --bin ferrite-daemon -- ping
 cargo run --bin ferrite-daemon -- metrics
 cargo run --bin ferrite-daemon -- health
+cargo run --bin ferrite-daemon -- run-list
+cargo run --bin ferrite-daemon -- run-file internal/ptx-runner/src/main.rs -- --list
+cargo run --bin ferrite-daemon -- run-entry internal/ptx-runner/src/main.rs#main -- --list
 ```
 
 ## Service-Oriented Entrypoint Scripts

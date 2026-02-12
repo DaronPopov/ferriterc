@@ -307,7 +307,8 @@ fn evaluate_population(
     for (i, ind) in pop.iter_mut().enumerate() {
         if !ind.alive { continue; }
 
-        let stream = rt.stream((i % MAX_STREAMS as usize) as i32);
+        let stream = rt.stream((i % MAX_STREAMS as usize) as i32)
+            .expect("stream ID within pool bounds");
 
         // Forward pass: SGEMM per layer + activation
         let mut prev_ptr = input.as_ptr_typed::<f32>() as *const f32;
@@ -402,7 +403,7 @@ fn evaluate_population(
     }
 
     // Sync all streams, then bulk-read fitness values
-    rt.sync_all();
+    let _ = rt.sync_all();
 
     let mut fitness_host = vec![0.0f32; POP_SIZE];
     unsafe {
@@ -859,7 +860,7 @@ fn main() -> Result<()> {
             ptx_sys::vmm_shutdown(vmm);
             ptx_sys::vfs_shutdown(vfs);
         }
-        rt.sync_all();
+        rt.sync_all()?;
         platform::assert_clean_exit(&rt);
         return Ok(());
     }
@@ -954,7 +955,7 @@ fn main() -> Result<()> {
 
         // === 8. VFS CHECKPOINT ===
         if last_checkpoint.elapsed() >= Duration::from_secs(CHECKPOINT_INTERVAL_SECS) {
-            rt.sync_all();
+            rt.sync_all()?;
             unsafe {
                 vfs_checkpoint_pareto(vfs, &pareto, generation, &mut vfs_pareto_count);
             }
@@ -1037,7 +1038,7 @@ fn main() -> Result<()> {
     unsafe { platform::shm_safe_unlink(&rt, "nas_leaderboard", shm_ptr)?; }
 
     // 7. Final validation
-    rt.sync_all();
+    rt.sync_all()?;
     platform::assert_clean_exit(&rt);
 
     Ok(())

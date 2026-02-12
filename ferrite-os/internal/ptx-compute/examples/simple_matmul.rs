@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             m, n, k,
         )?;
     }
-    runtime.sync_all();
+    runtime.sync_all()?;
 
     println!("✓ Matrix multiplication complete!");
     println!();

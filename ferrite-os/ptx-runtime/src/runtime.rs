@@ -31,7 +31,7 @@ mod resilience;
 ///
 /// let runtime = PtxRuntime::new(0).expect("Failed to init");
 /// let ptr = runtime.alloc(1024).expect("Failed to alloc");
-/// runtime.sync_all();
+/// runtime.sync_all().expect("Failed to sync");
 /// ```
 pub struct PtxRuntime {
     inner: Arc<PtxRuntimeInner>,

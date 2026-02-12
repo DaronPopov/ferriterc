@@ -2,12 +2,13 @@ use super::*;
 
 impl Tensor {
     /// Copy tensor data to host.
+    ///
+    /// If the tensor is non-contiguous (e.g. from a transpose or slice),
+    /// a contiguous GPU copy is materialized first, then copied to host.
     pub fn to_vec<T: Copy + Default>(&self) -> Result<Vec<T>> {
-        // TODO: Handle non-contiguous tensors
         if !self.is_contiguous() {
-            return Err(Error::NotSupported {
-                message: "to_vec requires contiguous tensor".to_string(),
-            });
+            let contig = self.contiguous()?;
+            return contig.storage.to_host();
         }
         self.storage.to_host()
     }
@@ -269,6 +270,6 @@ impl Tensor {
 
     /// Synchronize all pending operations on this tensor.
     pub fn sync(&self) {
-        self.runtime().sync_all();
+        self.runtime().sync_all().expect("sync_all failed");
     }
 }

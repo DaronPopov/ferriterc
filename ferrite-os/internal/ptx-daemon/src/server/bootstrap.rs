@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use ptx_runtime::PtxRuntime;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config::DaemonConfig;
 use crate::job_store::JobStore;
@@ -95,6 +95,14 @@ pub(super) fn init_runtime(config: &DaemonConfig) -> io::Result<Arc<PtxRuntime>>
         config.max_streams,
         config.pool_fraction * 100.0
     );
+
+    // Export runtime/context handles from the daemon process environment so
+    // spawned runner subprocesses can inherit the same execution context.
+    runtime.export_for_hook();
+    runtime.export_context();
+    if std::env::var("PTX_RUNTIME_PTR").is_err() {
+        warn!("PTX_RUNTIME_PTR is not set after runtime export; runner subprocesses may initialize a separate pool");
+    }
 
     Ok(runtime)
 }

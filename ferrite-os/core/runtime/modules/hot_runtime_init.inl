@@ -18,6 +18,18 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
     }
     apply_env_overrides(&effective_config);
 
+    // Single-pool strict mode guard: deny competing pool init from daemon children
+    if (effective_config.single_pool_strict) {
+        const char* daemon_client = getenv("PTX_DAEMON_CLIENT");
+        if (daemon_client && daemon_client[0] == '1') {
+            printf("[Ferrite-OS] DENIED: single-pool strict mode active — external pool init refused\n");
+            printf("[Ferrite-OS] This process attempted to create a competing TLSF pool.\n");
+            printf("[Ferrite-OS] Heavy GPU workloads must run inside the daemon's allocator domain.\n");
+            free(runtime);
+            return NULL;
+        }
+    }
+
     memset(runtime, 0, sizeof(GPUHotRuntime));
     runtime->device_id = device_id;
     ptx_mutex_init(&runtime->async_lock);

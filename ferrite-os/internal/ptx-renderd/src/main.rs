@@ -59,6 +59,8 @@ struct RenderState {
 enum Control {
     SetScene(SceneKind),
     SetTensor(TensorPayload),
+    #[cfg(feature = "cuda-gl-interop")]
+    SetTensorIpc { handle_hex: String, len_f32: usize },
     Shutdown,
 }
 
@@ -68,6 +70,8 @@ struct CommandEnvelope {
     scene: Option<String>,
     shape: Option<Vec<usize>>,
     data: Option<Vec<f32>>,
+    ipc_handle: Option<String>,
+    len_f32: Option<usize>,
 }
 
 fn parse_socket_path() -> PathBuf {
@@ -165,6 +169,28 @@ fn handle_command(line: &str, tx: &Sender<Control>) -> String {
                 "ok:tensor".to_string()
             } else {
                 "err:channel".to_string()
+            }
+        }
+        "tensor_ipc" => {
+            let Some(handle_hex) = env.ipc_handle else {
+                return "err:missing ipc_handle".to_string();
+            };
+            let len_f32 = env.len_f32.unwrap_or(0);
+            #[cfg(feature = "cuda-gl-interop")]
+            {
+                if tx
+                    .send(Control::SetTensorIpc { handle_hex, len_f32 })
+                    .is_ok()
+                {
+                    "ok:tensor_ipc".to_string()
+                } else {
+                    "err:channel".to_string()
+                }
+            }
+            #[cfg(not(feature = "cuda-gl-interop"))]
+            {
+                let _ = (handle_hex, len_f32);
+                "err:cuda_gl_interop_disabled".to_string()
             }
         }
         "shutdown" => {
@@ -272,6 +298,15 @@ fn run_x11_window(
                     state.scene = SceneKind::Tensor;
                     state.tensor = Some(payload);
                     state.tensor_dirty = true;
+                }
+                #[cfg(feature = "cuda-gl-interop")]
+                Control::SetTensorIpc { handle_hex, len_f32 } => {
+                    #[cfg(feature = "cuda-gl-interop")]
+                    if let Some((_owner, pipe)) = zero_copy.as_mut() {
+                        let _ = pipe.upload_from_ipc_hex(&handle_hex, len_f32);
+                    }
+                    state.scene = SceneKind::Tensor;
+                    state.tensor_dirty = false;
                 }
                 Control::Shutdown => {
                     running.store(false, Ordering::Relaxed);

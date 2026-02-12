@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use crate::error::{Error, Result};
 use crate::stream::{Stream, StreamPool};
@@ -22,6 +23,10 @@ pub struct DispatchRecord {
     pub job_id: JobId,
     pub tenant_id: TenantId,
     pub stream_id: i32,
+    /// VRAM bytes reserved for this job (used for accounting on completion/failure).
+    pub estimated_vram_bytes: u64,
+    /// When the job started running (for runtime budget accounting).
+    pub started_at: Instant,
 }
 
 /// The execution dispatcher.
@@ -35,6 +40,8 @@ pub struct Dispatcher {
     active_jobs: HashMap<u64, DispatchRecord>,
     /// Maximum number of jobs that can be queued.
     max_queued_jobs: usize,
+    /// Maximum number of queued jobs per tenant (0 = no limit).
+    max_queued_per_tenant: usize,
     /// Per-tenant round-robin cursor into the stream pool.
     tenant_stream_cursors: HashMap<u64, usize>,
     /// Diagnostics emitter.
@@ -44,10 +51,18 @@ pub struct Dispatcher {
 impl Dispatcher {
     /// Create a new dispatcher.
     pub fn new(max_queued_jobs: usize) -> Self {
+        Self::with_per_tenant_limit(max_queued_jobs, 0)
+    }
+
+    /// Create a new dispatcher with a per-tenant queue limit.
+    ///
+    /// A `max_queued_per_tenant` of 0 means no per-tenant limit.
+    pub fn with_per_tenant_limit(max_queued_jobs: usize, max_queued_per_tenant: usize) -> Self {
         Self {
             queue: Vec::new(),
             active_jobs: HashMap::new(),
             max_queued_jobs,
+            max_queued_per_tenant,
             tenant_stream_cursors: HashMap::new(),
             diagnostics: SchedulerDiagnostics::new(),
         }
@@ -55,7 +70,8 @@ impl Dispatcher {
 
     /// Submit a job to the dispatcher queue.
     ///
-    /// Returns an error if the queue is full (backpressure).
+    /// Returns an error if the global queue is full or if the per-tenant queue
+    /// limit would be exceeded (backpressure).
     pub fn submit(&mut self, job: Job) -> Result<JobId> {
         if self.queue.len() >= self.max_queued_jobs {
             tracing::warn!(
@@ -70,6 +86,29 @@ impl Dispatcher {
                     self.max_queued_jobs
                 ),
             });
+        }
+
+        // Per-tenant queue limit
+        if self.max_queued_per_tenant > 0 {
+            let tenant_queued = self
+                .queue
+                .iter()
+                .filter(|j| j.tenant_id == job.tenant_id)
+                .count();
+            if tenant_queued >= self.max_queued_per_tenant {
+                tracing::warn!(
+                    tenant_id = job.tenant_id.0,
+                    tenant_queued,
+                    limit = self.max_queued_per_tenant,
+                    "per-tenant queue limit reached"
+                );
+                return Err(Error::QuotaExceeded {
+                    tenant_id: job.tenant_id.0,
+                    resource: "queued_jobs".to_string(),
+                    limit: self.max_queued_per_tenant as u64,
+                    current: tenant_queued as u64,
+                });
+            }
         }
 
         let job_id = job.id;
@@ -133,7 +172,7 @@ impl Dispatcher {
             let decision = policy.admit(job, tenant);
             match decision {
                 AdmissionDecision::Admit => {
-                    // Proceed with dispatch
+                    self.diagnostics.record_job_admitted(job.id, tenant_id);
                 }
                 AdmissionDecision::Deny(reason) => {
                     self.diagnostics.record_job_denied(job.id, tenant_id, &reason);
@@ -179,15 +218,21 @@ impl Dispatcher {
 
             to_remove.push(idx);
 
+            let now = Instant::now();
             let record = DispatchRecord {
                 job_id: job.id,
                 tenant_id,
                 stream_id: stream.id(),
+                estimated_vram_bytes: job.estimated_vram_bytes,
+                started_at: now,
             };
 
             // Update tenant usage atomics
             tenant.usage.active_streams.fetch_add(1, Ordering::Relaxed);
             tenant.usage.active_jobs.fetch_add(1, Ordering::Relaxed);
+            if job.estimated_vram_bytes > 0 {
+                tenant.usage.current_vram_bytes.fetch_add(job.estimated_vram_bytes, Ordering::Relaxed);
+            }
 
             self.diagnostics
                 .record_job_dispatched(job.id, tenant_id, stream.id());
@@ -224,6 +269,9 @@ impl Dispatcher {
     }
 
     /// Mark a job as completed and release its resources.
+    ///
+    /// Decrements all tenant usage counters (streams, jobs, VRAM) and accounts
+    /// the elapsed wall-clock runtime against the tenant's runtime budget.
     pub fn complete_job(
         &mut self,
         job_id: JobId,
@@ -231,23 +279,7 @@ impl Dispatcher {
     ) -> Option<DispatchRecord> {
         let record = self.active_jobs.remove(&job_id.0)?;
 
-        // Decrement tenant usage
-        if let Some(tenant) = registry.get(record.tenant_id) {
-            tenant
-                .usage
-                .active_streams
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    Some(v.saturating_sub(1))
-                })
-                .ok();
-            tenant
-                .usage
-                .active_jobs
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    Some(v.saturating_sub(1))
-                })
-                .ok();
-        }
+        Self::release_tenant_resources(&record, registry);
 
         self.diagnostics
             .record_job_completed(job_id, record.tenant_id);
@@ -263,6 +295,8 @@ impl Dispatcher {
     }
 
     /// Mark a job as failed and release its resources.
+    ///
+    /// Decrements all tenant usage counters symmetrically with dispatch.
     pub fn fail_job(
         &mut self,
         job_id: JobId,
@@ -271,22 +305,7 @@ impl Dispatcher {
     ) -> Option<DispatchRecord> {
         let record = self.active_jobs.remove(&job_id.0)?;
 
-        if let Some(tenant) = registry.get(record.tenant_id) {
-            tenant
-                .usage
-                .active_streams
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    Some(v.saturating_sub(1))
-                })
-                .ok();
-            tenant
-                .usage
-                .active_jobs
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    Some(v.saturating_sub(1))
-                })
-                .ok();
-        }
+        Self::release_tenant_resources(&record, registry);
 
         self.diagnostics.record_job_failed(job_id, record.tenant_id);
 
@@ -300,10 +319,57 @@ impl Dispatcher {
         Some(record)
     }
 
+    /// Cancel an active (dispatched) job and release its resources.
+    ///
+    /// Returns `None` if the job is not currently active. For queued jobs that
+    /// have not yet been dispatched, use [`cancel_queued_job`] instead.
+    pub fn cancel_job(
+        &mut self,
+        job_id: JobId,
+        reason: &str,
+        registry: &TenantRegistry,
+    ) -> Option<DispatchRecord> {
+        let record = self.active_jobs.remove(&job_id.0)?;
+
+        Self::release_tenant_resources(&record, registry);
+
+        self.diagnostics
+            .record_job_cancelled(job_id, record.tenant_id);
+
+        tracing::info!(
+            job_id = job_id.0,
+            tenant_id = record.tenant_id.0,
+            reason = reason,
+            "active job cancelled"
+        );
+
+        Some(record)
+    }
+
+    /// Remove a queued (not yet dispatched) job from the queue.
+    ///
+    /// Returns true if the job was found and removed.
+    pub fn cancel_queued_job(&mut self, job_id: JobId) -> bool {
+        if let Some(pos) = self.queue.iter().position(|j| j.id == job_id) {
+            let mut job = self.queue.remove(pos);
+            let _ = job.cancel("cancelled while queued");
+            self.diagnostics
+                .record_job_cancelled(job_id, job.tenant_id);
+            tracing::info!(
+                job_id = job_id.0,
+                tenant_id = job.tenant_id.0,
+                "queued job cancelled"
+            );
+            true
+        } else {
+            false
+        }
+    }
+
     /// Dispatch a single pre-created job directly to a stream from the pool.
     ///
     /// This is a convenience method for simpler use cases where the caller manages
-    /// the job lifecycle externally.
+    /// the job lifecycle externally. All tenant quotas are enforced.
     pub fn dispatch_single(
         &mut self,
         job: &mut Job,
@@ -314,7 +380,34 @@ impl Dispatcher {
             detail: format!("tenant {} not found", job.tenant_id),
         })?;
 
-        // Check tenant stream quota
+        // Full quota check (all four dimensions)
+        if !tenant.runtime_within_budget() {
+            return Err(Error::QuotaExceeded {
+                tenant_id: job.tenant_id.0,
+                resource: "runtime_budget_ms".to_string(),
+                limit: tenant.quotas.max_runtime_budget_ms,
+                current: tenant.usage.consumed_runtime_ms.load(Ordering::Relaxed),
+            });
+        }
+        if !tenant.jobs_within_quota() {
+            return Err(Error::QuotaExceeded {
+                tenant_id: job.tenant_id.0,
+                resource: "concurrent_jobs".to_string(),
+                limit: tenant.quotas.max_concurrent_jobs,
+                current: tenant.usage.active_jobs.load(Ordering::Relaxed),
+            });
+        }
+        if tenant.quotas.max_vram_bytes != u64::MAX {
+            let current_vram = tenant.usage.current_vram_bytes.load(Ordering::Relaxed);
+            if current_vram.saturating_add(job.estimated_vram_bytes) > tenant.quotas.max_vram_bytes {
+                return Err(Error::QuotaExceeded {
+                    tenant_id: job.tenant_id.0,
+                    resource: "vram_bytes".to_string(),
+                    limit: tenant.quotas.max_vram_bytes,
+                    current: current_vram,
+                });
+            }
+        }
         if !tenant.streams_within_quota() {
             return Err(Error::QuotaExceeded {
                 tenant_id: job.tenant_id.0,
@@ -352,11 +445,17 @@ impl Dispatcher {
 
         tenant.usage.active_streams.fetch_add(1, Ordering::Relaxed);
         tenant.usage.active_jobs.fetch_add(1, Ordering::Relaxed);
+        if job.estimated_vram_bytes > 0 {
+            tenant.usage.current_vram_bytes.fetch_add(job.estimated_vram_bytes, Ordering::Relaxed);
+        }
 
+        let now = Instant::now();
         let record = DispatchRecord {
             job_id: job.id,
             tenant_id: job.tenant_id,
             stream_id: stream.id(),
+            estimated_vram_bytes: job.estimated_vram_bytes,
+            started_at: now,
         };
         self.active_jobs.insert(job.id.0, record);
 
@@ -364,6 +463,48 @@ impl Dispatcher {
             .record_job_dispatched(job.id, job.tenant_id, stream.id());
 
         Ok(stream)
+    }
+
+    /// Release tenant resources for a completed/failed/cancelled job.
+    ///
+    /// This is the symmetric counterpart to the resource acquisition in
+    /// `dispatch_cycle` / `dispatch_single`. It decrements streams, jobs,
+    /// VRAM, and accounts the elapsed runtime.
+    fn release_tenant_resources(record: &DispatchRecord, registry: &TenantRegistry) {
+        if let Some(tenant) = registry.get(record.tenant_id) {
+            tenant
+                .usage
+                .active_streams
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    Some(v.saturating_sub(1))
+                })
+                .ok();
+            tenant
+                .usage
+                .active_jobs
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    Some(v.saturating_sub(1))
+                })
+                .ok();
+            // Release VRAM reservation
+            if record.estimated_vram_bytes > 0 {
+                tenant
+                    .usage
+                    .current_vram_bytes
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                        Some(v.saturating_sub(record.estimated_vram_bytes))
+                    })
+                    .ok();
+            }
+            // Account elapsed runtime against the tenant's budget
+            let elapsed_ms = record.started_at.elapsed().as_millis() as u64;
+            if elapsed_ms > 0 {
+                tenant
+                    .usage
+                    .consumed_runtime_ms
+                    .fetch_add(elapsed_ms, Ordering::Relaxed);
+            }
+        }
     }
 
     /// Get the number of queued jobs.
@@ -374,6 +515,16 @@ impl Dispatcher {
     /// Get the number of active (dispatched) jobs.
     pub fn active_count(&self) -> usize {
         self.active_jobs.len()
+    }
+
+    /// Get an immutable reference to the queued jobs for inspection.
+    pub fn queued_jobs(&self) -> &[Job] {
+        &self.queue
+    }
+
+    /// Get a snapshot of all active dispatch records.
+    pub fn active_records(&self) -> Vec<&DispatchRecord> {
+        self.active_jobs.values().collect()
     }
 
     /// Get a reference to the diagnostics subsystem.
@@ -438,6 +589,17 @@ impl Dispatcher {
                     }
                 }
 
+                // Stream quota warning at 80%
+                if tenant.quotas.max_streams != u64::MAX {
+                    let streams_pct = (tenant.usage.active_streams.load(Ordering::Relaxed) as f64
+                        / tenant.quotas.max_streams as f64)
+                        * 100.0;
+                    if streams_pct > 80.0 {
+                        self.diagnostics
+                            .record_quota_warning(tenant_id, "streams", streams_pct);
+                    }
+                }
+
                 // Runtime budget warning at 80%
                 if tenant.quotas.max_runtime_budget_ms != u64::MAX {
                     let rt_pct = (tenant.usage.consumed_runtime_ms.load(Ordering::Relaxed) as f64
@@ -466,7 +628,7 @@ impl std::fmt::Debug for Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scheduler::job::Job;
+    use crate::scheduler::job::{Job, JobState};
     use crate::scheduler::policy::{FairSharePolicy, FifoPolicy};
     use crate::scheduler::tenant::{TenantId, TenantQuotas};
     use crate::stream::{Stream, StreamPriority};

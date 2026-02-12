@@ -258,6 +258,7 @@ extern "C" {
 // Safe Wrappers (Optional - for convenience)
 // ============================================================================
 
+#[deprecated(note = "use ptx_kernels::safe_api::unary instead — these bypass the guard layer")]
 /// Safe wrapper for unary operations on contiguous F32 tensors
 pub mod unary_f32 {
     use super::*;
@@ -362,6 +363,7 @@ pub mod unary_f32 {
     }
 }
 
+#[deprecated(note = "use ptx_kernels::safe_api::gather instead — these bypass the guard layer")]
 /// Safe wrapper for gather/scatter operations on contiguous F32 tensors
 pub mod gather_f32 {
     use super::*;
@@ -384,6 +386,7 @@ pub mod gather_f32 {
     }
 }
 
+#[deprecated(note = "use ptx_kernels::safe_api::scan instead — these bypass the guard layer")]
 /// Safe wrapper for scan/prefix operations on contiguous F32 tensors
 pub mod scan_f32 {
     use super::*;
@@ -404,6 +407,7 @@ pub mod scan_f32 {
     }
 }
 
+#[deprecated(note = "use ptx_kernels::safe_api::topk instead — these bypass the guard layer")]
 /// Safe wrapper for top-k selection on contiguous F32 tensors
 pub mod topk_f32 {
     use super::*;
@@ -478,6 +482,7 @@ extern "C" {
     );
 }
 
+#[deprecated(note = "use ptx_kernels::safe_api::indexing instead — these bypass the guard layer")]
 /// Safe wrapper for indexing operations on contiguous F32 tensors
 pub mod indexing_f32 {
     use super::*;
@@ -532,6 +537,7 @@ extern "C" {
     );
 }
 
+#[deprecated(note = "use ptx_kernels::safe_api::sort instead — these bypass the guard layer")]
 /// Safe wrapper for sort operations on contiguous F32 tensors
 pub mod sort_f32 {
     use super::*;
@@ -567,6 +573,7 @@ extern "C" {
     );
 }
 
+#[deprecated(note = "use ptx_kernels::safe_api::ternary instead — these bypass the guard layer")]
 /// Safe wrapper for where/ternary operations on contiguous F32 tensors
 pub mod where_f32 {
     use super::*;
@@ -584,6 +591,7 @@ pub mod where_f32 {
     }
 }
 
+#[deprecated(note = "use ptx_kernels::safe_api::binary instead — these bypass the guard layer")]
 /// Safe wrapper for binary operations on contiguous F32 tensors
 pub mod binary_f32 {
     use super::*;

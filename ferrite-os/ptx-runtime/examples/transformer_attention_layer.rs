@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Attention scores: {:.2} MB", attn_scores_size * 4 / 1024 / 1024);
 
     // Get stream for attention computation
-    let stream = runtime.stream(0);
+    let stream = runtime.stream(0)?;
     println!("\n🌊 Using stream {} for attention layer", stream.id());
 
     // Allocate all tensors (stream-ordered)
@@ -98,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         GuardedBuffer::new(final_output_ptr, input_size * 4, runtime.raw())?
     };
 
-    let context = KernelContext::new(runtime.raw(), stream.raw());
+    let context = KernelContext::new(runtime.raw(), stream.raw())?;
 
     // Forward pass: Multi-head attention
     println!("\n🚀 Running attention forward pass...");
@@ -213,13 +213,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Cleanup (stream-ordered)
     println!("\n🗑️  Cleaning up (stream-ordered)...");
     unsafe {
-        runtime.free_async(input_ptr, &stream);
-        runtime.free_async(q_ptr, &stream);
-        runtime.free_async(k_ptr, &stream);
-        runtime.free_async(v_ptr, &stream);
-        runtime.free_async(attn_scores_ptr, &stream);
-        runtime.free_async(attn_output_ptr, &stream);
-        runtime.free_async(final_output_ptr, &stream);
+        runtime.free_async(input_ptr, &stream)?;
+        runtime.free_async(q_ptr, &stream)?;
+        runtime.free_async(k_ptr, &stream)?;
+        runtime.free_async(v_ptr, &stream)?;
+        runtime.free_async(attn_scores_ptr, &stream)?;
+        runtime.free_async(attn_output_ptr, &stream)?;
+        runtime.free_async(final_output_ptr, &stream)?;
     }
     stream.synchronize()?;
 

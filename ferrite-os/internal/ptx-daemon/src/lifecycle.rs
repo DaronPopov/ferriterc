@@ -19,6 +19,7 @@ pub fn dispatch(invocation: CliInvocation) -> Result<(), i32> {
         }
         cmd @ ("ping" | "status" | "stats" | "metrics" | "snapshot" | "health" | "keepalive"
         | "shutdown" | "help" | "apps" | "app-start" | "app-stop"
+        | "run-file" | "run-entry" | "run-list"
         | "job-submit" | "job-stop" | "job-status" | "job-list" | "job-history") => {
             let mut line = cmd.to_string();
             for arg in &invocation.command_args {

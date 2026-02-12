@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use crate::runtime::context::{HasAllocator, HasRuntime};
 use crate::{GpuCtx, LangError, Result};
-use ptx_kernels::candle::unary_f32;
+use ptx_kernels::{GuardedBuffer, KernelContext};
+use ptx_kernels::safe_api::unary;
 use ptx_runtime::GpuPtr;
 
 enum CpuStorage<T> {
@@ -185,14 +186,11 @@ impl GpuTensor<f32> {
         let runtime = ctx.gpu_runtime().runtime();
         let out = runtime.alloc(self.bytes_len())?;
         let stream = runtime.next_stream();
-        unsafe {
-            unary_f32::relu(
-                self.as_ptr_typed(),
-                out.as_ptr_typed::<f32>(),
-                self.numel,
-                stream.raw(),
-            );
-        }
+        let runtime_ptr = runtime.raw();
+        let kctx = KernelContext::new(runtime_ptr, stream.raw())?;
+        let inp_guard = unsafe { GuardedBuffer::new(self.ptr.as_ptr(), self.bytes_len(), runtime_ptr)? };
+        let out_guard = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+        unary::relu(&inp_guard, &out_guard, self.numel, &kctx)?;
         stream.synchronize()?;
         Ok(GpuTensor::from_parts(self.shape.clone(), self.numel, out))
     }

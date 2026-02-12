@@ -15,9 +15,8 @@
 //! With TLSF: Allocation is FREE, so process INDIVIDUAL events!
 
 use ptx_runtime::PtxRuntime;
-use ptx_kernels::candle;
+use ptx_kernels::{GuardedBuffer, KernelContext, safe_api};
 use std::time::Instant;
-use std::ptr;
 use rand::Rng;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,7 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("⚡ Initializing PTX-OS runtime...");
     let runtime = PtxRuntime::with_config(0, Some(config))?;
+    let num_streams = runtime.num_streams();
     println!("  ✓ TLSF Pool: {:.2} GB", runtime.tlsf_stats().total_pool_size as f64 / 1e9);
+    println!("  ✓ Streams: {}", num_streams);
     println!();
 
     // Test 1: Individual Request Processing
@@ -123,6 +124,7 @@ fn individual_request_processing(runtime: &PtxRuntime) -> Result<(), Box<dyn std
     unsafe {
         let runtime_ptr = runtime.raw();
         let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, 0);
+        let ctx = KernelContext::new(runtime_ptr, stream)?;
 
         for request_id in 0..num_requests {
             // Each request is TINY (only 1K elements)
@@ -138,11 +140,11 @@ fn individual_request_processing(runtime: &PtxRuntime) -> Result<(), Box<dyn std
                 return Err(format!("Allocation failed for request {}", request_id).into());
             }
 
+            let ig = GuardedBuffer::new(input, bytes, runtime_ptr)?;
+            let og = GuardedBuffer::new(output, bytes, runtime_ptr)?;
+
             // Process THIS request
-            candle::candle_launch_urelu_f32(
-                elements, 0, ptr::null(),
-                input as *const f32, output as *mut f32, stream
-            );
+            safe_api::unary::relu(&ig, &og, elements, &ctx)?;
 
             // Free THIS request's memory immediately
             ptx_sys::gpu_hot_free(runtime_ptr, input);
@@ -169,6 +171,7 @@ fn individual_request_processing(runtime: &PtxRuntime) -> Result<(), Box<dyn std
 
 /// Test 2: Variable work sizes - like real event streams
 fn variable_work_event_loop(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error::Error>> {
+    let num_streams = runtime.num_streams();
     let num_events = 5000;
     let mut rng = rand::thread_rng();
 
@@ -189,8 +192,9 @@ fn variable_work_event_loop(runtime: &PtxRuntime) -> Result<(), Box<dyn std::err
 
         for (event_id, &elements) in event_sizes.iter().enumerate() {
             // Use different streams to maximize concurrency
-            let stream_id = (event_id % 1024) as i32;
+            let stream_id = (event_id % num_streams) as i32;
             let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
+            let ctx = KernelContext::new(runtime_ptr, stream)?;
 
             let bytes = elements * 4;
             total_elements += elements as u64;
@@ -203,11 +207,11 @@ fn variable_work_event_loop(runtime: &PtxRuntime) -> Result<(), Box<dyn std::err
                 return Err(format!("Allocation failed for event {}", event_id).into());
             }
 
+            let ig = GuardedBuffer::new(input, bytes, runtime_ptr)?;
+            let og = GuardedBuffer::new(output, bytes, runtime_ptr)?;
+
             // Process
-            candle::candle_launch_utanh_f32(
-                elements, 0, ptr::null(),
-                input as *const f32, output as *mut f32, stream
-            );
+            safe_api::unary::tanh(&ig, &og, elements, &ctx)?;
 
             // Free
             ptx_sys::gpu_hot_free(runtime_ptr, input);
@@ -215,7 +219,7 @@ fn variable_work_event_loop(runtime: &PtxRuntime) -> Result<(), Box<dyn std::err
         }
 
         // Sync all used streams
-        for stream_id in 0..1024 {
+        for stream_id in 0..num_streams as i32 {
             let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
             ptx_sys::cudaStreamSynchronize(stream);
         }
@@ -241,6 +245,7 @@ fn variable_work_event_loop(runtime: &PtxRuntime) -> Result<(), Box<dyn std::err
 
 /// Test 3: Request-Response pattern like a web server
 fn request_response_pattern(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error::Error>> {
+    let num_streams = runtime.num_streams();
     let num_requests = 10000;
 
     // Simulate different request types
@@ -274,8 +279,9 @@ fn request_response_pattern(runtime: &PtxRuntime) -> Result<(), Box<dyn std::err
 
         for (req_id, request) in requests.iter().enumerate() {
             // Get stream for this request
-            let stream_id = (req_id % 1024) as i32;
+            let stream_id = (req_id % num_streams) as i32;
             let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
+            let ctx = KernelContext::new(runtime_ptr, stream)?;
 
             // Determine request size
             let elements = match request {
@@ -294,11 +300,11 @@ fn request_response_pattern(runtime: &PtxRuntime) -> Result<(), Box<dyn std::err
                 return Err(format!("Failed to handle request {}", req_id).into());
             }
 
+            let ig = GuardedBuffer::new(req_buffer, bytes, runtime_ptr)?;
+            let og = GuardedBuffer::new(resp_buffer, bytes, runtime_ptr)?;
+
             // Process request (compute response)
-            candle::candle_launch_usigmoid_f32(
-                elements, 0, ptr::null(),
-                req_buffer as *const f32, resp_buffer as *mut f32, stream
-            );
+            safe_api::unary::sigmoid(&ig, &og, elements, &ctx)?;
 
             // Send response (free buffers)
             ptx_sys::gpu_hot_free(runtime_ptr, req_buffer);
@@ -306,7 +312,7 @@ fn request_response_pattern(runtime: &PtxRuntime) -> Result<(), Box<dyn std::err
         }
 
         // Wait for all responses
-        for stream_id in 0..1024 {
+        for stream_id in 0..num_streams as i32 {
             let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
             ptx_sys::cudaStreamSynchronize(stream);
         }
@@ -332,6 +338,7 @@ fn request_response_pattern(runtime: &PtxRuntime) -> Result<(), Box<dyn std::err
 
 /// Test 4: Recursive-style processing with dynamic allocation
 fn recursive_style_processing(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error::Error>> {
+    let num_streams = runtime.num_streams() as u32;
     // Simulate a tree where each level processes and spawns work
     let max_depth = 10;
     let branch_factor: u32 = 2; // Each node spawns 2 children
@@ -359,8 +366,9 @@ fn recursive_style_processing(runtime: &PtxRuntime) -> Result<(), Box<dyn std::e
 
             for node in 0..nodes_at_depth {
                 // Each node gets its own stream
-                let stream_id = (node % 1024) as i32;
+                let stream_id = (node % num_streams) as i32;
                 let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
+                let ctx = KernelContext::new(runtime_ptr, stream)?;
 
                 let bytes = (work_size * 4) as usize;
 
@@ -372,11 +380,11 @@ fn recursive_style_processing(runtime: &PtxRuntime) -> Result<(), Box<dyn std::e
                     return Err(format!("Node allocation failed at depth {}", depth).into());
                 }
 
+                let ig = GuardedBuffer::new(node_data, bytes, runtime_ptr)?;
+                let og = GuardedBuffer::new(node_result, bytes, runtime_ptr)?;
+
                 // Process THIS node
-                candle::candle_launch_uexp_f32(
-                    work_size as usize, 0, ptr::null(),
-                    node_data as *const f32, node_result as *mut f32, stream
-                );
+                safe_api::unary::exp(&ig, &og, work_size as usize, &ctx)?;
 
                 // Free THIS node's memory
                 ptx_sys::gpu_hot_free(runtime_ptr, node_data);
@@ -384,7 +392,7 @@ fn recursive_style_processing(runtime: &PtxRuntime) -> Result<(), Box<dyn std::e
             }
 
             // Sync before next level
-            for stream_id in 0..1024 {
+            for stream_id in 0..num_streams as i32 {
                 let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
                 ptx_sys::cudaStreamSynchronize(stream);
             }

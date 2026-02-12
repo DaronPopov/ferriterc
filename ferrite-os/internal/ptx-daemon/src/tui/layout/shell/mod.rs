@@ -271,7 +271,14 @@ pub(super) fn draw_sysmon(frame: &mut Frame, state: &mut TuiState) {
                 }
                 SysmonSection::Logs => {
                     draw_section_header(frame, section_rect, "Logs");
-                    logs::draw_logs(frame, section_body(section_rect), state, compact);
+                    let log_body = section_body(section_rect);
+                    // Store log body area for click hit-testing.
+                    if log_body.height > 1 {
+                        state.log_body_area = Rect::new(log_body.x, log_body.y + 1, log_body.width, log_body.height - 1);
+                    } else {
+                        state.log_body_area = Rect::default();
+                    }
+                    logs::draw_logs(frame, log_body, state, compact);
                 }
             }
 

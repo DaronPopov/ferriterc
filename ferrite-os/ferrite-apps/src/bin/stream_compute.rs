@@ -70,7 +70,7 @@ fn main() -> Result<()> {
                 // Free any already allocated in this partial epoch
                 for ptr in &epoch_ptrs {
                     let stream = rt.next_stream();
-                    unsafe { rt.free_async(*ptr, &stream); }
+                    unsafe { let _ = rt.free_async(*ptr, &stream); }
                 }
                 epoch_ptrs.clear();
                 break;
@@ -80,7 +80,7 @@ fn main() -> Result<()> {
             let batch_end = std::cmp::min(batch_start + BATCH_SIZE, MAX_STREAMS as usize);
 
             for stream_idx in batch_start..batch_end {
-                let stream = rt.stream(stream_idx as i32);
+                let stream = rt.stream(stream_idx as i32)?;
 
                 // alloc_async → fill → exp → sigmoid → mul_scalar → reduce_sum → free_async
                 let ptr = rt.alloc_async(SAMPLE_BYTES, &stream)?;
@@ -141,7 +141,7 @@ fn main() -> Result<()> {
         }
 
         // sync_all after epoch
-        rt.sync_all();
+        rt.sync_all()?;
 
         // Read one deterministic SHM sample result for telemetry
         let sample_idx = ((epoch.wrapping_mul(7919)) % MAX_STREAMS as u64) as usize;
@@ -163,7 +163,7 @@ fn main() -> Result<()> {
             } else {
                 rt.next_stream()
             };
-            unsafe { rt.free_async(*ptr, &stream); }
+            unsafe { let _ = rt.free_async(*ptr, &stream); }
         }
         rt.poll_deferred(1000);
 
@@ -204,7 +204,7 @@ fn main() -> Result<()> {
         platform::shm_safe_unlink(&rt, "mc_results", shm_ptr)?;
     }
 
-    rt.sync_all();
+    rt.sync_all()?;
     rt.poll_deferred(10_000);
     platform::assert_clean_exit(&rt);
 

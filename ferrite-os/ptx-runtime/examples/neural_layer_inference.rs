@@ -103,7 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         GuardedBuffer::new(final_out_ptr, output_size * 4, runtime.raw())?
     };
 
-    let context = KernelContext::new(runtime.raw(), stream.raw());
+    let context = KernelContext::new(runtime.raw(), stream.raw())?;
 
     // Inference: [Input × Weights] → GELU → Output
     println!("\n🚀 Running inference pipeline...");
@@ -159,10 +159,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Stream-ordered cleanup
     println!("\n🗑️  Cleaning up (stream-ordered)...");
     unsafe {
-        runtime.free_async(input_ptr, &stream);
-        runtime.free_async(weights_ptr, &stream);
-        runtime.free_async(matmul_out_ptr, &stream);
-        runtime.free_async(final_out_ptr, &stream);
+        runtime.free_async(input_ptr, &stream)?;
+        runtime.free_async(weights_ptr, &stream)?;
+        runtime.free_async(matmul_out_ptr, &stream)?;
+        runtime.free_async(final_out_ptr, &stream)?;
     }
     stream.synchronize()?;
 

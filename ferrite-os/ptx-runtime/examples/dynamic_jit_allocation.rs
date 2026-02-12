@@ -12,9 +12,8 @@
 //! completely new programming patterns!
 
 use ptx_runtime::PtxRuntime;
-use ptx_kernels::candle;
+use ptx_kernels::{GuardedBuffer, KernelContext, safe_api};
 use std::time::Instant;
-use std::ptr;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════╗");
@@ -107,6 +106,7 @@ fn elastic_batch_processing(runtime: &PtxRuntime) -> Result<(), Box<dyn std::err
     unsafe {
         let runtime_ptr = runtime.raw();
         let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, 0);
+        let ctx = KernelContext::new(runtime_ptr, stream)?;
 
         for i in 0..num_batches {
             // Variable batch size
@@ -123,12 +123,12 @@ fn elastic_batch_processing(runtime: &PtxRuntime) -> Result<(), Box<dyn std::err
                 return Err(format!("Allocation failed at batch {}", i).into());
             }
 
+            let ig = GuardedBuffer::new(input, bytes, runtime_ptr)?;
+            let og = GuardedBuffer::new(output, bytes, runtime_ptr)?;
+
             // Run kernel with exact-sized buffers
             let elements = bytes / 4;
-            candle::candle_launch_urelu_f32(
-                elements, 0, ptr::null(),
-                input as *const f32, output as *mut f32, stream
-            );
+            safe_api::unary::relu(&ig, &og, elements, &ctx)?;
 
             // IMMEDIATE FREE - done with this batch!
             ptx_sys::gpu_hot_free(runtime_ptr, input);
@@ -169,18 +169,18 @@ fn memory_churning_test(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error::
     unsafe {
         let runtime_ptr = runtime.raw();
         let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, 0);
+        let ctx = KernelContext::new(runtime_ptr, stream)?;
 
         for _ in 0..num_iterations {
             // ALLOCATE
             let buf1 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
             let buf2 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
 
+            let bg1 = GuardedBuffer::new(buf1, bytes, runtime_ptr)?;
+            let bg2 = GuardedBuffer::new(buf2, bytes, runtime_ptr)?;
+
             // COMPUTE
-            candle::candle_launch_badd_f32(
-                buffer_size, 0, ptr::null(), ptr::null(),
-                buf1 as *const f32, ptr::null(),
-                buf2 as *const f32, buf1 as *mut f32, stream
-            );
+            safe_api::binary::add(&bg1, &bg2, &bg1, buffer_size, &ctx)?;
 
             // FREE IMMEDIATELY
             ptx_sys::gpu_hot_free(runtime_ptr, buf1);
@@ -229,6 +229,7 @@ fn stream_local_pools(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error::Er
 
         for stream_id in 0..num_streams {
             let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
+            let ctx = KernelContext::new(runtime_ptr, stream)?;
 
             // Dynamic workload size per stream
             let workload_idx = (stream_id as usize) % workload_sizes.len();
@@ -244,11 +245,11 @@ fn stream_local_pools(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error::Er
                 return Err(format!("Allocation failed for stream {}", stream_id).into());
             }
 
+            let ig = GuardedBuffer::new(input, bytes, runtime_ptr)?;
+            let og = GuardedBuffer::new(output, bytes, runtime_ptr)?;
+
             // Run computation
-            candle::candle_launch_utanh_f32(
-                elements, 0, ptr::null(),
-                input as *const f32, output as *mut f32, stream
-            );
+            safe_api::unary::tanh(&ig, &og, elements, &ctx)?;
 
             // Free stream-local memory
             ptx_sys::gpu_hot_free(runtime_ptr, input);

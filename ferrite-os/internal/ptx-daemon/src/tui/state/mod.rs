@@ -37,6 +37,7 @@ pub enum UiMode {
     Shell,
     Files,
     Scheduler,
+    RunOutput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +257,8 @@ pub struct TuiState {
 
     // ── log ──────────────────────────────────────────────────
     pub log: VecDeque<LogEntry>,
+    /// Screen rect of the log body (set by layout each frame, for click hit-testing).
+    pub log_body_area: Rect,
 
     // ── animation ────────────────────────────────────────────
     pub tick_count: u64,
@@ -304,6 +307,9 @@ pub struct TuiState {
     pub plot3d_child: Option<Child>,
     pub plot3d_scene: String,
     pub plot3d_last_push: Option<Instant>,
+    pub plot3d_ipc_dev_ptr: usize,
+    pub plot3d_ipc_bytes: usize,
+    pub plot3d_ipc_handle_hex: Option<String>,
 
     // ── shell input ──────────────────────────────────────────
     pub input: String,
@@ -376,6 +382,8 @@ pub struct TuiState {
     pub alloc_rate_history: VecDeque<f32>,
 
     // ── run state (Plan B) ─────────────────────────────────
+    /// UI mode to return to when leaving RunOutput view.
+    pub run_output_return_mode: UiMode,
     pub run_status: RunStatus,
     pub run_config: RunConfig,
     pub run_output: VecDeque<RunOutputLine>,
@@ -463,6 +471,7 @@ impl TuiState {
 
             processes: Vec::new(),
             log: VecDeque::with_capacity(MAX_LOG_ENTRIES),
+            log_body_area: Rect::default(),
             tick_count: 0,
             heartbeat_phase: 0.0,
             wave_phase_gpu: 0.0,
@@ -493,6 +502,9 @@ impl TuiState {
             plot3d_child: None,
             plot3d_scene: "wave".to_string(),
             plot3d_last_push: None,
+            plot3d_ipc_dev_ptr: 0,
+            plot3d_ipc_bytes: 0,
+            plot3d_ipc_handle_hex: None,
             input: String::new(),
             cursor: 0,
             history: Vec::new(),
@@ -544,6 +556,7 @@ impl TuiState {
             last_event_count: 0,
             alloc_rate_history: VecDeque::with_capacity(SPARKLINE_LEN),
 
+            run_output_return_mode: UiMode::Shell,
             run_status: RunStatus::Idle,
             run_config: RunConfig::default(),
             run_output: VecDeque::with_capacity(500),

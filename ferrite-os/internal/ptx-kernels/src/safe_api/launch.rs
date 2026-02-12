@@ -21,7 +21,7 @@ pub(crate) fn binary_guard<'a>(
     BinaryOpGuard::new(left, right, output, numel, context)
 }
 
-pub(crate) fn post_launch(context: &KernelContext) -> GuardResult<()> {
-    context.check_last_error()?;
-    Ok(())
+/// Check for kernel launch errors, attributing any failure to the named kernel.
+pub(crate) fn post_launch(context: &KernelContext, kernel: &'static str) -> GuardResult<()> {
+    context.check_last_error_for(kernel)
 }

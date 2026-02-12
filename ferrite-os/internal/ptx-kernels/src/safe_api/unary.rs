@@ -7,6 +7,7 @@ fn launch_unary(
     output: &GuardedBuffer,
     numel: usize,
     context: &KernelContext,
+    kernel_name: &'static str,
     launcher: unsafe extern "C" fn(
         usize,
         usize,
@@ -21,7 +22,7 @@ fn launch_unary(
     unsafe {
         launcher(params.0, params.1, params.2, params.3, params.4, params.5);
     }
-    post_launch(context)
+    post_launch(context, kernel_name)
 }
 
 pub fn gelu(
@@ -30,7 +31,7 @@ pub fn gelu(
     numel: usize,
     context: &KernelContext,
 ) -> GuardResult<()> {
-    launch_unary(input, output, numel, context, crate::candle::candle_launch_ugelu_f32)
+    launch_unary(input, output, numel, context, "ugelu_f32", crate::candle::candle_launch_ugelu_f32)
 }
 
 pub fn relu(
@@ -39,7 +40,7 @@ pub fn relu(
     numel: usize,
     context: &KernelContext,
 ) -> GuardResult<()> {
-    launch_unary(input, output, numel, context, crate::candle::candle_launch_urelu_f32)
+    launch_unary(input, output, numel, context, "urelu_f32", crate::candle::candle_launch_urelu_f32)
 }
 
 pub fn silu(
@@ -48,7 +49,7 @@ pub fn silu(
     numel: usize,
     context: &KernelContext,
 ) -> GuardResult<()> {
-    launch_unary(input, output, numel, context, crate::candle::candle_launch_usilu_f32)
+    launch_unary(input, output, numel, context, "usilu_f32", crate::candle::candle_launch_usilu_f32)
 }
 
 pub fn sigmoid(
@@ -57,7 +58,7 @@ pub fn sigmoid(
     numel: usize,
     context: &KernelContext,
 ) -> GuardResult<()> {
-    launch_unary(input, output, numel, context, crate::candle::candle_launch_usigmoid_f32)
+    launch_unary(input, output, numel, context, "usigmoid_f32", crate::candle::candle_launch_usigmoid_f32)
 }
 
 pub fn abs(
@@ -66,7 +67,7 @@ pub fn abs(
     numel: usize,
     context: &KernelContext,
 ) -> GuardResult<()> {
-    launch_unary(input, output, numel, context, crate::candle::candle_launch_uabs_f32)
+    launch_unary(input, output, numel, context, "uabs_f32", crate::candle::candle_launch_uabs_f32)
 }
 
 pub fn sqrt(
@@ -75,7 +76,7 @@ pub fn sqrt(
     numel: usize,
     context: &KernelContext,
 ) -> GuardResult<()> {
-    launch_unary(input, output, numel, context, crate::candle::candle_launch_usqrt_f32)
+    launch_unary(input, output, numel, context, "usqrt_f32", crate::candle::candle_launch_usqrt_f32)
 }
 
 pub fn exp(
@@ -84,7 +85,7 @@ pub fn exp(
     numel: usize,
     context: &KernelContext,
 ) -> GuardResult<()> {
-    launch_unary(input, output, numel, context, crate::candle::candle_launch_uexp_f32)
+    launch_unary(input, output, numel, context, "uexp_f32", crate::candle::candle_launch_uexp_f32)
 }
 
 pub fn log(
@@ -93,7 +94,7 @@ pub fn log(
     numel: usize,
     context: &KernelContext,
 ) -> GuardResult<()> {
-    launch_unary(input, output, numel, context, crate::candle::candle_launch_ulog_f32)
+    launch_unary(input, output, numel, context, "ulog_f32", crate::candle::candle_launch_ulog_f32)
 }
 
 pub fn tanh(
@@ -102,5 +103,5 @@ pub fn tanh(
     numel: usize,
     context: &KernelContext,
 ) -> GuardResult<()> {
-    launch_unary(input, output, numel, context, crate::candle::candle_launch_utanh_f32)
+    launch_unary(input, output, numel, context, "utanh_f32", crate::candle::candle_launch_utanh_f32)
 }

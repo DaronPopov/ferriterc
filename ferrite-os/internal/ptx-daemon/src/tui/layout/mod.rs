@@ -1,5 +1,6 @@
 mod clean;
 mod files;
+mod run_output;
 pub mod scheduler;
 mod shell;
 
@@ -14,7 +15,9 @@ use super::style;
 use super::widgets::LiveWave;
 
 pub fn draw(frame: &mut Frame, state: &mut TuiState) {
-    if matches!(state.ui_mode, UiMode::Files) {
+    if matches!(state.ui_mode, UiMode::RunOutput) {
+        run_output::draw_run_output(frame, state);
+    } else if matches!(state.ui_mode, UiMode::Files) {
         files::draw_files(frame, state);
     } else if matches!(state.ui_mode, UiMode::Scheduler) {
         scheduler::render_scheduler_panel(frame, frame.area(), state);

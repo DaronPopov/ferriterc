@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use ptx_kernels::candle::{binary_f32, scan_f32, topk_f32, unary_f32};
+use ptx_kernels::{GuardedBuffer, KernelContext, GuardError};
+use ptx_kernels::safe_api::{unary, binary, scan, topk};
 use ptx_runtime::{GpuPtr, PtxRuntime};
 use thiserror::Error;
 
@@ -46,6 +47,8 @@ pub enum LangError {
     CameraNotOpened { reason: String },
     #[error(transparent)]
     Runtime(#[from] ptx_runtime::Error),
+    #[error(transparent)]
+    Guard(#[from] GuardError),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -432,7 +435,12 @@ impl GpuLangRuntime {
         }
 
         let stream = self.runtime.next_stream();
+        let runtime_ptr = self.runtime.raw();
+        let ctx = KernelContext::new(runtime_ptr, stream.raw())?;
+
         let mut slots: Vec<Option<GpuPtr>> = (0..program.nodes.len()).map(|_| None).collect();
+        // Scratch buffers that must survive until stream.synchronize().
+        let mut scratch: Vec<GpuPtr> = Vec::new();
         let mut input_data_map: HashMap<usize, &HostTensor> = HashMap::new();
         for (i, id) in program.input_ids.iter().enumerate() {
             input_data_map.insert(id.index(), &inputs[i]);
@@ -458,14 +466,9 @@ impl GpuLangRuntime {
                         .as_ref()
                         .ok_or(LangError::InvalidNodeRef(x.index()))?;
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        unary_f32::relu(
-                            inp.as_ptr_typed::<f32>(),
-                            out.as_ptr_typed::<f32>(),
-                            numel,
-                            stream.raw(),
-                        );
-                    }
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    unary::relu(&ig, &og, numel, &ctx)?;
                     out
                 }
                 Op::Tanh(x) => {
@@ -473,14 +476,9 @@ impl GpuLangRuntime {
                         .as_ref()
                         .ok_or(LangError::InvalidNodeRef(x.index()))?;
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        unary_f32::tanh(
-                            inp.as_ptr_typed::<f32>(),
-                            out.as_ptr_typed::<f32>(),
-                            numel,
-                            stream.raw(),
-                        );
-                    }
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    unary::tanh(&ig, &og, numel, &ctx)?;
                     out
                 }
                 Op::Sigmoid(x) => {
@@ -488,14 +486,9 @@ impl GpuLangRuntime {
                         .as_ref()
                         .ok_or(LangError::InvalidNodeRef(x.index()))?;
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        unary_f32::sigmoid(
-                            inp.as_ptr_typed::<f32>(),
-                            out.as_ptr_typed::<f32>(),
-                            numel,
-                            stream.raw(),
-                        );
-                    }
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    unary::sigmoid(&ig, &og, numel, &ctx)?;
                     out
                 }
                 Op::Add { lhs, rhs } => {
@@ -506,15 +499,10 @@ impl GpuLangRuntime {
                         .as_ref()
                         .ok_or(LangError::InvalidNodeRef(rhs.index()))?;
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        binary_f32::add(
-                            l.as_ptr_typed::<f32>(),
-                            r.as_ptr_typed::<f32>(),
-                            out.as_ptr_typed::<f32>(),
-                            numel,
-                            stream.raw(),
-                        );
-                    }
+                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
+                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    binary::add(&lg, &rg, &og, numel, &ctx)?;
                     out
                 }
                 Op::Mul { lhs, rhs } => {
@@ -525,15 +513,10 @@ impl GpuLangRuntime {
                         .as_ref()
                         .ok_or(LangError::InvalidNodeRef(rhs.index()))?;
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        binary_f32::mul(
-                            l.as_ptr_typed::<f32>(),
-                            r.as_ptr_typed::<f32>(),
-                            out.as_ptr_typed::<f32>(),
-                            numel,
-                            stream.raw(),
-                        );
-                    }
+                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
+                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    binary::mul(&lg, &rg, &og, numel, &ctx)?;
                     out
                 }
                 Op::Sub { lhs, rhs } => {
@@ -544,15 +527,10 @@ impl GpuLangRuntime {
                         .as_ref()
                         .ok_or(LangError::InvalidNodeRef(rhs.index()))?;
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        binary_f32::sub(
-                            l.as_ptr_typed::<f32>(),
-                            r.as_ptr_typed::<f32>(),
-                            out.as_ptr_typed::<f32>(),
-                            numel,
-                            stream.raw(),
-                        );
-                    }
+                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
+                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    binary::sub(&lg, &rg, &og, numel, &ctx)?;
                     out
                 }
                 Op::Div { lhs, rhs } => {
@@ -563,15 +541,10 @@ impl GpuLangRuntime {
                         .as_ref()
                         .ok_or(LangError::InvalidNodeRef(rhs.index()))?;
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        binary_f32::div(
-                            l.as_ptr_typed::<f32>(),
-                            r.as_ptr_typed::<f32>(),
-                            out.as_ptr_typed::<f32>(),
-                            numel,
-                            stream.raw(),
-                        );
-                    }
+                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
+                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    binary::div(&lg, &rg, &og, numel, &ctx)?;
                     out
                 }
                 Op::FillLike { value, .. } => {
@@ -591,16 +564,9 @@ impl GpuLangRuntime {
                     let dim_size = shape[*dim];
                     let inner: usize = shape[*dim + 1..].iter().product();
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        scan_f32::cumsum(
-                            inp.as_ptr_typed::<f32>(),
-                            out.as_ptr_typed::<f32>(),
-                            outer,
-                            dim_size,
-                            inner,
-                            stream.raw(),
-                        );
-                    }
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    scan::cumsum(&ig, &og, outer, dim_size, inner, &ctx)?;
                     out
                 }
                 Op::TopK { input, k, dim, largest } => {
@@ -615,19 +581,15 @@ impl GpuLangRuntime {
                     let dim_size = inp_shape[*dim];
                     let inner: usize = inp_shape[*dim + 1..].iter().product();
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        topk_f32::topk(
-                            inp.as_ptr_typed::<f32>(),
-                            out.as_ptr_typed::<f32>(),
-                            std::ptr::null_mut(), // no indices in graph mode
-                            outer,
-                            dim_size,
-                            inner,
-                            *k,
-                            *largest,
-                            stream.raw(),
-                        );
-                    }
+                    // Safe API requires a real indices buffer; allocate scratch.
+                    let idx_bytes = numel * std::mem::size_of::<i32>();
+                    let idx_buf = self.runtime.alloc(idx_bytes)?;
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    let idxg = unsafe { GuardedBuffer::new(idx_buf.as_ptr(), idx_buf.size(), runtime_ptr)? };
+                    topk::topk(&ig, &og, &idxg, outer, dim_size, inner, *k, *largest, &ctx)?;
+                    // Keep idx_buf alive until stream sync.
+                    scratch.push(idx_buf);
                     out
                 }
 
@@ -636,40 +598,44 @@ impl GpuLangRuntime {
                     let l = slots[lhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(lhs.index()))?;
                     let r = slots[rhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(rhs.index()))?;
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        binary_f32::add(l.as_ptr_typed::<f32>(), r.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
-                        unary_f32::relu(out.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
-                    }
+                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
+                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    binary::add(&lg, &rg, &og, numel, &ctx)?;
+                    unary::relu(&og, &og, numel, &ctx)?;
                     out
                 }
                 Op::FusedReluMul { lhs, rhs } => {
                     let l = slots[lhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(lhs.index()))?;
                     let r = slots[rhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(rhs.index()))?;
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        binary_f32::mul(l.as_ptr_typed::<f32>(), r.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
-                        unary_f32::relu(out.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
-                    }
+                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
+                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    binary::mul(&lg, &rg, &og, numel, &ctx)?;
+                    unary::relu(&og, &og, numel, &ctx)?;
                     out
                 }
                 Op::FusedSigmoidAdd { lhs, rhs } => {
                     let l = slots[lhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(lhs.index()))?;
                     let r = slots[rhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(rhs.index()))?;
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        binary_f32::add(l.as_ptr_typed::<f32>(), r.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
-                        unary_f32::sigmoid(out.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
-                    }
+                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
+                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    binary::add(&lg, &rg, &og, numel, &ctx)?;
+                    unary::sigmoid(&og, &og, numel, &ctx)?;
                     out
                 }
                 Op::FusedTanhAdd { lhs, rhs } => {
                     let l = slots[lhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(lhs.index()))?;
                     let r = slots[rhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(rhs.index()))?;
                     let out = self.runtime.alloc(bytes)?;
-                    unsafe {
-                        binary_f32::add(l.as_ptr_typed::<f32>(), r.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
-                        unary_f32::tanh(out.as_ptr_typed::<f32>(), out.as_ptr_typed::<f32>(), numel, stream.raw());
-                    }
+                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
+                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    binary::add(&lg, &rg, &og, numel, &ctx)?;
+                    unary::tanh(&og, &og, numel, &ctx)?;
                     out
                 }
             };
@@ -678,6 +644,7 @@ impl GpuLangRuntime {
         }
 
         stream.synchronize()?;
+        drop(scratch);
 
         let out_id = program.output.index();
         let out_shape = program.shapes[out_id].clone();

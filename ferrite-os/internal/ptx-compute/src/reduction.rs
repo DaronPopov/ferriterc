@@ -171,7 +171,7 @@ impl ParallelReducer {
             .enumerate()
         {
             let stream_id = i % self.num_streams;
-            let stream = self.runtime.stream(stream_id as i32);
+            let stream = self.runtime.stream(stream_id as i32)?;
 
             ptx_sys::ptx_tensor_reduce_sum_f32(
                 *input,
@@ -183,7 +183,7 @@ impl ParallelReducer {
             );
         }
 
-        self.runtime.sync_all();
+        self.runtime.sync_all()?;
         Ok(())
     }
 
@@ -203,7 +203,7 @@ impl ParallelReducer {
             .enumerate()
         {
             let stream_id = i % self.num_streams;
-            let stream = self.runtime.stream(stream_id as i32);
+            let stream = self.runtime.stream(stream_id as i32)?;
 
             ptx_sys::ptx_tensor_reduce_mean_f32(
                 *input,
@@ -215,7 +215,7 @@ impl ParallelReducer {
             );
         }
 
-        self.runtime.sync_all();
+        self.runtime.sync_all()?;
         Ok(())
     }
 
@@ -238,7 +238,7 @@ impl ParallelReducer {
 
         for (i, input) in inputs.iter().enumerate() {
             let stream_id = i % self.num_streams;
-            let stream = self.runtime.stream(stream_id as i32);
+            let stream = self.runtime.stream(stream_id as i32)?;
             let size = sizes[i];
 
             // Queue all 4 reduction operations on the same stream
@@ -276,7 +276,7 @@ impl ParallelReducer {
             );
         }
 
-        self.runtime.sync_all();
+        self.runtime.sync_all()?;
         Ok(())
     }
 }

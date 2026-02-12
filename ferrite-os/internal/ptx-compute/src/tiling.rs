@@ -189,7 +189,8 @@ impl TiledMatmul {
 
     /// Perform tiled matrix multiplication: C = A @ B
     ///
-    /// This would launch a custom tiled kernel (placeholder for now).
+    /// DEFERRED: Custom tiled kernel not yet available in ptx-sys.
+    /// Use `ptx_compute::gemm::Matmul` (cuBLAS) for production matmul.
     ///
     /// # Arguments
     ///
@@ -215,19 +216,12 @@ impl TiledMatmul {
         // Calculate grid dimensions
         let (grid_m, grid_n) = self.config.grid_dims(m, n);
 
-        // Placeholder: Would launch custom tiled kernel here
-        // ptx_sys::launch_tiled_matmul_kernel(
-        //     a, b, c,
-        //     m, n, k,
-        //     grid_m, grid_n,
-        //     self.config.threads_x, self.config.threads_y,
-        //     self.config.shared_memory_bytes(4),
-        //     stream.raw(),
-        // );
-
-        // For now, return success (actual kernel launch would go here)
-        let _ = (grid_m, grid_n); // Use variables
-        Ok(())
+        // DEFERRED: No ptx_sys tiled matmul kernel exists yet.
+        // Use ptx_compute::gemm::Matmul (cuBLAS-backed) instead.
+        let _ = (grid_m, grid_n);
+        Err(Error::NotSupported {
+            message: "Tiled matmul kernel not yet available in ptx-sys. Use gemm::Matmul instead.".to_string(),
+        })
     }
 
     /// Get estimated FLOPS for this tiled operation.

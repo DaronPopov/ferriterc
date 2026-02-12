@@ -6,16 +6,13 @@ use ptx_runtime::{Result, Error};
 /// Backward for sum reduction along a dimension.
 ///
 /// The gradient needs to be broadcast back to the input shape.
+/// For sum along dim d: the gradient is replicated along that dimension.
 pub fn sum_backward(
     grad_out: &Tensor,
     input_shape: &[usize],
     dim: i32,
-    _keepdim: bool,
+    keepdim: bool,
 ) -> Result<Tensor> {
-    // For sum, we need to broadcast grad_out back to input_shape
-    // This requires an expand/broadcast operation
-
-    // Handle negative dimension
     let ndim = input_shape.len() as i32;
     let dim = if dim < 0 { ndim + dim } else { dim };
 
@@ -24,21 +21,26 @@ pub fn sum_backward(
             message: format!("Invalid dimension {} for {} dims", dim, ndim),
         });
     }
-    let _dim = dim as usize;
+    let dim_usize = dim as usize;
 
-    // If keepdim is false, we need to unsqueeze the grad_out first
-    // Then broadcast to input shape
-
-    // For now, handle the simple case of full reduction (scalar output)
+    // Full reduction (scalar output) -- broadcast ones * grad_scalar to input_shape
     if grad_out.elem_count() == 1 {
-        // Scalar gradient - broadcast to all elements
         return Tensor::full(input_shape, 1.0, grad_out.dtype(), grad_out.runtime());
     }
 
-    // TODO: Implement proper broadcast for partial reductions
-    Err(Error::NotSupported {
-        message: "sum_backward for partial reduction requires broadcast, not yet implemented".to_string(),
-    })
+    // Partial reduction: we need to repeat grad_out along the reduced dim.
+    // If keepdim=false, first unsqueeze to restore the reduced dim.
+    let grad = if keepdim {
+        grad_out.clone()
+    } else {
+        grad_out.unsqueeze(dim_usize)?
+    };
+
+    // Build repeat counts: all 1s except the reduced dim which gets input_shape[dim]
+    let mut repeats: Vec<usize> = vec![1; input_shape.len()];
+    repeats[dim_usize] = input_shape[dim_usize];
+
+    grad.repeat(&repeats)
 }
 
 /// Backward for mean reduction along a dimension.
@@ -48,7 +50,7 @@ pub fn mean_backward(
     grad_out: &Tensor,
     input_shape: &[usize],
     dim: i32,
-    _keepdim: bool,
+    keepdim: bool,
 ) -> Result<Tensor> {
     let ndim = input_shape.len() as i32;
     let dim = if dim < 0 { ndim + dim } else { dim };
@@ -59,19 +61,19 @@ pub fn mean_backward(
         });
     }
 
-    // Get the size of the reduced dimension
     let reduce_size = input_shape[dim as usize];
     let scale = 1.0 / reduce_size as f32;
 
-    // For scalar output (full reduction)
+    // Full reduction (scalar output)
     if grad_out.elem_count() == 1 {
         return Tensor::full(input_shape, scale, grad_out.dtype(), grad_out.runtime());
     }
 
-    // TODO: Implement proper broadcast for partial reductions
-    Err(Error::NotSupported {
-        message: "mean_backward for partial reduction requires broadcast, not yet implemented".to_string(),
-    })
+    // Partial reduction: broadcast then scale
+    let grad_expanded = sum_backward(grad_out, input_shape, dim, keepdim)?;
+    // Scale by 1/n: multiply by scalar
+    let scale_tensor = Tensor::full(input_shape, scale, grad_out.dtype(), grad_out.runtime())?;
+    grad_expanded.mul(&scale_tensor)
 }
 
 /// Backward for max reduction.
@@ -84,12 +86,9 @@ pub fn max_backward(
     _output: &Tensor,
     _dim: i32,
 ) -> Result<Tensor> {
-    // This requires knowing which elements were the maximum
-    // Ideally we'd store argmax during forward pass
-
-    // Simple workaround: create mask where input == output (after broadcasting)
-    // This is inefficient but works for simple cases
-
+    // max_backward requires comparing input elements against the reduced max,
+    // then masking gradients. This needs element-wise comparison kernels that
+    // aren't available yet, and ideally argmax storage during forward pass.
     Err(Error::NotSupported {
         message: "max_backward requires argmax storage, not yet implemented".to_string(),
     })

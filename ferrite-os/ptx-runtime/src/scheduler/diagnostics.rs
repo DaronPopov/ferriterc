@@ -57,6 +57,12 @@ pub enum SchedulerEvent {
         tenant_id: TenantId,
         timestamp: Instant,
     },
+    /// A job was cancelled.
+    JobCancelled {
+        job_id: JobId,
+        tenant_id: TenantId,
+        timestamp: Instant,
+    },
     /// A tenant is approaching a resource quota limit.
     QuotaWarning {
         tenant_id: TenantId,
@@ -81,6 +87,7 @@ impl SchedulerEvent {
             | SchedulerEvent::JobDispatched { timestamp, .. }
             | SchedulerEvent::JobCompleted { timestamp, .. }
             | SchedulerEvent::JobFailed { timestamp, .. }
+            | SchedulerEvent::JobCancelled { timestamp, .. }
             | SchedulerEvent::QuotaWarning { timestamp, .. }
             | SchedulerEvent::StarvationDetected { timestamp, .. } => *timestamp,
         }
@@ -95,10 +102,28 @@ impl SchedulerEvent {
             SchedulerEvent::JobDispatched { .. } => "SCHED-EVT-0004",
             SchedulerEvent::JobCompleted { .. } => "SCHED-EVT-0005",
             SchedulerEvent::JobFailed { .. } => "SCHED-EVT-0006",
+            SchedulerEvent::JobCancelled { .. } => "SCHED-EVT-0009",
             SchedulerEvent::QuotaWarning { .. } => "SCHED-EVT-0007",
             SchedulerEvent::StarvationDetected { .. } => "SCHED-EVT-0008",
         }
     }
+}
+
+/// Per-tenant quota utilization summary for diagnostics.
+#[derive(Debug, Clone)]
+pub struct TenantQuotaSummary {
+    pub tenant_id: TenantId,
+    pub label: String,
+    /// VRAM utilization percentage (None if unlimited).
+    pub vram_usage_pct: Option<f64>,
+    /// Stream utilization percentage (None if unlimited).
+    pub stream_usage_pct: Option<f64>,
+    /// Concurrent jobs utilization percentage (None if unlimited).
+    pub job_usage_pct: Option<f64>,
+    /// Runtime budget utilization percentage (None if unlimited).
+    pub runtime_usage_pct: Option<f64>,
+    /// Raw usage snapshot.
+    pub usage: super::tenant::TenantUsageSnapshot,
 }
 
 /// Scheduler diagnostics collector.
@@ -119,6 +144,8 @@ pub struct SchedulerDiagnostics {
     pub total_completed: u64,
     /// Total jobs failed since creation.
     pub total_failed: u64,
+    /// Total jobs cancelled since creation.
+    pub total_cancelled: u64,
     /// Total starvation events detected since creation.
     pub total_starvation_events: u64,
 }
@@ -134,6 +161,7 @@ impl SchedulerDiagnostics {
             total_dispatched: 0,
             total_completed: 0,
             total_failed: 0,
+            total_cancelled: 0,
             total_starvation_events: 0,
         }
     }
@@ -239,6 +267,16 @@ impl SchedulerDiagnostics {
         ));
     }
 
+    /// Record a job-cancelled event.
+    pub fn record_job_cancelled(&mut self, job_id: JobId, tenant_id: TenantId) {
+        self.total_cancelled += 1;
+        self.push_event(SchedulerEvent::JobCancelled {
+            job_id,
+            tenant_id,
+            timestamp: Instant::now(),
+        });
+    }
+
     /// Record a quota warning.
     pub fn record_quota_warning(
         &mut self,
@@ -335,6 +373,55 @@ impl SchedulerDiagnostics {
         )
     }
 
+    /// Produce per-tenant quota utilization summaries.
+    ///
+    /// Returns a list of `(TenantId, resource, usage_pct)` tuples for all
+    /// tenants that have non-unlimited quotas.
+    pub fn tenant_quota_summaries(
+        &self,
+        registry: &super::registry::TenantRegistry,
+    ) -> Vec<TenantQuotaSummary> {
+        let mut summaries = Vec::new();
+        for tenant_id in registry.list() {
+            if let Some(tenant) = registry.get(tenant_id) {
+                let snap = tenant.usage.snapshot();
+                let q = &tenant.quotas;
+
+                let vram_pct = if q.max_vram_bytes != u64::MAX {
+                    Some((snap.current_vram_bytes as f64 / q.max_vram_bytes as f64) * 100.0)
+                } else {
+                    None
+                };
+                let streams_pct = if q.max_streams != u64::MAX {
+                    Some((snap.active_streams as f64 / q.max_streams as f64) * 100.0)
+                } else {
+                    None
+                };
+                let jobs_pct = if q.max_concurrent_jobs != u64::MAX {
+                    Some((snap.active_jobs as f64 / q.max_concurrent_jobs as f64) * 100.0)
+                } else {
+                    None
+                };
+                let runtime_pct = if q.max_runtime_budget_ms != u64::MAX {
+                    Some((snap.consumed_runtime_ms as f64 / q.max_runtime_budget_ms as f64) * 100.0)
+                } else {
+                    None
+                };
+
+                summaries.push(TenantQuotaSummary {
+                    tenant_id,
+                    label: tenant.label.clone(),
+                    vram_usage_pct: vram_pct,
+                    stream_usage_pct: streams_pct,
+                    job_usage_pct: jobs_pct,
+                    runtime_usage_pct: runtime_pct,
+                    usage: snap,
+                });
+            }
+        }
+        summaries
+    }
+
     /// Push an event into the ring buffer, evicting the oldest if full.
     fn push_event(&mut self, event: SchedulerEvent) {
         if self.events.len() >= MAX_EVENT_BUFFER {
@@ -359,6 +446,7 @@ impl std::fmt::Debug for SchedulerDiagnostics {
             .field("total_completed", &self.total_completed)
             .field("total_denied", &self.total_denied)
             .field("total_failed", &self.total_failed)
+            .field("total_cancelled", &self.total_cancelled)
             .finish()
     }
 }

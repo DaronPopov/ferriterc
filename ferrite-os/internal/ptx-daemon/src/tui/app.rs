@@ -156,7 +156,7 @@ pub fn run_tui(
                     }
 
                     if matches!(tui_state.ui_mode, UiMode::Files) {
-                        if files::handle_files_key(&mut tui_state, key.code, ctrl, shift, &runner, &tx) {
+                        if files::handle_files_key(&mut tui_state, key.code, ctrl, shift, &runner, &tx, &daemon) {
                             continue;
                         }
                     }
@@ -278,6 +278,59 @@ pub fn run_tui(
                         }
                     }
 
+                    // ── run-output mode key handling ─────────────
+                    if matches!(tui_state.ui_mode, UiMode::RunOutput) {
+                        match key.code {
+                            KeyCode::Esc => {
+                                tui_state.exit_run_output();
+                                needs_draw = true;
+                                continue;
+                            }
+                            KeyCode::Char('o') if ctrl => {
+                                tui_state.exit_run_output();
+                                needs_draw = true;
+                                continue;
+                            }
+                            KeyCode::Char('6') if ctrl => {
+                                commands::run::cmd_stop_run(&mut tui_state);
+                                needs_draw = true;
+                                continue;
+                            }
+                            KeyCode::Char('c') if ctrl => {
+                                daemon.shutdown();
+                                continue;
+                            }
+                            KeyCode::Char('d') if ctrl => {
+                                daemon.shutdown();
+                                continue;
+                            }
+                            KeyCode::Up => {
+                                tui_state.scroll_run_output(-1);
+                                needs_draw = true;
+                                continue;
+                            }
+                            KeyCode::Down => {
+                                tui_state.scroll_run_output(1);
+                                needs_draw = true;
+                                continue;
+                            }
+                            KeyCode::PageUp => {
+                                tui_state.scroll_run_output(-20);
+                                needs_draw = true;
+                                continue;
+                            }
+                            KeyCode::PageDown => {
+                                tui_state.scroll_run_output(20);
+                                needs_draw = true;
+                                continue;
+                            }
+                            _ => {
+                                needs_draw = true;
+                                continue;
+                            }
+                        }
+                    }
+
                     match key.code {
                         KeyCode::Char('o') if ctrl => {
                             tui_state.toggle_ui_mode();
@@ -286,8 +339,8 @@ pub fn run_tui(
                         // Ctrl+C: in Files mode handled by editor; in Scheduler mode
                         // handled above; in Shell mode quits
                         KeyCode::Char('c') if ctrl => {
-                            if matches!(tui_state.ui_mode, UiMode::Files | UiMode::Scheduler) {
-                                // Already handled by handle_files_key / scheduler block above
+                            if matches!(tui_state.ui_mode, UiMode::Files | UiMode::Scheduler | UiMode::RunOutput) {
+                                // Already handled by handle_files_key / scheduler / run-output block above
                                 continue;
                             }
                             daemon.shutdown();
@@ -296,11 +349,20 @@ pub fn run_tui(
                         // Ctrl+D: in Files mode handled by editor (half-page); in Scheduler
                         // mode handled above; in Shell mode quits
                         KeyCode::Char('d') if ctrl => {
-                            if matches!(tui_state.ui_mode, UiMode::Files | UiMode::Scheduler) {
+                            if matches!(tui_state.ui_mode, UiMode::Files | UiMode::Scheduler | UiMode::RunOutput) {
                                 continue;
                             }
                             daemon.shutdown();
                             break;
+                        }
+
+                        // Ctrl+5: run-file on open file (works in any mode)
+                        KeyCode::Char('5') if ctrl => {
+                            commands::run::cmd_run_file(&mut tui_state, &daemon, &tx, &[]);
+                        }
+                        // Ctrl+6: stop run
+                        KeyCode::Char('6') if ctrl => {
+                            commands::run::cmd_stop_run(&mut tui_state);
                         }
 
                         // Submit command
@@ -397,7 +459,9 @@ pub fn run_tui(
                 DaemonEvent::Mouse(mouse) => {
                     match mouse.kind {
                         MouseEventKind::ScrollUp => {
-                            if matches!(tui_state.ui_mode, UiMode::Files) {
+                            if matches!(tui_state.ui_mode, UiMode::RunOutput) {
+                                tui_state.scroll_run_output(-3);
+                            } else if matches!(tui_state.ui_mode, UiMode::Files) {
                                 tui_state.file_scroll_lines(3);
                             } else if matches!(tui_state.ui_mode, UiMode::Scheduler) {
                                 tui_state.scheduler_selected_index =
@@ -412,7 +476,9 @@ pub fn run_tui(
                             }
                         }
                         MouseEventKind::ScrollDown => {
-                            if matches!(tui_state.ui_mode, UiMode::Files) {
+                            if matches!(tui_state.ui_mode, UiMode::RunOutput) {
+                                tui_state.scroll_run_output(3);
+                            } else if matches!(tui_state.ui_mode, UiMode::Files) {
                                 tui_state.file_scroll_lines(-3);
                             } else if matches!(tui_state.ui_mode, UiMode::Scheduler) {
                                 use super::state::SchedulerViewMode;
@@ -441,6 +507,8 @@ pub fn run_tui(
                         MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                             if matches!(tui_state.ui_mode, UiMode::Files) {
                                 files::handle_files_mouse_down(&mut tui_state, mouse.column, mouse.row);
+                            } else if matches!(tui_state.ui_mode, UiMode::Shell) {
+                                handle_log_click(&mut tui_state, mouse.column, mouse.row);
                             }
                         }
                         MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
@@ -476,6 +544,10 @@ pub fn run_tui(
 
                 // Channel events — all trigger a redraw
                 DaemonEvent::Log(entry) => {
+                    tui_state.push_log(entry);
+                    needs_draw = true;
+                }
+                DaemonEvent::LogAction(entry) => {
                     tui_state.push_log(entry);
                     needs_draw = true;
                 }
@@ -760,6 +832,12 @@ pub fn run_tui(
         let _ = child.kill();
         let _ = child.wait();
     }
+    if tui_state.plot3d_ipc_dev_ptr != 0 {
+        let _ = unsafe { ptx_sys::cudaFree(tui_state.plot3d_ipc_dev_ptr as *mut std::ffi::c_void) };
+        tui_state.plot3d_ipc_dev_ptr = 0;
+        tui_state.plot3d_ipc_bytes = 0;
+        tui_state.plot3d_ipc_handle_hex = None;
+    }
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -771,4 +849,52 @@ pub fn run_tui(
     restore_stdio(&tty);
 
     Ok(())
+}
+
+/// Handle a mouse click in the log area.  If the clicked row corresponds
+/// to a log entry with an `action`, write that command to the input line.
+fn handle_log_click(state: &mut TuiState, col: u16, row: u16) {
+    use super::state::Panel;
+
+    let area = state.log_body_area;
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    // Hit-test: is the click inside the log body?
+    if col < area.x || col >= area.x + area.width || row < area.y || row >= area.y + area.height {
+        return;
+    }
+
+    let screen_row = (row - area.y) as usize;
+    let visible = area.height as usize;
+
+    // In sysmon compact mode, certain categories are filtered out.
+    // Replicate the same filter the renderer applies so row indices match.
+    let sysmon_compact = state.sysmon_enabled;
+    let verbose = state.focus == Panel::Processes;
+
+    let visible_entries: Vec<&crate::events::LogEntry> = state
+        .log
+        .iter()
+        .rev()
+        .skip(state.log_scroll)
+        .filter(|entry| {
+            if !sysmon_compact || verbose {
+                true
+            } else {
+                !matches!(entry.category, LogCategory::Jit | LogCategory::Run)
+            }
+        })
+        .take(visible)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    if let Some(entry) = visible_entries.get(screen_row) {
+        if let Some(ref action) = entry.action {
+            state.input = action.clone();
+            state.cursor = state.input.len();
+        }
+    }
 }

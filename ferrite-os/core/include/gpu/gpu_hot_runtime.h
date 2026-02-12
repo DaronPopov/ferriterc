@@ -515,6 +515,9 @@ typedef struct GPUHotConfig {
 
     // Stream configuration
     unsigned int max_streams;   // Maximum number of CUDA streams (default: 16, max: GPU_HOT_MAX_STREAMS)
+
+    // Single-pool strict mode: deny competing pool init from child processes
+    bool single_pool_strict;    // If true, refuse pool init when PTX_DAEMON_CLIENT=1
 } GPUHotConfig;
 
 // Get default configuration

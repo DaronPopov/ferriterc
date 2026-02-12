@@ -595,9 +595,12 @@ void ptx_tlsf_defragment(PTXTLSFAllocator* allocator) {
 }
 
 void ptx_tlsf_compact(PTXTLSFAllocator* allocator) {
-    // TODO: Implement compaction (move allocations to reduce fragmentation)
-    // This is complex and requires cooperation from users to update pointers
-    printf("[TLSF] Compaction not yet implemented\n");
+    // DEFERRED: True compaction (moving live allocations) requires a pointer-
+    // forwarding or handle-indirection layer so consumers get updated
+    // addresses. defragment() already coalesces adjacent free blocks which
+    // covers the common case. Full compaction may be revisited if heavy
+    // fragmentation is observed under sustained workloads.
+    (void)allocator;
 }
 
 void ptx_tlsf_set_warning_threshold(PTXTLSFAllocator* allocator, float threshold) {
@@ -682,16 +685,21 @@ bool ptx_tlsf_get_block_info(PTXTLSFAllocator* allocator, void* ptr,
 }
 
 bool ptx_tlsf_expand_pool(PTXTLSFAllocator* allocator, size_t additional_size) {
-    // TODO: Implement pool expansion
-    // This requires allocating a new pool and managing multiple pools
-    printf("[TLSF] Pool expansion not yet implemented\n");
+    // DEFERRED: Pool expansion requires allocating a new CUDA memory region
+    // and managing multiple disjoint pools within the TLSF bitmap structure.
+    // Current mitigation: size the initial pool via GPUHotConfig::pool_fraction
+    // or GPUHotConfig::fixed_pool_size at init time.
+    (void)allocator;
+    (void)additional_size;
     return false;
 }
 
 bool ptx_tlsf_shrink_pool(PTXTLSFAllocator* allocator) {
-    // TODO: Implement pool shrinking
-    // This requires moving allocations and freeing unused memory
-    printf("[TLSF] Pool shrinking not yet implemented\n");
+    // DEFERRED: Pool shrinking requires relocating live allocations to the
+    // beginning of the pool then returning the tail region to CUDA. This
+    // needs pointer-update cooperation from all consumers (tensors, buffers)
+    // which is not yet feasible. Use defragment() to coalesce free blocks.
+    (void)allocator;
     return false;
 }
 

@@ -6,9 +6,8 @@
 //! This shows REAL GFLOPS numbers with large-scale operations!
 
 use ptx_runtime::PtxRuntime;
-use ptx_kernels::candle;
+use ptx_kernels::{GuardedBuffer, KernelContext, safe_api};
 use std::time::Instant;
-use std::ptr;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════╗");
@@ -118,43 +117,32 @@ fn run_performance_benchmark(
     let launch_start = Instant::now();
 
     unsafe {
+        let runtime_ptr = runtime.raw();
+
         for (stream, input, temp, output) in workloads.iter() {
-            let input_f32 = *input as *const f32;
-            let temp_f32 = *temp as *const f32;
-            let output_f32 = *output as *mut f32;
+            let ctx = KernelContext::new(runtime_ptr, *stream)?;
+            let ig = GuardedBuffer::new(*input, bytes, runtime_ptr)?;
+            let tg = GuardedBuffer::new(*temp, bytes, runtime_ptr)?;
+            let og = GuardedBuffer::new(*output, bytes, runtime_ptr)?;
 
             // Chain of compute-intensive operations:
             // 1. Exponential: exp(input) -> temp
-            candle::candle_launch_uexp_f32(
-                elements, 0, ptr::null(), input_f32, temp_f32 as *mut f32, *stream
-            );
+            safe_api::unary::exp(&ig, &tg, elements, &ctx)?;
 
             // 2. Tanh: tanh(temp) -> output
-            candle::candle_launch_utanh_f32(
-                elements, 0, ptr::null(), temp_f32, output_f32, *stream
-            );
+            safe_api::unary::tanh(&tg, &og, elements, &ctx)?;
 
             // 3. Sigmoid: sigmoid(output) -> temp
-            candle::candle_launch_usigmoid_f32(
-                elements, 0, ptr::null(), output_f32 as *const f32, temp_f32 as *mut f32, *stream
-            );
+            safe_api::unary::sigmoid(&og, &tg, elements, &ctx)?;
 
             // 4. ReLU: relu(temp) -> output
-            candle::candle_launch_urelu_f32(
-                elements, 0, ptr::null(), temp_f32, output_f32, *stream
-            );
+            safe_api::unary::relu(&tg, &og, elements, &ctx)?;
 
             // 5. Binary multiply: output = output * input
-            candle::candle_launch_bmul_f32(
-                elements, 0, ptr::null(), ptr::null(), output_f32 as *const f32,
-                ptr::null(), input_f32, output_f32, *stream
-            );
+            safe_api::binary::mul(&og, &ig, &og, elements, &ctx)?;
 
             // 6. Binary add: output = output + temp
-            candle::candle_launch_badd_f32(
-                elements, 0, ptr::null(), ptr::null(), output_f32 as *const f32,
-                ptr::null(), temp_f32, output_f32, *stream
-            );
+            safe_api::binary::add(&og, &tg, &og, elements, &ctx)?;
         }
     }
 

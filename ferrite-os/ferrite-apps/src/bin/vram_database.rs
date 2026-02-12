@@ -277,7 +277,7 @@ fn main() -> Result<()> {
         platform::shm_safe_unlink(&rt, "db_stats", shm_ptr)?;
     }
 
-    rt.sync_all();
+    rt.sync_all()?;
     platform::assert_clean_exit(&rt);
 
     Ok(())

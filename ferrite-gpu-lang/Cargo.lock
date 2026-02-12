@@ -671,6 +671,8 @@ dependencies = [
  "parking_lot",
  "ptx-sys",
  "rand",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tracing",
  "tracing-appender",

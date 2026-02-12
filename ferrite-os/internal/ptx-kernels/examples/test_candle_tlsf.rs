@@ -1,17 +1,16 @@
 //! Test Candle kernels with PTX-OS TLSF allocator
 //!
-//! This demonstrates that Candle kernels work seamlessly with PTX-OS memory management.
-//! All allocations go through the TLSF allocator - kernels just do the math!
+//! This demonstrates that Candle kernels work seamlessly with PTX-OS memory management
+//! via the safe API guard layer. All allocations go through the TLSF allocator.
 
-use ptx_kernels::candle;
-use std::ptr;
+use ptx_kernels::{GuardedBuffer, KernelContext, safe_api};
 
-fn main() {
-    println!("🔥 Testing Candle Kernels with PTX-OS TLSF Allocator\n");
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🔥 Testing Safe API Kernels with PTX-OS TLSF Allocator\n");
 
     unsafe {
         // Initialize PTX-OS runtime with TLSF allocator
-        let runtime_ptr = ptx_sys::gpu_hot_init(0, ptr::null());
+        let runtime_ptr = ptx_sys::gpu_hot_init(0, std::ptr::null());
         if runtime_ptr.is_null() {
             panic!("Failed to initialize PTX-OS runtime");
         }
@@ -19,7 +18,8 @@ fn main() {
 
         // Get stream from PTX-OS
         let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, 0);
-        println!("✓ Got stream from PTX-OS\n");
+        let ctx = KernelContext::new(runtime_ptr, stream)?;
+        println!("✓ Got stream and kernel context from PTX-OS\n");
 
         // Test parameters
         const N: usize = 1024 * 1024; // 1M elements
@@ -39,6 +39,11 @@ fn main() {
         }
         println!("✓ Allocated {} KB via TLSF allocator", (BYTES * 3) / 1024);
 
+        // Create guarded buffers
+        let ig = GuardedBuffer::new(d_input, BYTES, runtime_ptr)?;
+        let og = GuardedBuffer::new(d_output, BYTES, runtime_ptr)?;
+        let tg = GuardedBuffer::new(d_temp, BYTES, runtime_ptr)?;
+
         // Initialize input data
         let mut h_input = vec![0.0f32; N];
         for (i, val) in h_input.iter_mut().enumerate() {
@@ -56,86 +61,38 @@ fn main() {
 
         // Test 1: GELU activation
         println!("🧪 Test 1: GELU Activation");
-        candle::candle_launch_ugelu_f32(
-            N,
-            0,
-            ptr::null(),
-            d_input as *const f32,
-            d_output as *mut f32,
-            stream,
-        );
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::unary::gelu(&ig, &og, N, &ctx)?;
+        ctx.sync()?;
         println!("   ✓ GELU completed");
 
         // Test 2: ReLU activation
         println!("\n🧪 Test 2: ReLU Activation");
-        candle::candle_launch_urelu_f32(
-            N,
-            0,
-            ptr::null(),
-            d_input as *const f32,
-            d_temp as *mut f32,
-            stream,
-        );
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::unary::relu(&ig, &tg, N, &ctx)?;
+        ctx.sync()?;
         println!("   ✓ ReLU completed");
 
         // Test 3: Element-wise multiplication (output = GELU(input) * ReLU(input))
         println!("\n🧪 Test 3: Element-wise Multiplication");
-        candle::candle_launch_bmul_f32(
-            N,
-            0,
-            ptr::null(),
-            ptr::null(),
-            d_output as *const f32,
-            ptr::null(),
-            d_temp as *const f32,
-            d_output as *mut f32,
-            stream,
-        );
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::binary::mul(&og, &tg, &og, N, &ctx)?;
+        ctx.sync()?;
         println!("   ✓ Multiplication completed");
 
         // Test 4: Tanh
         println!("\n🧪 Test 4: Tanh Activation");
-        candle::candle_launch_utanh_f32(
-            N,
-            0,
-            ptr::null(),
-            d_output as *const f32,
-            d_temp as *mut f32,
-            stream,
-        );
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::unary::tanh(&og, &tg, N, &ctx)?;
+        ctx.sync()?;
         println!("   ✓ Tanh completed");
 
         // Test 5: Sigmoid
         println!("\n🧪 Test 5: Sigmoid Activation");
-        candle::candle_launch_usigmoid_f32(
-            N,
-            0,
-            ptr::null(),
-            d_input as *const f32,
-            d_temp as *mut f32,
-            stream,
-        );
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::unary::sigmoid(&ig, &tg, N, &ctx)?;
+        ctx.sync()?;
         println!("   ✓ Sigmoid completed");
 
         // Test 6: Binary addition
         println!("\n🧪 Test 6: Element-wise Addition");
-        candle::candle_launch_badd_f32(
-            N,
-            0,
-            ptr::null(),
-            ptr::null(),
-            d_output as *const f32,
-            ptr::null(),
-            d_temp as *const f32,
-            d_output as *mut f32,
-            stream,
-        );
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::binary::add(&og, &tg, &og, N, &ctx)?;
+        ctx.sync()?;
         println!("   ✓ Addition completed");
 
         // Copy result back and verify
@@ -174,10 +131,12 @@ fn main() {
         println!("✓ PTX-OS runtime shutdown");
 
         if nan_count == 0 && inf_count == 0 {
-            println!("\n✅ SUCCESS: All Candle kernels work perfectly with PTX-OS TLSF!");
-            println!("   The kernels just do math - memory management is completely separate!");
+            println!("\n✅ SUCCESS: All safe API kernels work perfectly with PTX-OS TLSF!");
+            println!("   Guarded kernel launches + TLSF memory = Fully validated!");
         } else {
             println!("\n⚠️  Warning: Found {} NaN and {} Inf values", nan_count, inf_count);
         }
     }
+
+    Ok(())
 }

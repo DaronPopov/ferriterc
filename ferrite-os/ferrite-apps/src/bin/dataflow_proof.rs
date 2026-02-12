@@ -307,7 +307,7 @@ fn main() -> Result<()> {
         // ── Periodic recycle: free all slots, re-allocate, compare ─────
         if cycle % RECYCLE_EVERY == 0 {
             slots.clear();
-            rt.sync_all();
+            rt.sync_all()?;
             rt.poll_deferred(0);
 
             // Per-class match tracking: [LARGE, MEDIUM, SMALL, TINY]
@@ -482,7 +482,7 @@ fn main() -> Result<()> {
 
     // Cleanup
     slots.clear();
-    rt.sync_all();
+    rt.sync_all()?;
     platform::assert_clean_exit(&rt);
 
     Ok(())

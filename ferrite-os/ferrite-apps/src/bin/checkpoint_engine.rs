@@ -104,7 +104,7 @@ fn main() -> Result<()> {
     let mut tensors: Vec<TensorState> = Vec::new();
     for i in 0..NUM_TENSORS {
         let gpu = rt.alloc(TENSOR_BYTES)?;
-        let stream = rt.stream(i as i32);
+        let stream = rt.stream(i as i32)?;
 
         // Initialize with i-dependent values
         let init_val = (i + 1) as f32 * 0.1;
@@ -166,7 +166,7 @@ fn main() -> Result<()> {
         // === COMPUTE PHASE ===
         // Element-wise ops across streams
         for (i, ts) in tensors.iter().enumerate() {
-            let stream = rt.stream(i as i32 % MAX_STREAMS as i32);
+            let stream = rt.stream(i as i32 % MAX_STREAMS as i32)?;
 
             // mul_scalar → gelu → add_scalar → clamp — simulates evolving state
             let scale = 1.0 + 0.0001 * (iteration as f32).sin();
@@ -207,7 +207,7 @@ fn main() -> Result<()> {
 
         // Convergence tracking: reduce_mean on first tensor
         {
-            let stream = rt.stream(0);
+            let stream = rt.stream(0)?;
             unsafe {
                 ptx_sys::ptx_tensor_reduce_mean_f32(
                     tensors[0].gpu_ptr.as_ptr_typed::<f32>(),
@@ -220,7 +220,7 @@ fn main() -> Result<()> {
 
         // === CHECKPOINT PHASE (every 30s) ===
         if last_checkpoint.elapsed() >= Duration::from_secs(CHECKPOINT_INTERVAL_SECS) {
-            rt.sync_all();
+            rt.sync_all()?;
             checkpoint_count += 1;
 
             for (i, ts) in tensors.iter().enumerate() {
@@ -238,7 +238,7 @@ fn main() -> Result<()> {
                         &ts.checkpoint_path,
                     )?;
 
-                    let stream = rt.stream(i as i32 % MAX_STREAMS as i32);
+                    let stream = rt.stream(i as i32 % MAX_STREAMS as i32)?;
                     ptx_sys::ptx_tensor_reduce_sum_f32(
                         ts.gpu_ptr.as_ptr_typed::<f32>(),
                         mean_buf.as_ptr_typed::<f32>(),
@@ -261,7 +261,7 @@ fn main() -> Result<()> {
 
         // === PRESSURE TEST (every 60s) ===
         if last_pressure.elapsed() >= Duration::from_secs(PRESSURE_INTERVAL_SECS) {
-            rt.sync_all();
+            rt.sync_all()?;
             pressure_tests += 1;
 
             // Allocate extra tensors to push pool >80%
@@ -295,7 +295,7 @@ fn main() -> Result<()> {
 
                 // Verify tensors are still intact via checksum
                 for (i, ts) in tensors.iter().enumerate() {
-                    let stream = rt.stream(i as i32 % MAX_STREAMS as i32);
+                    let stream = rt.stream(i as i32 % MAX_STREAMS as i32)?;
                     unsafe {
                         ptx_sys::ptx_tensor_reduce_sum_f32(
                             ts.gpu_ptr.as_ptr_typed::<f32>(),
@@ -305,7 +305,7 @@ fn main() -> Result<()> {
                         );
                     }
                 }
-                rt.sync_all();
+                rt.sync_all()?;
             }
 
             last_pressure = Instant::now();
@@ -314,12 +314,12 @@ fn main() -> Result<()> {
         // === CRASH RECOVERY (at 50% duration) ===
         if !crash_recovery_done && start.elapsed() >= crash_point {
             crash_recovery_done = true;
-            rt.sync_all();
+            rt.sync_all()?;
 
             println!("\n--- SIMULATED CRASH RECOVERY ---");
 
             // Corrupt tensor 0 by filling with NaN
-            let stream = rt.stream(0);
+            let stream = rt.stream(0)?;
             unsafe {
                 ptx_sys::ptx_tensor_fill_f32(
                     tensors[0].gpu_ptr.as_ptr_typed::<f32>(),
@@ -413,7 +413,7 @@ fn main() -> Result<()> {
 
         // === TELEMETRY ===
         if reporter.should_report() {
-            rt.sync_all();
+            rt.sync_all()?;
             let mut convergence: f32 = 0.0;
             unsafe {
                 mean_buf.copy_to_host(
@@ -461,7 +461,7 @@ fn main() -> Result<()> {
         platform::shm_safe_unlink(&rt, "ckpt_heartbeat", shm_ptr)?;
     }
 
-    rt.sync_all();
+    rt.sync_all()?;
     platform::assert_clean_exit(&rt);
 
     Ok(())

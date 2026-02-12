@@ -3,21 +3,21 @@
 //! This test validates that kernels actually compute the right values,
 //! not just run without crashing.
 
-use ptx_kernels::candle;
-use std::ptr;
+use ptx_kernels::{GuardedBuffer, KernelContext, safe_api};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🔬 Verifying Candle Kernel Mathematics\n");
 
     unsafe {
         // Initialize PTX-OS TLSF runtime
-        let runtime_ptr = ptx_sys::gpu_hot_init(0, ptr::null());
+        let runtime_ptr = ptx_sys::gpu_hot_init(0, std::ptr::null());
         if runtime_ptr.is_null() {
             panic!("Failed to initialize PTX-OS runtime");
         }
         println!("✓ PTX-OS runtime initialized\n");
 
         let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, 0);
+        let ctx = KernelContext::new(runtime_ptr, stream)?;
 
         // Small test size for easy verification
         const N: usize = 10;
@@ -32,6 +32,10 @@ fn main() {
             panic!("TLSF allocation failed");
         }
 
+        let ig = GuardedBuffer::new(d_input, BYTES, runtime_ptr)?;
+        let og = GuardedBuffer::new(d_output, BYTES, runtime_ptr)?;
+        let tg = GuardedBuffer::new(d_temp, BYTES, runtime_ptr)?;
+
         let mut passed = 0;
         let mut failed = 0;
 
@@ -43,8 +47,8 @@ fn main() {
         let expected_relu = vec![0.0f32, 0.0, 0.0, 1.0, 2.0, 0.0, 0.5, 0.0, 3.0, 0.1];
 
         ptx_sys::cudaMemcpy(d_input, input_relu.as_ptr() as *const _, BYTES, 1);
-        candle::candle_launch_urelu_f32(N, 0, ptr::null(), d_input as *const f32, d_output as *mut f32, stream);
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::unary::relu(&ig, &og, N, &ctx)?;
+        ctx.sync()?;
 
         let mut output_relu = vec![0.0f32; N];
         ptx_sys::cudaMemcpy(output_relu.as_mut_ptr() as *mut _, d_output, BYTES, 2);
@@ -73,8 +77,8 @@ fn main() {
         let expected_abs = vec![2.0f32, 1.0, 0.0, 1.0, 2.0, 0.5, 0.5, 3.0, 3.0, 0.1];
 
         ptx_sys::cudaMemcpy(d_input, input_abs.as_ptr() as *const _, BYTES, 1);
-        candle::candle_launch_uabs_f32(N, 0, ptr::null(), d_input as *const f32, d_output as *mut f32, stream);
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::unary::abs(&ig, &og, N, &ctx)?;
+        ctx.sync()?;
 
         let mut output_abs = vec![0.0f32; N];
         ptx_sys::cudaMemcpy(output_abs.as_mut_ptr() as *mut _, d_output, BYTES, 2);
@@ -103,8 +107,8 @@ fn main() {
         let expected_sqrt = vec![0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0, 0.5, 0.1, 10.0, 1.414213];
 
         ptx_sys::cudaMemcpy(d_input, input_sqrt.as_ptr() as *const _, BYTES, 1);
-        candle::candle_launch_usqrt_f32(N, 0, ptr::null(), d_input as *const f32, d_output as *mut f32, stream);
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::unary::sqrt(&ig, &og, N, &ctx)?;
+        ctx.sync()?;
 
         let mut output_sqrt = vec![0.0f32; N];
         ptx_sys::cudaMemcpy(output_sqrt.as_mut_ptr() as *mut _, d_output, BYTES, 2);
@@ -133,8 +137,8 @@ fn main() {
         let expected_exp: Vec<f32> = input_exp.iter().map(|x| x.exp()).collect();
 
         ptx_sys::cudaMemcpy(d_input, input_exp.as_ptr() as *const _, BYTES, 1);
-        candle::candle_launch_uexp_f32(N, 0, ptr::null(), d_input as *const f32, d_output as *mut f32, stream);
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::unary::exp(&ig, &og, N, &ctx)?;
+        ctx.sync()?;
 
         let mut output_exp = vec![0.0f32; N];
         ptx_sys::cudaMemcpy(output_exp.as_mut_ptr() as *mut _, d_output, BYTES, 2);
@@ -163,8 +167,8 @@ fn main() {
         let expected_tanh: Vec<f32> = input_tanh.iter().map(|x| x.tanh()).collect();
 
         ptx_sys::cudaMemcpy(d_input, input_tanh.as_ptr() as *const _, BYTES, 1);
-        candle::candle_launch_utanh_f32(N, 0, ptr::null(), d_input as *const f32, d_output as *mut f32, stream);
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::unary::tanh(&ig, &og, N, &ctx)?;
+        ctx.sync()?;
 
         let mut output_tanh = vec![0.0f32; N];
         ptx_sys::cudaMemcpy(output_tanh.as_mut_ptr() as *mut _, d_output, BYTES, 2);
@@ -196,11 +200,8 @@ fn main() {
         ptx_sys::cudaMemcpy(d_input, input_a.as_ptr() as *const _, BYTES, 1);
         ptx_sys::cudaMemcpy(d_temp, input_b.as_ptr() as *const _, BYTES, 1);
 
-        candle::candle_launch_badd_f32(
-            N, 0, ptr::null(), ptr::null(), d_input as *const f32,
-            ptr::null(), d_temp as *const f32, d_output as *mut f32, stream
-        );
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::binary::add(&ig, &tg, &og, N, &ctx)?;
+        ctx.sync()?;
 
         let mut output_add = vec![0.0f32; N];
         ptx_sys::cudaMemcpy(output_add.as_mut_ptr() as *mut _, d_output, BYTES, 2);
@@ -233,11 +234,8 @@ fn main() {
         ptx_sys::cudaMemcpy(d_input, input_mul_a.as_ptr() as *const _, BYTES, 1);
         ptx_sys::cudaMemcpy(d_temp, input_mul_b.as_ptr() as *const _, BYTES, 1);
 
-        candle::candle_launch_bmul_f32(
-            N, 0, ptr::null(), ptr::null(), d_input as *const f32,
-            ptr::null(), d_temp as *const f32, d_output as *mut f32, stream
-        );
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::binary::mul(&ig, &tg, &og, N, &ctx)?;
+        ctx.sync()?;
 
         let mut output_mul = vec![0.0f32; N];
         ptx_sys::cudaMemcpy(output_mul.as_mut_ptr() as *mut _, d_output, BYTES, 2);
@@ -269,8 +267,8 @@ fn main() {
             .collect();
 
         ptx_sys::cudaMemcpy(d_input, input_sigmoid.as_ptr() as *const _, BYTES, 1);
-        candle::candle_launch_usigmoid_f32(N, 0, ptr::null(), d_input as *const f32, d_output as *mut f32, stream);
-        ptx_sys::cudaStreamSynchronize(stream);
+        safe_api::unary::sigmoid(&ig, &og, N, &ctx)?;
+        ctx.sync()?;
 
         let mut output_sigmoid = vec![0.0f32; N];
         ptx_sys::cudaMemcpy(output_sigmoid.as_mut_ptr() as *mut _, d_output, BYTES, 2);
@@ -308,12 +306,13 @@ fn main() {
         ptx_sys::gpu_hot_shutdown(runtime_ptr);
 
         if failed == 0 {
-            println!("🎉 SUCCESS: All Candle kernels compute correct values!");
-            println!("   Candle + PTX-OS TLSF = Fully Validated! ✅");
-            std::process::exit(0);
+            println!("🎉 SUCCESS: All kernels compute correct values via safe API!");
+            println!("   Safe API + PTX-OS TLSF = Fully Validated! ✅");
         } else {
             println!("⚠️  FAILURE: Some kernels produced incorrect results");
             std::process::exit(1);
         }
     }
+
+    Ok(())
 }

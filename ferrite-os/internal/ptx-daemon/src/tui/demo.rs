@@ -747,7 +747,7 @@ pub(super) fn run_stability_test(
 
                     // Sync all streams + drain deferred frees before dropping,
                     // so VRAM is actually returned to the pool immediately.
-                    runtime.sync_all();
+                    let _ = runtime.sync_all();
                     runtime.poll_deferred(0);
                     drop(runner);
 
@@ -985,7 +985,7 @@ pub(super) fn run_logwatch(
     window.clear();
     drop(mean_buf);
     drop(max_buf);
-    runtime.sync_all();
+    let _ = runtime.sync_all();
     runtime.poll_deferred(0);
 
     let elapsed = start.elapsed();
@@ -1193,7 +1193,7 @@ pub(super) fn run_dataflow_proof(
         // ── Periodic recycle: free all 8 slots, re-allocate, compare ──
         if cycle % RECYCLE_EVERY == 0 {
             slots.clear();
-            runtime.sync_all();
+            let _ = runtime.sync_all();
             runtime.poll_deferred(0);
 
             let mut class_matches: [usize; 4] = [0; 4];
@@ -1292,7 +1292,7 @@ pub(super) fn run_dataflow_proof(
 
     // Final summary
     slots.clear();
-    runtime.sync_all();
+    let _ = runtime.sync_all();
     runtime.poll_deferred(0);
 
     let elapsed = start.elapsed();

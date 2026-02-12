@@ -9,9 +9,8 @@
 //! This is IMPOSSIBLE with traditional CUDA allocation!
 
 use ptx_runtime::PtxRuntime;
-use ptx_kernels::candle;
+use ptx_kernels::{GuardedBuffer, KernelContext, safe_api};
 use std::time::Instant;
-use std::ptr;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════╗");
@@ -108,6 +107,8 @@ fn dynamic_kv_cache_demo(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error:
         let runtime_ptr = runtime.raw();
         let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, 0);
 
+        let ctx = KernelContext::new(runtime_ptr, stream)?;
+
         let mut current_tokens = initial_tokens;
 
         while current_tokens <= final_tokens {
@@ -123,16 +124,17 @@ fn dynamic_kv_cache_demo(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error:
                 return Err("Allocation failed".into());
             }
 
+            let _kg = GuardedBuffer::new(kv_cache, kv_size, runtime_ptr)?;
+            let qg = GuardedBuffer::new(query, hidden_dim * 4, runtime_ptr)?;
+            let og = GuardedBuffer::new(output, hidden_dim * 4, runtime_ptr)?;
+
             total_allocations += 3;
             total_memory_used += kv_size as u64 + (hidden_dim * 4 * 2) as u64;
 
             // Simulate attention computation (simplified)
             // Real LLM: Q @ K^T / sqrt(d) @ V
             let elements = hidden_dim;
-            candle::candle_launch_utanh_f32(
-                elements, 0, ptr::null(),
-                query as *const f32, output as *mut f32, stream
-            );
+            safe_api::unary::tanh(&qg, &og, elements, &ctx)?;
 
             // FREE immediately - conversation turn done!
             ptx_sys::gpu_hot_free(runtime_ptr, kv_cache);
@@ -192,6 +194,8 @@ fn multi_tenant_demo(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error::Err
             let stream_id = user_id % runtime.num_streams();
             let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id as i32);
 
+            let ctx = KernelContext::new(runtime_ptr, stream)?;
+
             let kv_size = tokens * hidden_dim * 4;
             total_memory += kv_size as u64;
 
@@ -207,11 +211,11 @@ fn multi_tenant_demo(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error::Err
                 return Err(format!("Allocation failed for {}", name).into());
             }
 
+            let kg = GuardedBuffer::new(kv_cache, kv_size, runtime_ptr)?;
+            let og = GuardedBuffer::new(output, hidden_dim * 4, runtime_ptr)?;
+
             // Simulate inference
-            candle::candle_launch_urelu_f32(
-                hidden_dim, 0, ptr::null(),
-                kv_cache as *const f32, output as *mut f32, stream
-            );
+            safe_api::unary::relu(&kg, &og, hidden_dim, &ctx)?;
 
             // Free when request completes
             ptx_sys::gpu_hot_free(runtime_ptr, kv_cache);
@@ -279,6 +283,8 @@ fn unlimited_context_demo(runtime: &PtxRuntime, pool_gb: f64) -> Result<(), Box<
         let runtime_ptr = runtime.raw();
         let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, 0);
 
+        let ctx = KernelContext::new(runtime_ptr, stream)?;
+
         for chunk_idx in 0..num_chunks {
             let chunk_bytes = chunk_size * hidden_dim * 4;
 
@@ -290,11 +296,11 @@ fn unlimited_context_demo(runtime: &PtxRuntime, pool_gb: f64) -> Result<(), Box<
                 return Err(format!("Allocation failed at chunk {}", chunk_idx).into());
             }
 
+            let kvg = GuardedBuffer::new(kv_chunk, chunk_bytes, runtime_ptr)?;
+            let og = GuardedBuffer::new(output, hidden_dim * 4, runtime_ptr)?;
+
             // Process this chunk
-            candle::candle_launch_utanh_f32(
-                hidden_dim, 0, ptr::null(),
-                kv_chunk as *const f32, output as *mut f32, stream
-            );
+            safe_api::unary::tanh(&kvg, &og, hidden_dim, &ctx)?;
 
             // FREE IMMEDIATELY - stream to next chunk!
             ptx_sys::gpu_hot_free(runtime_ptr, kv_chunk);

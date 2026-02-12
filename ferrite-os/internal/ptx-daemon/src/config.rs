@@ -170,6 +170,10 @@ pub struct DaemonConfig {
     /// Multi-tenant scheduler configuration.
     #[serde(default)]
     pub scheduler: SchedulerConfig,
+
+    /// Single-pool strict mode: deny heavy GPU runs from child processes.
+    #[serde(default)]
+    pub single_pool_strict: bool,
 }
 
 /// Configuration for the OS control plane and policy enforcement layer.
@@ -242,6 +246,10 @@ pub struct SchedulerConfig {
     /// Maximum number of jobs that can be queued in the scheduler.
     #[serde(default = "default_scheduler_max_queued_jobs")]
     pub max_queued_jobs: usize,
+
+    /// Maximum queued jobs per tenant. 0 means no per-tenant limit.
+    #[serde(default)]
+    pub max_queued_jobs_per_tenant: usize,
 }
 
 fn default_scheduler_policy() -> String {
@@ -261,6 +269,7 @@ impl Default for SchedulerConfig {
             default_max_concurrent_jobs: 0,
             default_max_runtime_budget_ms: 0,
             max_queued_jobs: default_scheduler_max_queued_jobs(),
+            max_queued_jobs_per_tenant: 0,
         }
     }
 }
@@ -297,6 +306,7 @@ impl SchedulerConfig {
             policy: self.policy.clone(),
             default_tenant_quotas: quotas,
             max_queued_jobs: self.max_queued_jobs,
+            max_queued_jobs_per_tenant: self.max_queued_jobs_per_tenant,
         }
     }
 }
@@ -325,10 +335,10 @@ fn default_max_clients() -> usize {
     32
 }
 fn default_max_streams() -> u32 {
-    16
+    128
 }
 fn default_pool_fraction() -> f32 {
-    0.6
+    0.25
 }
 fn default_keepalive_ms() -> u64 {
     5000
@@ -369,6 +379,7 @@ impl Default for DaemonConfig {
             control_plane: ControlPlaneConfig::default(),
             jobs: JobsConfig::default(),
             scheduler: SchedulerConfig::default(),
+            single_pool_strict: false,
         }
     }
 }
@@ -393,6 +404,9 @@ impl DaemonConfig {
         if let Ok(val) = env::var("FERRITE_SOCKET") {
             self.socket_path = val;
         }
+        if let Ok(val) = env::var("FERRITE_PID_FILE") {
+            self.pid_file = val;
+        }
         if let Ok(val) = env::var("FERRITE_MAX_STREAMS") {
             if let Ok(streams) = val.parse() {
                 self.max_streams = streams;
@@ -415,6 +429,9 @@ impl DaemonConfig {
         }
         if let Ok(val) = env::var("FERRITE_THEME") {
             self.theme = Some(val);
+        }
+        if env::var("FERRITE_SINGLE_POOL_STRICT").ok().as_deref() == Some("1") {
+            self.single_pool_strict = true;
         }
     }
 }

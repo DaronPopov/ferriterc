@@ -354,6 +354,38 @@ impl ZeroCopyInteropPipeline {
         self.upload.upload_device_f32(src)
     }
 
+    pub fn upload_from_ipc_hex(
+        &mut self,
+        ipc_handle_hex: &str,
+        len_f32: usize,
+    ) -> Result<(), InteropError> {
+        let handle = decode_ipc_handle(ipc_handle_hex)?;
+        let mut dev_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        cuda_check(
+            unsafe {
+                ptx_sys::cudaIpcOpenMemHandle(
+                    &mut dev_ptr as *mut _,
+                    handle,
+                    ptx_sys::cudaIpcMemLazyEnablePeerAccess,
+                )
+            },
+            "cudaIpcOpenMemHandle",
+        )?;
+        if dev_ptr.is_null() {
+            return Err(InteropError::Backend(
+                "cudaIpcOpenMemHandle returned null pointer".to_string(),
+            ));
+        }
+        let src = unsafe { DeviceSliceF32::from_raw(dev_ptr as *const f32, len_f32) };
+        let copy = self.upload_from_device(src);
+        let close = cuda_check(
+            unsafe { ptx_sys::cudaIpcCloseMemHandle(dev_ptr) },
+            "cudaIpcCloseMemHandle",
+        );
+        copy?;
+        close
+    }
+
     pub fn upload_host_via_device(&mut self, values: &[f32]) -> Result<(), InteropError> {
         let bytes = values
             .len()
@@ -385,4 +417,25 @@ impl ZeroCopyInteropPipeline {
         upload?;
         free
     }
+}
+
+#[cfg(feature = "cuda-gl-interop")]
+fn decode_ipc_handle(hex: &str) -> Result<ptx_sys::cudaIpcMemHandle_t, InteropError> {
+    if hex.len() != 128 {
+        return Err(InteropError::Backend(format!(
+            "invalid ipc hex length: {}",
+            hex.len()
+        )));
+    }
+    let mut out = ptx_sys::cudaIpcMemHandle_t::default();
+    let mut idx = 0usize;
+    while idx < 64 {
+        let start = idx * 2;
+        let end = start + 2;
+        let byte = u8::from_str_radix(&hex[start..end], 16)
+            .map_err(|e| InteropError::Backend(format!("invalid ipc hex: {}", e)))?;
+        out.reserved[idx] = byte as i8;
+        idx += 1;
+    }
+    Ok(out)
 }

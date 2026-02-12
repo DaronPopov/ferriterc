@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "ferrite"
-path = "src/main.rs"
+path = "src/bin/ferrite.rs"
 
 [dependencies]
 ptx-runtime = { workspace = true }
@@ -31,3 +31,4 @@ ratatui = "0.29"
 crossterm = "0.28"
 tachyonfx = "0.11.1"
 rhai = "1.20"
+ptx-runner = { path = "../ptx-runner" }

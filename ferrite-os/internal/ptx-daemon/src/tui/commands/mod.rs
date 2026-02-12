@@ -37,6 +37,7 @@ pub(super) fn exec_command(
             daemon.shutdown();
         }
         "help" | "?" => help::cmd_help(state),
+        "binds" => help::cmd_binds(state),
         "clear" | "cls" => {
             state.log.clear();
         }
@@ -99,6 +100,12 @@ pub(super) fn exec_command(
         "args" => run::cmd_args(state, args),
         "profile" => run::cmd_profile(state, args),
         "timeout" => run::cmd_timeout(state, args),
+
+        // ── run-file / run-entry / run-list (daemon runner) ──
+        "run-file" => run::cmd_run_file(state, daemon, tx, args),
+        "run-entry" => run::cmd_run_entry(state, daemon, tx, args),
+        "run-list" => run::cmd_run_list(state, daemon, tx),
+        "/output" | "output" => run::cmd_toggle_output(state),
 
         // ── inspect / profiling ──────────────────────────────────
         "ptx" | "inspect" => inspect::cmd_ptx(state, runner),

@@ -40,6 +40,29 @@ impl PolicyDecision {
             remediation: remediation.into(),
         }
     }
+
+    /// Build a standardized [`DenialPayload`].  Returns `None` for `Allow`.
+    pub fn to_denial_payload(&self, action: &str, resource: &str) -> Option<DenialPayload> {
+        match self {
+            PolicyDecision::Allow => None,
+            PolicyDecision::Deny { reason, remediation } => Some(DenialPayload {
+                ok: false,
+                error: format!("policy denied: {}", reason),
+                reason: reason.to_string(),
+                reason_code: reason.code().to_string(),
+                remediation: remediation.clone(),
+                action: action.to_string(),
+                resource: resource.to_string(),
+            }),
+        }
+    }
+
+    /// Build a denial as a JSON string (with trailing newline), or `None`
+    /// for `Allow`.
+    pub fn to_denial_json(&self, action: &str, resource: &str) -> Option<String> {
+        self.to_denial_payload(action, resource)
+            .map(|p| format!("{}\n", serde_json::to_string(&p).unwrap()))
+    }
 }
 
 impl fmt::Display for PolicyDecision {
@@ -124,4 +147,27 @@ impl PolicyContext {
             timestamp: Instant::now(),
         }
     }
+}
+
+/// Standardized, machine-readable denial payload for wire responses.
+///
+/// Every policy denial—whether from the scheduler command path or the
+/// top-level command path—serializes to this shape so that clients can
+/// parse denials uniformly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DenialPayload {
+    /// Always `false` for a denial.
+    pub ok: bool,
+    /// Short human-readable error summary.
+    pub error: String,
+    /// Human-readable denial reason name (e.g. `"Unauthorized"`).
+    pub reason: String,
+    /// Stable machine-readable code (e.g. `"POLICY-DENY-0005"`).
+    pub reason_code: String,
+    /// Actionable remediation advice.
+    pub remediation: String,
+    /// The action that was attempted.
+    pub action: String,
+    /// The target resource.
+    pub resource: String,
 }

@@ -77,17 +77,20 @@ pub(in crate::tui::layout) fn draw_logs(
         .rev()
         .map(|entry| {
             let elapsed = fmt_elapsed(entry.timestamp.elapsed().as_secs());
-            let (tag_style, msg_style) = style::log_styles(entry.category);
+            let (tag_style, default_msg_style) = style::log_styles(entry.category);
+            let clickable = entry.action.is_some();
+            let msg_style = if clickable { style::accent() } else { default_msg_style };
+            let prefix = if clickable { "▸ " } else { "  " };
 
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{:>5} ", elapsed), style::label()),
                 Span::styled(format!("{:<4}", entry.category), tag_style),
-                Span::styled(" ", style::label()),
+                Span::styled(prefix, if clickable { style::accent() } else { style::label() }),
                 Span::styled(
                     if verbose {
                         entry.message.clone()
                     } else {
-                        truncate_for_log(&entry.message, area.width.saturating_sub(14) as usize)
+                        truncate_for_log(&entry.message, area.width.saturating_sub(16) as usize)
                     },
                     msg_style,
                 ),

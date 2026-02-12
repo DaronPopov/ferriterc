@@ -29,6 +29,8 @@ pub struct LogEntry {
     pub timestamp: Instant,
     pub category: LogCategory,
     pub message: String,
+    /// When set, this entry is clickable — clicking it writes this command to the input.
+    pub action: Option<String>,
 }
 
 impl LogEntry {
@@ -37,7 +39,14 @@ impl LogEntry {
             timestamp: Instant::now(),
             category,
             message: message.into(),
+            action: None,
         }
+    }
+
+    /// Attach a click action — the command that gets written to the input when clicked.
+    pub fn with_action(mut self, action: impl Into<String>) -> Self {
+        self.action = Some(action.into());
+        self
     }
 }
 
@@ -84,6 +93,8 @@ pub enum DaemonEvent {
         message: String,
     },
     Log(LogEntry),
+    /// A log entry with an optional click-action attached (for clickable TUI entries).
+    LogAction(LogEntry),
     TensorResult {
         shape: Vec<usize>,
         data: Vec<f32>,

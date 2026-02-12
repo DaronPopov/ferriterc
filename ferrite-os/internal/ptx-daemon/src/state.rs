@@ -32,6 +32,7 @@ pub struct DaemonState {
     pub running: AtomicBool,
     pub apps: parking_lot::Mutex<HashMap<u64, ManagedApp>>,
     pub next_app_id: AtomicU64,
+    pub next_run_id: AtomicU64,
 
     // ── control plane (Plan-C) ──────────────────────────────────
     /// Policy enforcement engine (protected by Mutex for interior mutability).
@@ -70,14 +71,23 @@ pub struct DaemonHealthDiagnostic {
 impl DaemonState {
     pub fn new(runtime: Arc<PtxRuntime>, config: DaemonConfig, supervisor: JobSupervisor) -> Self {
         let cp = &config.control_plane;
-        let policy_engine = if cp.default_policy == "strict" {
-            PolicyEngine::with_defaults(cp.audit_max_entries)
-        } else {
-            PolicyEngine::new(cp.audit_max_entries)
-        };
-        let event_stream = SchedulerEventStream::new(cp.event_stream_buffer);
+        let policy_engine = PolicyEngine::with_mode(cp.audit_max_entries, &cp.default_policy);
+        let mut event_stream = SchedulerEventStream::new(cp.event_stream_buffer);
         let sched_config = config.scheduler.to_runtime_config();
         let scheduler = Scheduler::new(sched_config);
+
+        // Emit pool init marker to establish single authoritative pool ownership.
+        {
+            let tlsf = runtime.tlsf_stats();
+            let stats = runtime.stats();
+            event_stream.emit(crate::event_stream::SchedulerEvent::DaemonPoolInit {
+                pool_size_bytes: tlsf.total_pool_size as u64,
+                pool_fraction: config.pool_fraction,
+                max_streams: config.max_streams,
+                device_id: config.device_id,
+            });
+            let _ = stats; // used only for the emit above
+        }
 
         Self {
             runtime,
@@ -89,6 +99,7 @@ impl DaemonState {
             running: AtomicBool::new(true),
             apps: parking_lot::Mutex::new(HashMap::new()),
             next_app_id: AtomicU64::new(1),
+            next_run_id: AtomicU64::new(1),
             policy_engine: parking_lot::Mutex::new(policy_engine),
             event_stream: parking_lot::Mutex::new(event_stream),
             scheduler_paused: AtomicBool::new(false),

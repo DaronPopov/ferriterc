@@ -8,6 +8,7 @@ pub fn connect_and_send(socket: &str, command: &str) -> io::Result<()> {
     stream.write_all(command.as_bytes())?;
     stream.write_all(b"\n")?;
     stream.flush()?;
+    stream.shutdown(std::net::Shutdown::Write)?;
 
     let mut resp = String::new();
     stream.read_to_string(&mut resp)?;

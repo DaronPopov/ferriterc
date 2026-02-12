@@ -1,21 +1,19 @@
-//! Test Candle kernels with PTX-OS TLSF allocator
-use ptx_kernels::{candle, check_cuda, sync_stream};
-use ptx_sys::cudaStream_t;
-use std::ptr;
+//! Test Candle kernels with PTX-OS runtime via safe API
+use ptx_kernels::{GuardedBuffer, KernelContext, check_cuda, sync_stream, safe_api};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🔥 Testing Candle F32 Kernels with PTX-OS\n");
 
     unsafe {
-        // Initialize CUDA
-        check_cuda(ptx_sys::cudaSetDevice(0), "Failed to set device");
+        // Initialize PTX-OS runtime with TLSF allocator
+        let runtime_ptr = ptx_sys::gpu_hot_init(0, std::ptr::null());
+        if runtime_ptr.is_null() {
+            panic!("Failed to initialize PTX-OS runtime");
+        }
+        println!("✓ PTX-OS runtime initialized");
 
-        // Create stream
-        let mut stream: cudaStream_t = ptr::null_mut();
-        check_cuda(
-            ptx_sys::cudaStreamCreate(&mut stream as *mut _),
-            "Failed to create stream",
-        );
+        let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, 0);
+        let ctx = KernelContext::new(runtime_ptr, stream)?;
 
         // Test parameters
         const N: usize = 1024 * 1024; // 1M elements
@@ -25,25 +23,19 @@ fn main() {
         println!("   Elements: {}", N);
         println!("   Size: {} KB\n", BYTES / 1024);
 
-        // Allocate GPU memory
-        let mut d_input: *mut f32 = ptr::null_mut();
-        let mut d_output: *mut f32 = ptr::null_mut();
-        let mut d_temp: *mut f32 = ptr::null_mut();
+        // Allocate GPU memory via TLSF
+        let d_input = ptx_sys::gpu_hot_alloc(runtime_ptr, BYTES);
+        let d_output = ptx_sys::gpu_hot_alloc(runtime_ptr, BYTES);
+        let d_temp = ptx_sys::gpu_hot_alloc(runtime_ptr, BYTES);
 
-        check_cuda(
-            ptx_sys::cudaMalloc(&mut d_input as *mut _ as *mut _, BYTES),
-            "Failed to allocate input",
-        );
-        check_cuda(
-            ptx_sys::cudaMalloc(&mut d_output as *mut _ as *mut _, BYTES),
-            "Failed to allocate output",
-        );
-        check_cuda(
-            ptx_sys::cudaMalloc(&mut d_temp as *mut _ as *mut _, BYTES),
-            "Failed to allocate temp",
-        );
+        if d_input.is_null() || d_output.is_null() || d_temp.is_null() {
+            panic!("TLSF allocation failed");
+        }
+        println!("✓ Allocated GPU memory via TLSF");
 
-        println!("✓ Allocated GPU memory");
+        let ig = GuardedBuffer::new(d_input, BYTES, runtime_ptr)?;
+        let og = GuardedBuffer::new(d_output, BYTES, runtime_ptr)?;
+        let tg = GuardedBuffer::new(d_temp, BYTES, runtime_ptr)?;
 
         // Initialize input data
         let mut h_input = vec![0.0f32; N];
@@ -53,64 +45,44 @@ fn main() {
 
         check_cuda(
             ptx_sys::cudaMemcpy(
-                d_input as *mut _,
+                d_input,
                 h_input.as_ptr() as *const _,
                 BYTES,
-                ptx_sys::cudaMemcpyKind_cudaMemcpyHostToDevice,
+                1, // cudaMemcpyHostToDevice
             ),
             "Failed to copy input to device",
-        );
+        )?;
 
         println!("✓ Initialized input data\n");
 
         // Test 1: GELU
         println!("🧪 Test 1: GELU Activation");
-        candle::candle_launch_ugelu_f32(N, 0, ptr::null(), d_input, d_output, stream);
-        sync_stream(stream);
+        safe_api::unary::gelu(&ig, &og, N, &ctx)?;
+        sync_stream(stream)?;
         println!("   ✓ GELU completed");
 
         // Test 2: ReLU
         println!("\n🧪 Test 2: ReLU Activation");
-        candle::candle_launch_urelu_f32(N, 0, ptr::null(), d_input, d_temp, stream);
-        sync_stream(stream);
+        safe_api::unary::relu(&ig, &tg, N, &ctx)?;
+        sync_stream(stream)?;
         println!("   ✓ ReLU completed");
 
         // Test 3: Element-wise multiply
         println!("\n🧪 Test 3: Element-wise Multiplication");
-        candle::candle_launch_bmul_f32(
-            N,
-            0,
-            ptr::null(),
-            ptr::null(),
-            d_output,
-            ptr::null(),
-            d_temp,
-            d_output,
-            stream,
-        );
-        sync_stream(stream);
+        safe_api::binary::mul(&og, &tg, &og, N, &ctx)?;
+        sync_stream(stream)?;
         println!("   ✓ Multiplication completed");
 
         // Test 4: Tanh
         println!("\n🧪 Test 4: Tanh Activation");
-        candle::candle_launch_utanh_f32(N, 0, ptr::null(), d_input, d_temp, stream);
-        sync_stream(stream);
+        safe_api::unary::tanh(&ig, &tg, N, &ctx)?;
+        sync_stream(stream)?;
         println!("   ✓ Tanh completed");
 
         // Test 5: Binary add
         println!("\n🧪 Test 5: Element-wise Addition");
-        candle::candle_launch_badd_f32(
-            N,
-            0,
-            ptr::null(),
-            ptr::null(),
-            d_output,
-            ptr::null(),
-            d_temp,
-            d_output,
-            stream,
-        );
-        sync_stream(stream);
+        safe_api::binary::add(&og, &tg, &og, N, &ctx)?;
+        sync_stream(stream)?;
         println!("   ✓ Addition completed");
 
         // Test 6: Exp
@@ -121,15 +93,15 @@ fn main() {
         }
         check_cuda(
             ptx_sys::cudaMemcpy(
-                d_input as *mut _,
+                d_input,
                 h_small_input.as_ptr() as *const _,
                 1024 * std::mem::size_of::<f32>(),
-                ptx_sys::cudaMemcpyKind_cudaMemcpyHostToDevice,
+                1, // cudaMemcpyHostToDevice
             ),
             "Failed to copy small input",
-        );
-        candle::candle_launch_uexp_f32(1024, 0, ptr::null(), d_input, d_temp, stream);
-        sync_stream(stream);
+        )?;
+        safe_api::unary::exp(&ig, &tg, 1024, &ctx)?;
+        sync_stream(stream)?;
         println!("   ✓ Exp completed");
 
         // Copy result back and verify
@@ -137,12 +109,12 @@ fn main() {
         check_cuda(
             ptx_sys::cudaMemcpy(
                 h_output.as_mut_ptr() as *mut _,
-                d_output as *const _,
+                d_output,
                 BYTES,
-                ptx_sys::cudaMemcpyKind_cudaMemcpyDeviceToHost,
+                2, // cudaMemcpyDeviceToHost
             ),
             "Failed to copy output to host",
-        );
+        )?;
 
         println!("\n📊 Sample Results:");
         println!("   First 5 values: {:?}", &h_output[0..5]);
@@ -157,17 +129,19 @@ fn main() {
         println!("   Inf count: {}", inf_count);
 
         if nan_count == 0 && inf_count == 0 {
-            println!("\n✅ All Candle kernels working correctly!");
+            println!("\n✅ All Candle kernels working correctly via safe API!");
         } else {
             println!("\n⚠️  Warning: Found NaN or Inf values");
         }
 
-        // Cleanup
-        ptx_sys::cudaFree(d_input as *mut _);
-        ptx_sys::cudaFree(d_output as *mut _);
-        ptx_sys::cudaFree(d_temp as *mut _);
-        ptx_sys::cudaStreamDestroy(stream);
+        // Cleanup via TLSF
+        ptx_sys::gpu_hot_free(runtime_ptr, d_input);
+        ptx_sys::gpu_hot_free(runtime_ptr, d_output);
+        ptx_sys::gpu_hot_free(runtime_ptr, d_temp);
+        ptx_sys::gpu_hot_shutdown(runtime_ptr);
 
         println!("\n🧹 Cleaned up resources");
     }
+
+    Ok(())
 }

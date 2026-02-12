@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         // Sync (logged and metriced)
-        runtime.sync_all();
+        runtime.sync_all()?;
 
         // Free memory (automatic on drop, logged at TRACE)
         drop(allocations);

@@ -19,6 +19,7 @@ struct PTXStableRuntime {
     GPUHotRuntime* runtime;
     int device_id;
     uint32_t magic;
+    bool imported;  // true when runtime was imported from PTX_RUNTIME_PTR (don't shutdown on release)
 };
 
 static pthread_mutex_t g_stable_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -84,6 +85,33 @@ PTXStableStatus ptx_stable_init(const PTXStableConfig* config, PTXStableRuntime*
         return PTX_STABLE_OK;
     }
 
+    // ----------------------------------------------------------------
+    // Daemon-client mode: when launched by the daemon, do NOT import
+    // the daemon's runtime pointer — it lives in a different process
+    // address space and is invalid here.  Instead, fall through to
+    // create a fresh, bounded runtime.  The daemon sets PTX_MAX_STREAMS
+    // and PTX_POOL_FRACTION env vars which apply_env_overrides() will
+    // enforce inside gpu_hot_init_with_config(), keeping the child's
+    // footprint within the daemon's profile limits.
+    // ----------------------------------------------------------------
+    const char* daemon_client = getenv("PTX_DAEMON_CLIENT");
+    if (daemon_client && daemon_client[0] == '1') {
+        // Defense-in-depth: if single-pool strict mode is active, deny pool init
+        // before even reaching gpu_hot_init_with_config().
+        const char* strict_val = getenv("PTX_SINGLE_POOL_STRICT");
+        if (strict_val && strict_val[0] == '1') {
+            printf("[Ferrite-OS] DENIED: single-pool strict mode active — external pool init refused\n");
+            printf("[Ferrite-OS] This process attempted to create a competing TLSF pool.\n");
+            printf("[Ferrite-OS] Heavy GPU workloads must run inside the daemon's allocator domain.\n");
+            pthread_mutex_unlock(&g_stable_lock);
+            return PTX_STABLE_ERR_INIT_FAILED;
+        }
+        if (!(config && config->quiet_init)) {
+            printf("[Ferrite-OS] Daemon-client mode: creating bounded runtime (env overrides active)\n");
+        }
+        // Fall through to fresh init — env overrides will clamp config.
+    }
+
     GPUHotConfig hot_cfg = gpu_hot_default_config();
     int device_id = 0;
 
@@ -132,6 +160,7 @@ PTXStableStatus ptx_stable_init(const PTXStableConfig* config, PTXStableRuntime*
     }
 
     g_refcount = 1;
+    g_singleton.imported = false;
     PTXStableStatus st = stable_fill_runtime(runtime, device_id, out_runtime);
     pthread_mutex_unlock(&g_stable_lock);
     return st;
@@ -174,8 +203,11 @@ PTXStableStatus ptx_stable_release(PTXStableRuntime* runtime) {
         ptx_context_hook_set_ptx_active(false);
     }
 
-    gpu_hot_shutdown(g_singleton.runtime);
-    stable_clear_runtime_ptr();
+    // Imported runtimes are owned by the daemon — never shut them down.
+    if (!g_singleton.imported) {
+        gpu_hot_shutdown(g_singleton.runtime);
+        stable_clear_runtime_ptr();
+    }
 
     memset(&g_singleton, 0, sizeof(g_singleton));
     pthread_mutex_unlock(&g_stable_lock);

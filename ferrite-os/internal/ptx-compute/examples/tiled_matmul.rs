@@ -99,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Perform tiled matmul
-    let stream = runtime.stream(0);
+    let stream = runtime.stream(0)?;
     println!("🚀 Launching tiled matrix multiplication...");
 
     unsafe {
@@ -111,7 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &stream,
         )?;
     }
-    runtime.sync_all();
+    runtime.sync_all()?;
 
     println!("✓ Tiled matmul complete!");
     println!();

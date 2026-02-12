@@ -86,7 +86,7 @@ impl CompiledGraph {
 
         // Launch the CUDA graph
         if let Some(graph_id) = self.graph_id {
-            let stream = self.runtime.stream(0);
+            let stream = self.runtime.stream(0)?;
             unsafe {
                 ptx_sys::gpu_hot_launch_graph(
                     self.runtime.raw(),
@@ -97,7 +97,7 @@ impl CompiledGraph {
         }
 
         // Synchronize
-        self.runtime.sync_all();
+        self.runtime.sync_all()?;
 
         // Extract outputs as tensor views into output buffers
         let mut outputs = Vec::with_capacity(self.output_ids.len());

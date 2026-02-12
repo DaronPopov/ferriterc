@@ -3,26 +3,24 @@ use super::*;
 impl PtxRuntime {
     /// Get a stream by ID.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `id` is negative or >= num_streams() and stream is not found in pool.
-    pub fn stream(&self, id: i32) -> Stream {
-        // Doc contract says "panics if id is negative or >= num_streams()"
-        assert!(id >= 0, "Stream ID must be non-negative");
-        assert!(
-            id < self.streams.len() as i32,
-            "Stream ID {} exceeds pool size {}",
-            id,
-            self.streams.len()
-        );
+    /// Returns `Error::InvalidStreamId` if `id` is negative or >= `num_streams()`.
+    pub fn stream(&self, id: i32) -> Result<Stream> {
+        if id < 0 || id >= self.streams.len() as i32 {
+            return Err(Error::InvalidStreamId {
+                id,
+                pool_size: self.streams.len(),
+            });
+        }
 
-        self.streams.get(id as usize).unwrap_or_else(|| {
-            // SAFETY: gpu_hot_get_stream is safe when:
-            // - runtime pointer is valid (guaranteed by Arc)
-            // - id is in valid range [0, max_streams)
-            let raw = unsafe { ptx_sys::gpu_hot_get_stream(self.inner.raw, id) };
-            Stream::new(raw, id)
-        })
+        // SAFETY: bounds check above guarantees id is a valid index
+        self.streams
+            .get(id as usize)
+            .ok_or(Error::InvalidStreamId {
+                id,
+                pool_size: self.streams.len(),
+            })
     }
 
     /// Get the next stream in round-robin order.
@@ -36,11 +34,20 @@ impl PtxRuntime {
     }
 
     /// Get a stream by priority.
-    pub fn priority_stream(&self, priority: StreamPriority) -> Stream {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::StreamError` if the underlying FFI call returns a null stream.
+    pub fn priority_stream(&self, priority: StreamPriority) -> Result<Stream> {
         let raw = unsafe {
             ptx_sys::gpu_hot_get_priority_stream(self.inner.raw, priority as i32)
         };
-        Stream::new(raw, priority as i32)
+        if raw.is_null() {
+            return Err(Error::StreamError {
+                message: format!("priority stream request returned null for priority {:?}", priority),
+            });
+        }
+        Ok(Stream::new(raw, priority as i32))
     }
 
     /// Get access to the stream pool.
@@ -49,14 +56,17 @@ impl PtxRuntime {
     }
 
     /// Synchronize all streams.
-    pub fn sync_all(&self) {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::CudaError` if any stream fails to synchronize.
+    pub fn sync_all(&self) -> Result<()> {
         let _timer = crate::telemetry::OpTimer::new("sync_all");
         crate::telemetry::metrics().record_stream_sync();
 
         tracing::trace!("Synchronizing all streams");
 
-        // SAFETY: Synchronization is safe when runtime pointer is valid
-        unsafe { ptx_sys::gpu_hot_sync_all(self.inner.raw) }
+        self.streams.synchronize_all()
     }
 
     // ========================================================================

@@ -37,7 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = PtxRuntime::with_config(0, Some(config))?;
     let init_time = init_start.elapsed();
 
+    let actual_streams = runtime.num_streams();
     println!("  ✓ Runtime initialized in {:?}", init_time);
+    println!("  Actual streams: {}", actual_streams);
     println!("  TLSF pool: {:.2} GB", runtime.tlsf_stats().total_pool_size as f64 / 1e9);
     println!();
 
@@ -74,9 +76,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut workloads = Vec::with_capacity(*num_kernels);
         for i in 0..*num_kernels {
-            // Rotate through stream pool
-            let stream_id = (i % 20000) as i32;
-            let stream = runtime.stream(stream_id);
+            // Rotate through stream pool (use actual stream count, not hardcoded)
+            let stream_id = (i % actual_streams) as i32;
+            let stream = runtime.stream(stream_id).expect("valid stream id");
 
             match runtime.alloc_async(bytes_per_kernel, &stream) {
                 Ok(input_ptr) => {
@@ -152,7 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 GuardedBuffer::new(*output_ptr, bytes_per_kernel, runtime.raw())?
             };
 
-            let ctx = KernelContext::new(runtime.raw(), stream.raw());
+            let ctx = KernelContext::new(runtime.raw(), stream.raw())?;
 
             // Launch GELU
             unsafe {
@@ -206,8 +208,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         for (stream, input_ptr, output_ptr) in &workloads {
             unsafe {
-                runtime.free_async(*input_ptr, stream);
-                runtime.free_async(*output_ptr, stream);
+                let _ = runtime.free_async(*input_ptr, stream);
+                let _ = runtime.free_async(*output_ptr, stream);
             }
         }
 

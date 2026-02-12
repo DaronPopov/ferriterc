@@ -14,6 +14,51 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SchedulerEvent {
+    /// A run request was accepted by the daemon.
+    RunRequestAccepted {
+        request_id: u64,
+        mode: String,
+        target: String,
+        entry: Option<String>,
+        args: Vec<String>,
+    },
+    /// Build/compile phase started for a run request.
+    RunBuildStarted {
+        request_id: u64,
+        command: String,
+    },
+    /// Build/compile phase finished for a run request.
+    RunBuildFinished {
+        request_id: u64,
+        success: bool,
+        elapsed_ms: u64,
+    },
+    /// Process execution started for a run request.
+    RunStarted {
+        request_id: u64,
+    },
+    /// A stdout chunk produced by the active run.
+    RunStdoutChunk {
+        request_id: u64,
+        chunk: String,
+    },
+    /// A stderr chunk produced by the active run.
+    RunStderrChunk {
+        request_id: u64,
+        chunk: String,
+    },
+    /// Run execution finished.
+    RunFinished {
+        request_id: u64,
+        success: bool,
+        exit_code: Option<i32>,
+        elapsed_ms: u64,
+    },
+    /// Run orchestration failed before process completion.
+    RunError {
+        request_id: u64,
+        message: String,
+    },
     /// A job was added to the queue.
     JobQueued {
         job_id: u64,
@@ -48,8 +93,10 @@ pub enum SchedulerEvent {
     PolicyDecision {
         tenant_id: u64,
         action: String,
+        resource: String,
         decision: String,
         reason: Option<String>,
+        remediation: Option<String>,
     },
     /// The scheduler queue was paused.
     QueuePaused,
@@ -59,6 +106,26 @@ pub enum SchedulerEvent {
     AuditQuery {
         tenant_filter: Option<u64>,
         result_count: usize,
+    },
+    /// Emitted once at daemon startup to mark pool ownership.
+    DaemonPoolInit {
+        pool_size_bytes: u64,
+        pool_fraction: f32,
+        max_streams: u32,
+        device_id: i32,
+    },
+    /// Emitted per run to indicate execution mode selection.
+    RunExecutionModeSelected {
+        request_id: u64,
+        mode: String,
+        strict: bool,
+        target: String,
+    },
+    /// Emitted when a run is denied due to single-pool strict mode.
+    SinglePoolDenial {
+        request_id: u64,
+        target: String,
+        reason: String,
     },
 }
 

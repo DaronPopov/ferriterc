@@ -210,7 +210,7 @@ impl ParallelMatmul {
         for (op_id, ((a, b), c)) in a_ptrs.iter().zip(b_ptrs).zip(c_ptrs).enumerate() {
             let stream_id = op_id % self.handles.len();
             let handle = &self.handles[stream_id];
-            let stream = self.runtime.stream(stream_id as i32);
+            let stream = self.runtime.stream(stream_id as i32)?;
 
             handle.set_stream(&stream)?;
             handle.sgemm(
@@ -228,7 +228,7 @@ impl ParallelMatmul {
         }
 
         // Synchronize all streams
-        self.runtime.sync_all();
+        self.runtime.sync_all()?;
         Ok(())
     }
 }

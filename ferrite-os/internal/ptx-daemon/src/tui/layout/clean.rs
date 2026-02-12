@@ -48,7 +48,14 @@ pub(super) fn draw_clean(frame: &mut Frame, state: &mut TuiState) {
         draw_clean_owners(frame, rows[8], state);
     }
     draw_clean_profiling(frame, rows[9], state);
-    draw_clean_recent(frame, rows[10], state);
+    // Store the log body area for mouse click hit-testing.
+    let log_area = rows[10];
+    if log_area.height > 1 {
+        state.log_body_area = Rect::new(log_area.x, log_area.y + 1, log_area.width, log_area.height - 1);
+    } else {
+        state.log_body_area = Rect::default();
+    }
+    draw_clean_recent(frame, log_area, state);
     draw_clean_prompt(frame, rows[11], state);
 }
 
@@ -201,11 +208,14 @@ fn draw_clean_recent(frame: &mut Frame, area: Rect, state: &TuiState) {
         .map(|entry| {
             let elapsed = fmt_elapsed(entry.timestamp.elapsed().as_secs());
             let (tag_style, _msg_style) = style::log_styles(entry.category);
+            let clickable = entry.action.is_some();
+            let msg_style = if clickable { style::accent() } else { style::value() };
+            let prefix = if clickable { "▸ " } else { "  " };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{:>4} ", elapsed), style::label()),
                 Span::styled(format!("{:<4}", entry.category), tag_style),
-                Span::styled(" ", style::label()),
-                Span::styled(&entry.message, style::value()),
+                Span::styled(prefix, if clickable { style::accent() } else { style::label() }),
+                Span::styled(&entry.message, msg_style),
             ]))
         })
         .collect();

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 
 impl Graph {
@@ -77,5 +79,46 @@ impl Graph {
             .filter(|(_, n)| n.inputs.contains(&tensor_id))
             .map(|(id, _)| *id)
             .collect()
+    }
+
+    // ========================================================================
+    // Graph mutation (for optimization passes)
+    // ========================================================================
+
+    /// Replace a computation node with a constant. Converts the op to
+    /// `Constant`, clears its inputs, and sets the scalar value on the
+    /// output tensor metadata.
+    pub(crate) fn replace_with_constant(&mut self, node_id: NodeId, value: f32) {
+        if let Some(node) = self.nodes.get_mut(&node_id) {
+            node.op = OpCode::Constant;
+            node.inputs.clear();
+            node.attrs = OpAttrs::default();
+            if let Some(meta) = self.tensors.get_mut(&node.output) {
+                meta.is_constant = true;
+                meta.constant_value = Some(value);
+            }
+        }
+    }
+
+    /// Remove nodes whose outputs are not in `live_tensors`.
+    /// Also removes orphaned tensor metadata. Graph inputs are always
+    /// preserved regardless of the live set.
+    pub(crate) fn remove_dead_nodes(&mut self, live_tensors: &HashSet<TensorId>) {
+        // Keep Input nodes (graph inputs) and nodes with live outputs.
+        self.nodes.retain(|_, node| {
+            node.op == OpCode::Input || live_tensors.contains(&node.output)
+        });
+
+        // Collect all tensors still referenced by remaining nodes.
+        let mut referenced: HashSet<TensorId> = HashSet::new();
+        for node in self.nodes.values() {
+            referenced.insert(node.output);
+            for &input_id in &node.inputs {
+                referenced.insert(input_id);
+            }
+        }
+
+        // Keep tensors that are referenced or are graph inputs.
+        self.tensors.retain(|id, _| referenced.contains(id));
     }
 }

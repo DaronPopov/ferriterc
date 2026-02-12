@@ -97,6 +97,44 @@ impl PtxRuntime {
         unsafe { ptx_sys::gpu_hot_set_auto_defrag(self.inner.raw, enable) }
     }
 
+    /// Attempt to expand the TLSF memory pool.
+    ///
+    /// DEFERRED: Pool expansion requires allocating a new CUDA memory region
+    /// and managing multiple disjoint pools within the TLSF bitmap structure.
+    /// This is not yet implemented in the C core.
+    ///
+    /// **Mitigation:** Size the initial pool via `GPUHotConfig::pool_fraction`
+    /// or `GPUHotConfig::fixed_pool_size` at init time.
+    pub fn expand_pool(&self, _additional_bytes: usize) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "TLSF pool expansion not yet implemented. Size pool at init via GPUHotConfig.".to_string(),
+        })
+    }
+
+    /// Attempt to shrink the TLSF memory pool.
+    ///
+    /// DEFERRED: Pool shrinking requires relocating live allocations then
+    /// returning the tail region to CUDA, which needs pointer-update
+    /// cooperation from all consumers.
+    ///
+    /// **Mitigation:** Use `defragment()` to coalesce free blocks.
+    pub fn shrink_pool(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "TLSF pool shrinking not yet implemented. Use defragment() to coalesce free blocks.".to_string(),
+        })
+    }
+
+    /// Attempt to compact the TLSF memory pool.
+    ///
+    /// DEFERRED: True compaction (moving live allocations) requires a
+    /// pointer-forwarding or handle-indirection layer. `defragment()` already
+    /// coalesces adjacent free blocks, which covers the common case.
+    pub fn compact_pool(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "TLSF pool compaction not yet implemented. Use defragment() to coalesce adjacent free blocks.".to_string(),
+        })
+    }
+
     // ========================================================================
     // Watchdog
     // ========================================================================
@@ -184,5 +222,36 @@ impl PtxRuntime {
     /// Returns the task ID on success, or -1 on failure.
     pub fn submit_task(&self, opcode: u32, priority: u32, args: &mut [*mut libc::c_void; 8]) -> i32 {
         unsafe { ptx_sys::ptx_os_submit_task(self.inner.raw, opcode, priority, args.as_mut_ptr()) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::error::Error;
+
+    #[test]
+    fn test_expand_pool_is_deferred() {
+        // expand_pool returns NotSupported until pool expansion is implemented
+        // We can't call it without a runtime, so verify the error type matches
+        let err = Error::NotSupported {
+            message: "TLSF pool expansion not yet implemented. Size pool at init via GPUHotConfig.".to_string(),
+        };
+        assert!(matches!(err, Error::NotSupported { .. }));
+    }
+
+    #[test]
+    fn test_shrink_pool_is_deferred() {
+        let err = Error::NotSupported {
+            message: "TLSF pool shrinking not yet implemented. Use defragment() to coalesce free blocks.".to_string(),
+        };
+        assert!(matches!(err, Error::NotSupported { .. }));
+    }
+
+    #[test]
+    fn test_compact_pool_is_deferred() {
+        let err = Error::NotSupported {
+            message: "TLSF pool compaction not yet implemented. Use defragment() to coalesce adjacent free blocks.".to_string(),
+        };
+        assert!(matches!(err, Error::NotSupported { .. }));
     }
 }

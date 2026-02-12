@@ -157,3 +157,73 @@ impl Default for StreamPriority {
         Self::Normal
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_pool(n: usize) -> StreamPool {
+        let streams: Vec<Stream> = (0..n as i32)
+            .map(|id| Stream::new(std::ptr::null_mut(), id))
+            .collect();
+        StreamPool::new(streams)
+    }
+
+    #[test]
+    fn stream_pool_get_returns_none_for_out_of_range() {
+        let pool = make_pool(4);
+        assert!(pool.get(0).is_some());
+        assert!(pool.get(3).is_some());
+        assert!(pool.get(4).is_none());
+        assert!(pool.get(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn stream_pool_empty_is_empty() {
+        let pool = make_pool(0);
+        assert!(pool.is_empty());
+        assert_eq!(pool.len(), 0);
+        assert!(pool.get(0).is_none());
+    }
+
+    #[test]
+    fn stream_pool_round_robin_wraps() {
+        let pool = make_pool(3);
+        let s0 = pool.next();
+        let s1 = pool.next();
+        let s2 = pool.next();
+        let s3 = pool.next(); // wraps to index 0
+        assert_eq!(s0.id(), 0);
+        assert_eq!(s1.id(), 1);
+        assert_eq!(s2.id(), 2);
+        assert_eq!(s3.id(), 0);
+    }
+
+    #[test]
+    fn stream_pool_quota_rejects_at_limit() {
+        let pool = make_pool(4);
+        let result = pool.acquire_for_tenant(42, 5, 5);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::QuotaExceeded { tenant_id: 42, .. }));
+    }
+
+    #[test]
+    fn stream_pool_quota_allows_below_limit() {
+        let pool = make_pool(4);
+        let result = pool.acquire_for_tenant(42, 2, 5);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn stream_is_default_for_null() {
+        let stream = Stream::new(std::ptr::null_mut(), 0);
+        assert!(stream.is_default());
+    }
+
+    #[test]
+    fn stream_id_preserved() {
+        let stream = Stream::new(std::ptr::null_mut(), 7);
+        assert_eq!(stream.id(), 7);
+    }
+}

@@ -3,11 +3,13 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
 use std::sync::Arc;
+use std::ffi::c_void;
 
 use crate::events::{LogCategory, LogEntry};
 use crate::state::DaemonState;
 use crate::tui::state::{TuiState, UiDensity, UiMode};
 use crate::tui::workspace::{self, fs_ops};
+use ptx_sys;
 
 pub(super) fn cmd_metrics(daemon: &Arc<DaemonState>, state: &mut TuiState) {
     let s = daemon.runtime.stats();
@@ -235,6 +237,7 @@ pub(super) fn cmd_plot3d(state: &mut TuiState, args: &[&str]) {
                 }
                 let _ = child.wait();
             }
+            free_plot3d_ipc_tensor(state);
             state.push_log(LogEntry::new(LogCategory::Sys, "plot3d stopped"));
         }
         "scene" => {
@@ -274,14 +277,8 @@ pub(super) fn cmd_plot3d(state: &mut TuiState, args: &[&str]) {
             }
             if let Some(tv) = &state.last_tensor {
                 let data = downsample_f32(&tv.samples, 5000);
-                let shape = vec![1usize, data.len().max(1)];
                 let samples_len = data.len();
-                let payload = serde_json::json!({
-                    "cmd": "tensor",
-                    "shape": shape,
-                    "data": data,
-                });
-                match send_plot3d_cmd(state, payload) {
+                match send_plot3d_tensor(state, &data) {
                     Ok(_) => state.push_log(LogEntry::new(
                         LogCategory::Sys,
                         format!("plot3d tensor stream pushed ({} samples)", samples_len),
@@ -311,6 +308,7 @@ fn refresh_plot3d_process(state: &mut TuiState) {
     if let Some(child) = state.plot3d_child.as_mut() {
         if let Ok(Some(_status)) = child.try_wait() {
             state.plot3d_child = None;
+            free_plot3d_ipc_tensor(state);
         }
     }
 }
@@ -377,6 +375,106 @@ fn send_plot3d_cmd(state: &mut TuiState, value: serde_json::Value) -> Result<Str
     Ok(reply.trim().to_string())
 }
 
+fn send_plot3d_tensor(state: &mut TuiState, data: &[f32]) -> Result<String, String> {
+    if data.is_empty() {
+        return Ok("ok:empty".to_string());
+    }
+
+    if prepare_ipc_tensor(state, data).is_ok() {
+        if let Some(handle_hex) = state.plot3d_ipc_handle_hex.clone() {
+            let reply = send_plot3d_cmd(
+                state,
+                serde_json::json!({
+                    "cmd": "tensor_ipc",
+                    "ipc_handle": handle_hex,
+                    "len_f32": data.len(),
+                }),
+            )?;
+            if !reply.starts_with("err:") {
+                return Ok(reply);
+            }
+        }
+    }
+
+    let payload = serde_json::json!({
+        "cmd": "tensor",
+        "shape": [1usize, data.len().max(1)],
+        "data": data,
+    });
+    send_plot3d_cmd(state, payload)
+}
+
+fn prepare_ipc_tensor(state: &mut TuiState, data: &[f32]) -> Result<(), String> {
+    let bytes = data
+        .len()
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| "tensor byte size overflow".to_string())?;
+    if bytes == 0 {
+        return Ok(());
+    }
+
+    if state.plot3d_ipc_dev_ptr == 0 || state.plot3d_ipc_bytes < bytes {
+        free_plot3d_ipc_tensor(state);
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        let code = unsafe { ptx_sys::cudaMalloc(&mut ptr as *mut _, bytes) };
+        cuda_check(code, "cudaMalloc(plot3d ipc tensor)")?;
+        state.plot3d_ipc_dev_ptr = ptr as usize;
+        state.plot3d_ipc_bytes = bytes;
+
+        let mut handle = ptx_sys::cudaIpcMemHandle_t::default();
+        let hcode = unsafe { ptx_sys::cudaIpcGetMemHandle(&mut handle as *mut _, ptr) };
+        cuda_check(hcode, "cudaIpcGetMemHandle(plot3d tensor)")?;
+        state.plot3d_ipc_handle_hex = Some(ipc_handle_to_hex(&handle));
+    }
+
+    let ptr = state.plot3d_ipc_dev_ptr as *mut c_void;
+    let copy = unsafe {
+        ptx_sys::cudaMemcpy(
+            ptr,
+            data.as_ptr() as *const c_void,
+            bytes,
+            ptx_sys::cudaMemcpyHostToDevice,
+        )
+    };
+    cuda_check(copy, "cudaMemcpy(H2D plot3d tensor)")?;
+    Ok(())
+}
+
+fn free_plot3d_ipc_tensor(state: &mut TuiState) {
+    if state.plot3d_ipc_dev_ptr != 0 {
+        let _ = unsafe { ptx_sys::cudaFree(state.plot3d_ipc_dev_ptr as *mut c_void) };
+    }
+    state.plot3d_ipc_dev_ptr = 0;
+    state.plot3d_ipc_bytes = 0;
+    state.plot3d_ipc_handle_hex = None;
+}
+
+fn ipc_handle_to_hex(handle: &ptx_sys::cudaIpcMemHandle_t) -> String {
+    let bytes =
+        unsafe { std::slice::from_raw_parts(handle.reserved.as_ptr() as *const u8, 64) };
+    let mut out = String::with_capacity(128);
+    for b in bytes {
+        out.push_str(&format!("{:02x}", b));
+    }
+    out
+}
+
+fn cuda_check(code: ptx_sys::cudaError_t, op: &str) -> Result<(), String> {
+    if code == ptx_sys::cudaSuccess {
+        return Ok(());
+    }
+    let msg = unsafe {
+        let ptr = ptx_sys::cudaGetErrorString(code);
+        if ptr.is_null() {
+            format!("{} failed with code {}", op, code)
+        } else {
+            let c = std::ffi::CStr::from_ptr(ptr);
+            format!("{}: {} ({})", op, c.to_string_lossy(), code)
+        }
+    };
+    Err(msg)
+}
+
 pub(crate) fn plot3d_push_latest_tensor_if_running(state: &mut TuiState) {
     refresh_plot3d_process(state);
     if state.plot3d_child.is_none() {
@@ -393,13 +491,7 @@ pub(crate) fn plot3d_push_latest_tensor_if_running(state: &mut TuiState) {
     }
     if let Some(tv) = &state.last_tensor {
         let data = downsample_f32(&tv.samples, 3000);
-        let shape = vec![1usize, data.len().max(1)];
-        let payload = serde_json::json!({
-            "cmd": "tensor",
-            "shape": shape,
-            "data": data,
-        });
-        if send_plot3d_cmd(state, payload).is_ok() {
+        if send_plot3d_tensor(state, &data).is_ok() {
             state.plot3d_last_push = Some(now);
         }
     }

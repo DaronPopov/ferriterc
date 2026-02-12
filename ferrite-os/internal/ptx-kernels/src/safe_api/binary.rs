@@ -20,6 +20,7 @@ fn launch_binary(
     output: &GuardedBuffer,
     numel: usize,
     context: &KernelContext,
+    kernel_name: &'static str,
     launcher: BinaryLauncher,
 ) -> GuardResult<()> {
     let guard = binary_guard(left, right, output, numel, context)?;
@@ -30,7 +31,7 @@ fn launch_binary(
             params.8,
         );
     }
-    post_launch(context)
+    post_launch(context, kernel_name)
 }
 
 pub fn add(
@@ -46,6 +47,7 @@ pub fn add(
         output,
         numel,
         context,
+        "badd_f32",
         crate::candle::candle_launch_badd_f32,
     )
 }
@@ -63,6 +65,7 @@ pub fn mul(
         output,
         numel,
         context,
+        "bmul_f32",
         crate::candle::candle_launch_bmul_f32,
     )
 }
@@ -80,6 +83,7 @@ pub fn sub(
         output,
         numel,
         context,
+        "bsub_f32",
         crate::candle::candle_launch_bsub_f32,
     )
 }
@@ -97,6 +101,7 @@ pub fn div(
         output,
         numel,
         context,
+        "bdiv_f32",
         crate::candle::candle_launch_bdiv_f32,
     )
 }

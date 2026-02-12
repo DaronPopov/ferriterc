@@ -9,9 +9,11 @@ use std::sync::Arc;
 use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 
+use super::commands::run as run_cmds;
 use super::state::{EditorMode, FilesFocus, TuiState};
 use crate::events::{DaemonEvent, LogCategory, LogEntry};
 use crate::script_runner::ScriptRunner;
+use crate::state::DaemonState;
 
 pub(super) fn handle_files_key(
     state: &mut TuiState,
@@ -20,10 +22,21 @@ pub(super) fn handle_files_key(
     shift: bool,
     runner: &Arc<parking_lot::Mutex<ScriptRunner>>,
     tx: &Sender<DaemonEvent>,
+    daemon: &Arc<DaemonState>,
 ) -> bool {
     // Global shortcuts available in all editor modes
     if ctrl {
         match code {
+            KeyCode::Char('5') => {
+                // Ctrl+5: Run current file via ptx-runner
+                run_cmds::cmd_run_file(state, daemon, tx, &[]);
+                return true;
+            }
+            KeyCode::Char('6') => {
+                // Ctrl+6: Stop running process
+                run_cmds::cmd_stop_run(state);
+                return true;
+            }
             KeyCode::Char('s') => {
                 match state.file_save() {
                     Ok(()) => state.push_log(LogEntry::new(LogCategory::Sys, "saved file")),
@@ -33,7 +46,7 @@ pub(super) fn handle_files_key(
             }
             KeyCode::Char('j') => {
                 // Toggle run output panel
-                state.show_run_output = !state.show_run_output;
+                run_cmds::cmd_toggle_output(state);
                 return true;
             }
             _ => {}

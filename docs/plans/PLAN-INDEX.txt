@@ -1,0 +1,18 @@
+Ferrite CUDA Hardening and Next-Wave Plans
+
+Wave 1
+- PLAN-CUDA-HARDEN-01-runtime-safety.md
+- PLAN-CUDA-HARDEN-02-control-plane-policy-enforcement.md
+- PLAN-CUDA-HARDEN-03-multitenant-isolation-and-quotas.md
+- PLAN-CUDA-HARDEN-04-recovery-and-determinism.md
+- PLAN-CUDA-HARDEN-05-kernel-assurance-and-release-gates.md
+
+Wave 2 (Priority: 06, 07, 08)
+- PLAN-CUDA-NEXT-06-scheduler-state-integration.md
+- PLAN-CUDA-NEXT-07-compiler-pass-realization.md
+- PLAN-CUDA-NEXT-08-safe-api-migration-completion.md
+- PLAN-CUDA-NEXT-09-monte-carlo-backend-implementation.md
+- PLAN-CUDA-NEXT-10-tensor-view-host-export-support.md
+
+UX
+- PLAN-UX-RUST-ENTRY-RUNNER.md

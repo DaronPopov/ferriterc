@@ -85,10 +85,41 @@ impl TuiState {
                 self.push_log(LogEntry::new(LogCategory::Sys, "shell mode"));
                 UiMode::Shell
             }
+            UiMode::RunOutput => {
+                // Return to wherever we came from
+                self.run_output_return_mode
+            }
         };
         self.selection_anchor = None;
         self.selection_head = None;
         self.selecting = false;
+    }
+
+    /// Switch to the full-screen run output view, remembering where to return.
+    pub fn enter_run_output(&mut self) {
+        if !matches!(self.ui_mode, UiMode::RunOutput) {
+            self.run_output_return_mode = self.ui_mode;
+        }
+        self.ui_mode = UiMode::RunOutput;
+    }
+
+    /// Leave run output view and return to the previous mode.
+    pub fn exit_run_output(&mut self) {
+        self.ui_mode = self.run_output_return_mode;
+    }
+
+    /// Scroll the run output panel.
+    pub fn scroll_run_output(&mut self, delta: i32) {
+        let total = self.run_output.len();
+        if delta < 0 {
+            // scroll up (toward older output)
+            self.run_output_scroll = self.run_output_scroll
+                .saturating_add((-delta) as usize)
+                .min(total.saturating_sub(1));
+        } else if delta > 0 {
+            // scroll down (toward newer output)
+            self.run_output_scroll = self.run_output_scroll.saturating_sub(delta as usize);
+        }
     }
 
     pub fn files_toggle_focus(&mut self) {

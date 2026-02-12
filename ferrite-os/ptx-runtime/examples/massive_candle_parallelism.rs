@@ -7,9 +7,8 @@
 //! with PTX-OS TLSF orchestrating everything!
 
 use ptx_runtime::PtxRuntime;
-use ptx_kernels::candle;
+use ptx_kernels::{GuardedBuffer, KernelContext, safe_api};
 use std::time::Instant;
-use std::ptr;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════╗");
@@ -99,7 +98,7 @@ fn run_candle_stress_test(
                 break;
             }
 
-            workloads.push((stream, input, temp, output));
+            workloads.push((stream, input, temp, output, bytes));
 
             if i > 0 && i % 1000 == 0 {
                 println!("    Allocated {} streams...", i);
@@ -117,27 +116,23 @@ fn run_candle_stress_test(
     let launch_start = Instant::now();
 
     unsafe {
-        for (idx, (stream, input, temp, output)) in workloads.iter().enumerate() {
-            let input_f32 = *input as *const f32;
-            let temp_f32 = *temp as *const f32;
-            let output_f32 = *output as *mut f32;
+        let runtime_ptr = runtime.raw();
+
+        for (idx, (stream, input, temp, output, bytes)) in workloads.iter().enumerate() {
+            let ctx = KernelContext::new(runtime_ptr, *stream)?;
+            let ig = GuardedBuffer::new(*input, *bytes, runtime_ptr)?;
+            let tg = GuardedBuffer::new(*temp, *bytes, runtime_ptr)?;
+            let og = GuardedBuffer::new(*output, *bytes, runtime_ptr)?;
 
             // Each stream runs 3 different Candle kernels:
             // 1. ReLU on input -> temp
-            candle::candle_launch_urelu_f32(
-                elements, 0, ptr::null(), input_f32, temp_f32 as *mut f32, *stream
-            );
+            safe_api::unary::relu(&ig, &tg, elements, &ctx)?;
 
             // 2. Tanh on temp -> output
-            candle::candle_launch_utanh_f32(
-                elements, 0, ptr::null(), temp_f32, output_f32, *stream
-            );
+            safe_api::unary::tanh(&tg, &og, elements, &ctx)?;
 
             // 3. Binary add: output = output + input
-            candle::candle_launch_badd_f32(
-                elements, 0, ptr::null(), ptr::null(), output_f32 as *const f32,
-                ptr::null(), input_f32, output_f32, *stream
-            );
+            safe_api::binary::add(&og, &ig, &og, elements, &ctx)?;
 
             if idx > 0 && idx % 1000 == 0 {
                 println!("    Launched kernels for {} streams...", idx);
@@ -155,7 +150,7 @@ fn run_candle_stress_test(
     let sync_start = Instant::now();
 
     unsafe {
-        for (stream, _, _, _) in workloads.iter() {
+        for (stream, _, _, _, _) in workloads.iter() {
             ptx_sys::cudaStreamSynchronize(*stream);
         }
     }
@@ -170,7 +165,7 @@ fn run_candle_stress_test(
 
     unsafe {
         let runtime_ptr = runtime.raw();
-        for (_, input, temp, output) in workloads.iter() {
+        for (_, input, temp, output, _) in workloads.iter() {
             ptx_sys::gpu_hot_free(runtime_ptr, *input);
             ptx_sys::gpu_hot_free(runtime_ptr, *temp);
             ptx_sys::gpu_hot_free(runtime_ptr, *output);

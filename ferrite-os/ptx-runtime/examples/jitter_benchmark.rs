@@ -9,9 +9,8 @@
 //! Production systems need PREDICTABLE latency, not just fast average!
 
 use ptx_runtime::PtxRuntime;
-use ptx_kernels::candle;
+use ptx_kernels::{GuardedBuffer, KernelContext, safe_api};
 use std::time::{Instant, Duration};
-use std::ptr;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════╗");
@@ -133,6 +132,7 @@ fn test_kernel_launch_jitter(runtime: &PtxRuntime) -> Result<(), Box<dyn std::er
     unsafe {
         let runtime_ptr = runtime.raw();
         let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, 0);
+        let ctx = KernelContext::new(runtime_ptr, stream)?;
 
         // Pre-allocate buffers to isolate kernel launch timing
         let input = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
@@ -142,12 +142,12 @@ fn test_kernel_launch_jitter(runtime: &PtxRuntime) -> Result<(), Box<dyn std::er
             return Err("Pre-allocation failed".into());
         }
 
+        let ig = GuardedBuffer::new(input, bytes, runtime_ptr)?;
+        let og = GuardedBuffer::new(output, bytes, runtime_ptr)?;
+
         for _ in 0..num_samples {
             let start = Instant::now();
-            candle::candle_launch_urelu_f32(
-                buffer_size, 0, ptr::null(),
-                input as *const f32, output as *mut f32, stream
-            );
+            safe_api::unary::relu(&ig, &og, buffer_size, &ctx)?;
             let elapsed = start.elapsed();
 
             latencies.push(elapsed);
@@ -184,6 +184,7 @@ fn test_stream_interference(runtime: &PtxRuntime) -> Result<(), Box<dyn std::err
                 // Use different streams in rotation
                 let stream_id = (sample % num_streams) as i32;
                 let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
+                let ctx = KernelContext::new(runtime_ptr, stream)?;
 
                 let start = Instant::now();
 
@@ -191,11 +192,11 @@ fn test_stream_interference(runtime: &PtxRuntime) -> Result<(), Box<dyn std::err
                 let input = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
                 let output = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
 
+                let ig = GuardedBuffer::new(input, bytes, runtime_ptr)?;
+                let og = GuardedBuffer::new(output, bytes, runtime_ptr)?;
+
                 // Launch
-                candle::candle_launch_urelu_f32(
-                    buffer_size, 0, ptr::null(),
-                    input as *const f32, output as *mut f32, stream
-                );
+                safe_api::unary::relu(&ig, &og, buffer_size, &ctx)?;
 
                 // Free
                 ptx_sys::gpu_hot_free(runtime_ptr, input);
@@ -230,6 +231,7 @@ fn test_end_to_end_latency(runtime: &PtxRuntime) -> Result<(), Box<dyn std::erro
     let num_samples = 5000;
     let buffer_size = 1024 * 1024;
     let bytes = buffer_size * 4;
+    let ns = runtime.num_streams();
 
     println!("  Collecting {} end-to-end samples...", num_samples);
     println!("  Pipeline: Alloc → Launch → Sync → Free");
@@ -240,8 +242,9 @@ fn test_end_to_end_latency(runtime: &PtxRuntime) -> Result<(), Box<dyn std::erro
         let runtime_ptr = runtime.raw();
 
         for sample in 0..num_samples {
-            let stream_id = (sample % 100) as i32;
+            let stream_id = (sample % ns) as i32;
             let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
+            let ctx = KernelContext::new(runtime_ptr, stream)?;
 
             let start = Instant::now();
 
@@ -249,10 +252,10 @@ fn test_end_to_end_latency(runtime: &PtxRuntime) -> Result<(), Box<dyn std::erro
             let input = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
             let output = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
 
-            candle::candle_launch_urelu_f32(
-                buffer_size, 0, ptr::null(),
-                input as *const f32, output as *mut f32, stream
-            );
+            let ig = GuardedBuffer::new(input, bytes, runtime_ptr)?;
+            let og = GuardedBuffer::new(output, bytes, runtime_ptr)?;
+
+            safe_api::unary::relu(&ig, &og, buffer_size, &ctx)?;
 
             ptx_sys::cudaStreamSynchronize(stream);
 

@@ -203,14 +203,24 @@ impl SchedulerPolicy for FairSharePolicy {
 }
 
 /// Shared quota checking logic used by all built-in policies.
-fn check_quotas(_job: &Job, tenant: &Tenant) -> AdmissionDecision {
+///
+/// Checks all four quota dimensions. For VRAM, the job's `estimated_vram_bytes`
+/// is added to the tenant's current usage to determine whether the allocation
+/// would exceed the quota.
+fn check_quotas(job: &Job, tenant: &Tenant) -> AdmissionDecision {
     if !tenant.runtime_within_budget() {
         return AdmissionDecision::Deny(DenialReason::RuntimeBudgetExhausted);
     }
     if !tenant.jobs_within_quota() {
         return AdmissionDecision::Deny(DenialReason::ConcurrentJobLimit);
     }
-    if !tenant.vram_within_quota() {
+    // VRAM: current usage + this job's estimate must not exceed quota
+    if tenant.quotas.max_vram_bytes != u64::MAX {
+        let current = tenant.usage.current_vram_bytes.load(std::sync::atomic::Ordering::Relaxed);
+        if current.saturating_add(job.estimated_vram_bytes) > tenant.quotas.max_vram_bytes {
+            return AdmissionDecision::Deny(DenialReason::VramQuotaExceeded);
+        }
+    } else if !tenant.vram_within_quota() {
         return AdmissionDecision::Deny(DenialReason::VramQuotaExceeded);
     }
     if !tenant.streams_within_quota() {

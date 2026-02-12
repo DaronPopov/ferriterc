@@ -238,7 +238,7 @@ fn main() -> Result<()> {
     drop(max_buf);
     drop(min_buf);
 
-    rt.sync_all();
+    rt.sync_all()?;
     platform::assert_clean_exit(&rt);
 
     Ok(())

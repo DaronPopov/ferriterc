@@ -126,7 +126,7 @@ fn main() -> Result<()> {
         total_bytes += elems * 4 * 4;
 
         if i % sync_every == 0 {
-            runtime.sync_all();
+            runtime.sync_all()?;
         }
 
         if i % print_every == 0 || i == requests {
@@ -144,7 +144,7 @@ fn main() -> Result<()> {
         }
     }
 
-    runtime.sync_all();
+    runtime.sync_all()?;
     let elapsed = start.elapsed().as_secs_f64();
     let gelem_s = (total_elems as f64) / elapsed / 1e9;
     let gb_s = (total_bytes as f64) / elapsed / 1e9;

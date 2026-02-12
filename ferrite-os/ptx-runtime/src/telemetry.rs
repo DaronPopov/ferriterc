@@ -113,6 +113,7 @@ impl Metrics {
     }
 
     pub fn record_allocation_failure(&self) {
+        self.allocations.fetch_add(1, Ordering::Relaxed);
         self.allocation_failures.fetch_add(1, Ordering::Relaxed);
     }
 

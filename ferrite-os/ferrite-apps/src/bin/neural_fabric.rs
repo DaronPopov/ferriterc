@@ -111,7 +111,7 @@ fn main() -> Result<()> {
     // Allocate input buffer
     let input_bytes = BATCH_SIZE * LAYER_DIMS[0].0 * 4;
     let input = rt.alloc(input_bytes)?;
-    let stream0 = rt.stream(0);
+    let stream0 = rt.stream(0)?;
     unsafe {
         ptx_sys::ptx_tensor_fill_f32(
             input.as_ptr_typed::<f32>(),
@@ -166,7 +166,7 @@ fn main() -> Result<()> {
             let mut prev_cols = LAYER_DIMS[0].0;
 
             for (i, layer) in layers.iter().enumerate() {
-                let stream = rt.stream(i as i32 % MAX_STREAMS as i32);
+                let stream = rt.stream(i as i32 % MAX_STREAMS as i32)?;
                 cublas.set_stream(&stream)?;
 
                 // SGEMM: output = input @ weights^T
@@ -233,7 +233,7 @@ fn main() -> Result<()> {
         // === SIMPLIFIED BACKWARD PASS ===
         // Apply weight updates using affine: w = w * (1 - lr) + gradient_noise * lr
         for (i, layer) in layers.iter().enumerate() {
-            let stream = rt.stream(i as i32 % MAX_STREAMS as i32);
+            let stream = rt.stream(i as i32 % MAX_STREAMS as i32)?;
             let n_weights = layer.rows * layer.cols;
             let decay = 1.0 - learning_rate;
             let noise = learning_rate * 0.01;
@@ -320,7 +320,7 @@ fn main() -> Result<()> {
 
         // === VFS CHECKPOINT ===
         if last_checkpoint.elapsed() >= Duration::from_secs(CHECKPOINT_INTERVAL_SECS) {
-            rt.sync_all();
+            rt.sync_all()?;
             checkpoint_count += 1;
             for (i, layer) in layers.iter().enumerate() {
                 let path = format!("/model/checkpoints/layer_{}", i);
@@ -340,7 +340,7 @@ fn main() -> Result<()> {
 
         // === TELEMETRY ===
         if reporter.should_report() {
-            rt.sync_all();
+            rt.sync_all()?;
             let mut loss_val: f32 = 0.0;
             unsafe {
                 loss_buf.copy_to_host(
@@ -392,7 +392,7 @@ fn main() -> Result<()> {
         ptx_sys::vfs_shutdown(vfs);
     }
 
-    rt.sync_all();
+    rt.sync_all()?;
     platform::assert_clean_exit(&rt);
 
     Ok(())

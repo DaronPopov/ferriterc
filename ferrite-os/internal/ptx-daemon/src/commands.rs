@@ -1,13 +1,773 @@
-use std::io;
+use std::env;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::sync::atomic::Ordering;
+use std::thread;
 use std::time::Instant;
 
+use ptx_runner::{
+    discover_run_entries, parse_run_entry_request, parse_run_file_request,
+    prepare_run_entry_command, prepare_run_file_command,
+};
 use tracing::{info, warn};
 
 use crate::config::DaemonConfig;
+use crate::event_stream::SchedulerEvent;
+use crate::policy::decision::{PolicyContext, PolicyDecision};
 use crate::state::{DaemonState, ManagedApp, MANAGED_APPS};
+
+/// Evaluate policy for a command.  Returns `Some(json)` if denied, `None` if allowed.
+/// Records the decision in the audit log and emits an event.
+///
+/// Denial responses use the standardized [`DenialPayload`] format so that
+/// every policy rejection—regardless of command path—is machine-readable.
+fn evaluate_policy(state: &DaemonState, action: &str, resource: &str) -> Option<String> {
+    let ctx = PolicyContext::new(None, action, resource);
+    let decision = {
+        let mut engine = state.policy_engine.lock();
+        engine.evaluate(&ctx)
+    };
+
+    // Emit to event stream
+    {
+        let (dec_str, reason, remediation) = match &decision {
+            PolicyDecision::Allow => ("Allow".to_string(), None, None),
+            PolicyDecision::Deny { reason, remediation } => (
+                "Deny".to_string(),
+                Some(reason.code().to_string()),
+                Some(remediation.clone()),
+            ),
+        };
+        let mut es = state.event_stream.lock();
+        es.emit(SchedulerEvent::PolicyDecision {
+            tenant_id: ctx.tenant_id.unwrap_or(0),
+            action: action.to_string(),
+            resource: resource.to_string(),
+            decision: dec_str,
+            reason,
+            remediation,
+        });
+    }
+
+    decision.to_denial_json(action, resource)
+}
+
+#[derive(Debug)]
+struct RunRunnerResult {
+    stdout: String,
+    stderr: String,
+    success: bool,
+    exit_code: Option<i32>,
+    elapsed_ms: u64,
+}
+
+/// Per-command overrides for child process resource limits.
+#[derive(Debug, Clone, Default)]
+struct RunOverrides {
+    /// Override child stream count (PTX_MAX_STREAMS).
+    streams: Option<u32>,
+    /// Override child pool fraction (PTX_POOL_FRACTION).
+    pool: Option<f32>,
+}
+
+#[derive(Debug)]
+struct ParsedRunFileArgs {
+    path: String,
+    entry: Option<String>,
+    passthrough: Vec<String>,
+    overrides: RunOverrides,
+}
+
+#[derive(Debug)]
+struct ParsedRunEntryArgs {
+    entry_id: String,
+    passthrough: Vec<String>,
+    overrides: RunOverrides,
+}
+
+#[derive(Debug)]
+enum StreamKind {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug)]
+struct StreamLine {
+    kind: StreamKind,
+    line: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunOrchestratorProfile {
+    Safe,
+    Balanced,
+    Stress,
+}
+
+impl RunOrchestratorProfile {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Safe => "safe",
+            Self::Balanced => "balanced",
+            Self::Stress => "stress",
+        }
+    }
+
+    pub(crate) fn max_streams(self) -> u32 {
+        match self {
+            Self::Safe => 4,
+            Self::Balanced => 8,
+            Self::Stress => 16,
+        }
+    }
+
+    pub(crate) fn pool_fraction(self) -> f32 {
+        match self {
+            Self::Safe => 0.30,
+            Self::Balanced => 0.50,
+            Self::Stress => 0.70,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunExecutionMode {
+    /// External process with bounded runtime (non-single-pool-safe).
+    ExternalProcess,
+    /// Denied: target requires in-daemon execution not yet available.
+    DeniedStrictMode,
+}
+
+fn classify_execution_mode(target: &str, strict: bool) -> RunExecutionMode {
+    if !strict {
+        return RunExecutionMode::ExternalProcess;
+    }
+    let t = target.to_ascii_lowercase();
+    let heavy = t.contains("bench")
+        || t.contains("stress")
+        || t.contains("jitter")
+        || t.contains("latency")
+        || t.contains("training")
+        || t.contains("inference");
+    if heavy {
+        RunExecutionMode::DeniedStrictMode
+    } else {
+        RunExecutionMode::ExternalProcess
+    }
+}
+
+pub(crate) fn profile_env_pairs(profile: RunOrchestratorProfile) -> [(&'static str, &'static str); 2] {
+    match profile {
+        RunOrchestratorProfile::Safe => [("PTX_MAX_STREAMS", "4"), ("PTX_POOL_FRACTION", "0.30")],
+        RunOrchestratorProfile::Balanced => [("PTX_MAX_STREAMS", "8"), ("PTX_POOL_FRACTION", "0.50")],
+        RunOrchestratorProfile::Stress => [("PTX_MAX_STREAMS", "16"), ("PTX_POOL_FRACTION", "0.70")],
+    }
+}
+
+fn parse_profile_override(value: &str) -> Option<RunOrchestratorProfile> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "safe" => Some(RunOrchestratorProfile::Safe),
+        "balanced" | "default" => Some(RunOrchestratorProfile::Balanced),
+        "stress" => Some(RunOrchestratorProfile::Stress),
+        _ => None,
+    }
+}
+
+fn profile_chain(initial: RunOrchestratorProfile) -> Vec<RunOrchestratorProfile> {
+    match initial {
+        RunOrchestratorProfile::Safe => vec![RunOrchestratorProfile::Safe],
+        RunOrchestratorProfile::Balanced => vec![
+            RunOrchestratorProfile::Balanced,
+            RunOrchestratorProfile::Safe,
+        ],
+        RunOrchestratorProfile::Stress => vec![
+            RunOrchestratorProfile::Stress,
+            RunOrchestratorProfile::Balanced,
+            RunOrchestratorProfile::Safe,
+        ],
+    }
+}
+
+pub(crate) fn is_oom_like_failure(stdout: &str, stderr: &str, exit_code: Option<i32>) -> bool {
+    if matches!(exit_code, Some(137 | 139)) {
+        return true;
+    }
+    let mut haystack = String::with_capacity(stdout.len() + stderr.len() + 1);
+    haystack.push_str(stdout);
+    haystack.push('\n');
+    haystack.push_str(stderr);
+    let haystack = haystack.to_ascii_lowercase();
+
+    let needles = [
+        "out of memory",
+        "cudaerrormemoryallocation",
+        "cuda_error_out_of_memory",
+        "allocation failed",
+        "failed to allocate",
+        "failed: out of memory",
+        "cuda stream create failed",
+        "cudastreamcreatewithpriority failed",
+    ];
+
+    needles.iter().any(|n| haystack.contains(n))
+}
+
+pub(crate) fn compute_orchestrator_profiles(
+    tlsf: &ptx_sys::TLSFPoolStats,
+    hot: &ptx_sys::GPUHotStats,
+    target: &str,
+) -> Result<Vec<RunOrchestratorProfile>, String> {
+    const MIB: usize = 1024 * 1024;
+
+    let pool_free = tlsf.free_bytes;
+    let vram_free = hot.vram_free as usize;
+    let util = tlsf.utilization_percent as f64;
+
+    if util >= 98.0 || pool_free < 96 * MIB || vram_free < 128 * MIB {
+        return Err(format!(
+            "run admission denied: daemon under memory pressure (pool util {:.1}%, pool free {:.1} MiB, vram free {:.1} MiB)",
+            util,
+            pool_free as f64 / (MIB as f64),
+            vram_free as f64 / (MIB as f64),
+        ));
+    }
+
+    if let Ok(raw) = env::var("FERRITE_RUN_PROFILE") {
+        if let Some(profile) = parse_profile_override(&raw) {
+            return Ok(profile_chain(profile));
+        }
+    }
+
+    let t = target.to_ascii_lowercase();
+    let stress_hint = t.contains("bench")
+        || t.contains("stress")
+        || t.contains("jitter")
+        || t.contains("latency");
+
+    let initial = if util >= 85.0 || pool_free < 512 * MIB || vram_free < 768 * MIB {
+        RunOrchestratorProfile::Safe
+    } else if stress_hint && util < 65.0 && pool_free > 1536 * MIB && vram_free > 2048 * MIB {
+        RunOrchestratorProfile::Stress
+    } else {
+        RunOrchestratorProfile::Balanced
+    };
+
+    Ok(profile_chain(initial))
+}
+
+fn emit_scheduler_event(state: &DaemonState, event: SchedulerEvent) {
+    let mut es = state.event_stream.lock();
+    es.emit(event);
+}
+
+pub(crate) fn find_workspace_root(start: PathBuf) -> Option<PathBuf> {
+    let mut cur = start;
+    loop {
+        let candidate = cur.join("Cargo.toml");
+        if candidate.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&candidate) {
+                if contents.contains("[workspace]") {
+                    return Some(cur);
+                }
+            }
+        }
+        if !cur.pop() {
+            break;
+        }
+    }
+    None
+}
+
+pub(crate) fn resolve_workspace_root() -> io::Result<PathBuf> {
+    if let Ok(cwd) = env::current_dir() {
+        if let Some(root) = find_workspace_root(cwd) {
+            return Ok(root);
+        }
+    }
+
+    let manifest_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if let Some(root) = find_workspace_root(manifest_root) {
+        return Ok(root);
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "Unable to locate workspace root for ptx-runner",
+    ))
+}
+
+fn split_passthrough<'a>(args: &'a [&'a str]) -> (&'a [&'a str], &'a [&'a str]) {
+    if let Some(idx) = args.iter().position(|arg| *arg == "--") {
+        (&args[..idx], &args[idx + 1..])
+    } else {
+        (args, &[])
+    }
+}
+
+/// Parse `--streams=N` and `--pool=F` from a flag list, returning overrides
+/// and the remaining flags that weren't consumed.
+fn parse_run_overrides(flags: &[&str]) -> (RunOverrides, Vec<String>) {
+    let mut overrides = RunOverrides::default();
+    let mut remaining = Vec::new();
+
+    for &flag in flags {
+        if let Some(val) = flag.strip_prefix("--streams=") {
+            if let Ok(n) = val.parse::<u32>() {
+                overrides.streams = Some(n);
+            } else {
+                remaining.push(flag.to_string());
+            }
+        } else if let Some(val) = flag.strip_prefix("--pool=") {
+            if let Ok(f) = val.parse::<f32>() {
+                overrides.pool = Some(f);
+            } else {
+                remaining.push(flag.to_string());
+            }
+        } else {
+            remaining.push(flag.to_string());
+        }
+    }
+    (overrides, remaining)
+}
+
+fn parse_run_file_args(args: &[&str]) -> Result<ParsedRunFileArgs, String> {
+    if args.is_empty() {
+        return Err("usage: run-file <path> [--entry <name>] [--streams=N] [--pool=F] [-- <args...>]".to_string());
+    }
+    let (head, tail) = split_passthrough(args);
+    let path = head[0].to_string();
+    let mut entry = None;
+    let mut other_flags: Vec<&str> = Vec::new();
+    let mut idx = 1usize;
+    while idx < head.len() {
+        match head[idx] {
+            "--entry" => {
+                let Some(value) = head.get(idx + 1) else {
+                    return Err("missing value for --entry".to_string());
+                };
+                entry = Some((*value).to_string());
+                idx += 2;
+            }
+            flag => {
+                other_flags.push(flag);
+                idx += 1;
+            }
+        }
+    }
+
+    let (overrides, unknown) = parse_run_overrides(&other_flags);
+    if let Some(unk) = unknown.first() {
+        return Err(format!(
+            "unknown flag '{unk}' (expected --entry, --streams=N, --pool=F, or --)"
+        ));
+    }
+
+    Ok(ParsedRunFileArgs {
+        path,
+        entry,
+        passthrough: tail.iter().map(|arg| (*arg).to_string()).collect(),
+        overrides,
+    })
+}
+
+fn parse_run_entry_args(args: &[&str]) -> Result<ParsedRunEntryArgs, String> {
+    if args.is_empty() {
+        return Err("usage: run-entry <entry-id> [--streams=N] [--pool=F] [-- <args...>]".to_string());
+    }
+    let (head, tail) = split_passthrough(args);
+    if head.is_empty() {
+        return Err("usage: run-entry <entry-id> [--streams=N] [--pool=F] [-- <args...>]".to_string());
+    }
+    let entry_id = head[0].to_string();
+    let (overrides, unknown) = parse_run_overrides(&head[1..]);
+    if let Some(unk) = unknown.first() {
+        return Err(format!(
+            "unknown flag '{unk}' (expected --streams=N, --pool=F, or --)"
+        ));
+    }
+    Ok(ParsedRunEntryArgs {
+        entry_id,
+        passthrough: tail.iter().map(|arg| (*arg).to_string()).collect(),
+        overrides,
+    })
+}
+
+fn run_runner_once_with_events(
+    state: &DaemonState,
+    request_id: u64,
+    mode: &str,
+    target: &str,
+    entry: Option<&str>,
+    runner_args: &[String],
+    overrides: &RunOverrides,
+    profile: RunOrchestratorProfile,
+    attempt: usize,
+    total_attempts: usize,
+) -> io::Result<RunRunnerResult> {
+    let workspace_root = resolve_workspace_root()?;
+    let repo_root = workspace_root
+        .parent()
+        .unwrap_or(workspace_root.as_path())
+        .to_path_buf();
+
+    let mut prepared = match mode {
+        "run-file" => {
+            let mut req =
+                parse_run_file_request(runner_args.get(1..).unwrap_or(&[])).map_err(io::Error::other)?;
+            if req.path.is_relative() {
+                req.path = workspace_root.join(req.path);
+            }
+            prepare_run_file_command(&workspace_root, &repo_root, req).map_err(io::Error::other)?
+        }
+        "run-entry" => {
+            let req =
+                parse_run_entry_request(runner_args.get(1..).unwrap_or(&[])).map_err(io::Error::other)?;
+            prepare_run_entry_command(&workspace_root, &repo_root, req).map_err(io::Error::other)?
+        }
+        _ => {
+            return Err(io::Error::other(format!(
+                "unsupported runner mode '{mode}' for in-process execution"
+            )))
+        }
+    };
+
+    let cmd = prepared.command_mut();
+    cmd.env("FERRITE_DAEMON_SOCKET", &state.config.socket_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // Refresh exported context handle so subprocesses can share the GPU context.
+    state.runtime.export_context();
+
+    // Signal daemon-client mode: the child creates its own bounded runtime
+    // instead of importing the daemon's host-side pointer (which is invalid
+    // across process boundaries).  PTX_MAX_STREAMS and PTX_POOL_FRACTION
+    // from the profile will be enforced by apply_env_overrides() in the
+    // C runtime init path.
+    cmd.env("PTX_DAEMON_CLIENT", "1");
+
+    // NOTE: We intentionally do NOT propagate PTX_SINGLE_POOL_STRICT to
+    // child processes.  The daemon already enforces strict mode at the Rust
+    // level (denying heavy targets before spawning).  Light targets that
+    // pass the daemon's classifier are allowed to create bounded pools —
+    // that's the expected transitional behavior.  Setting the C guard here
+    // would block ALL children from initializing any pool, breaking the
+    // light-target path.
+
+    for key in ["PTX_CONTEXT_PTR", "PTX_STREAM_PTR"] {
+        if let Ok(value) = env::var(key) {
+            cmd.env(key, value);
+        }
+    }
+
+    for (key, value) in profile_env_pairs(profile) {
+        cmd.env(key, value);
+    }
+
+    // Per-command overrides (--streams=N, --pool=F) take highest precedence.
+    // Daemon-level env overrides are second priority.  Profile defaults are lowest.
+    if let Some(streams) = overrides.streams {
+        cmd.env("PTX_MAX_STREAMS", streams.to_string());
+    } else if let Ok(v) = env::var("FERRITE_CHILD_MAX_STREAMS") {
+        cmd.env("PTX_MAX_STREAMS", &v);
+    }
+    if let Some(pool) = overrides.pool {
+        cmd.env("PTX_POOL_FRACTION", pool.to_string());
+    } else if let Ok(v) = env::var("FERRITE_CHILD_POOL_FRACTION") {
+        cmd.env("PTX_POOL_FRACTION", &v);
+    }
+
+    // Orchestrator profiles keep subprocess footprint bounded via env overrides.
+    emit_scheduler_event(
+        state,
+        SchedulerEvent::RunStderrChunk {
+            request_id,
+            chunk: format!(
+                "[orchestrator] attempt {}/{} profile={} streams={} pool_fraction={:.2}",
+                attempt,
+                total_attempts,
+                profile.as_str(),
+                profile.max_streams(),
+                profile.pool_fraction()
+            ),
+        },
+    );
+
+    let cmdline = format!(
+        "{:?} [attempt={}/{} profile={}]",
+        cmd,
+        attempt,
+        total_attempts,
+        profile.as_str()
+    );
+    emit_scheduler_event(
+        state,
+        SchedulerEvent::RunRequestAccepted {
+            request_id,
+            mode: mode.to_string(),
+            target: target.to_string(),
+            entry: entry.map(|value| value.to_string()),
+            args: runner_args.to_vec(),
+        },
+    );
+    emit_scheduler_event(
+        state,
+        SchedulerEvent::RunBuildStarted {
+            request_id,
+            command: cmdline,
+        },
+    );
+
+    let run_start = Instant::now();
+    let mut child = cmd.spawn()?;
+    emit_scheduler_event(state, SchedulerEvent::RunStarted { request_id });
+
+    let Some(stdout_reader) = child.stdout.take() else {
+        return Err(io::Error::other("failed to capture runner stdout"));
+    };
+    let Some(stderr_reader) = child.stderr.take() else {
+        return Err(io::Error::other("failed to capture runner stderr"));
+    };
+
+    let (tx, rx) = mpsc::channel::<StreamLine>();
+
+    {
+        let tx_out = tx.clone();
+        thread::spawn(move || {
+            let reader = BufReader::new(stdout_reader);
+            for line in reader.lines().map_while(Result::ok) {
+                if tx_out
+                    .send(StreamLine {
+                        kind: StreamKind::Stdout,
+                        line,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    }
+    {
+        let tx_err = tx.clone();
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr_reader);
+            for line in reader.lines().map_while(Result::ok) {
+                if tx_err
+                    .send(StreamLine {
+                        kind: StreamKind::Stderr,
+                        line,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    }
+    drop(tx);
+
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    for item in rx {
+        match item.kind {
+            StreamKind::Stdout => {
+                if !stdout.is_empty() {
+                    stdout.push('\n');
+                }
+                stdout.push_str(&item.line);
+                emit_scheduler_event(
+                    state,
+                    SchedulerEvent::RunStdoutChunk {
+                        request_id,
+                        chunk: item.line,
+                    },
+                );
+            }
+            StreamKind::Stderr => {
+                if !stderr.is_empty() {
+                    stderr.push('\n');
+                }
+                stderr.push_str(&item.line);
+                emit_scheduler_event(
+                    state,
+                    SchedulerEvent::RunStderrChunk {
+                        request_id,
+                        chunk: item.line,
+                    },
+                );
+            }
+        }
+    }
+
+    let status = child.wait()?;
+    let elapsed_ms = run_start.elapsed().as_millis() as u64;
+    let success = status.success();
+    let exit_code = status.code();
+
+    emit_scheduler_event(
+        state,
+        SchedulerEvent::RunBuildFinished {
+            request_id,
+            success,
+            elapsed_ms,
+        },
+    );
+    emit_scheduler_event(
+        state,
+        SchedulerEvent::RunFinished {
+            request_id,
+            success,
+            exit_code,
+            elapsed_ms,
+        },
+    );
+
+    Ok(RunRunnerResult {
+        stdout,
+        stderr,
+        success,
+        exit_code,
+        elapsed_ms,
+    })
+}
+
+fn run_runner_command_with_events(
+    state: &DaemonState,
+    request_id: u64,
+    mode: &str,
+    target: &str,
+    entry: Option<&str>,
+    runner_args: &[String],
+    overrides: &RunOverrides,
+) -> io::Result<RunRunnerResult> {
+    // Single-pool strict mode: classify and potentially deny heavy targets
+    let exec_mode = classify_execution_mode(target, state.config.single_pool_strict);
+    emit_scheduler_event(
+        state,
+        SchedulerEvent::RunExecutionModeSelected {
+            request_id,
+            mode: match exec_mode {
+                RunExecutionMode::ExternalProcess => "external-process".to_string(),
+                RunExecutionMode::DeniedStrictMode => "denied-strict-mode".to_string(),
+            },
+            strict: state.config.single_pool_strict,
+            target: target.to_string(),
+        },
+    );
+
+    if exec_mode == RunExecutionMode::DeniedStrictMode {
+        let reason = format!(
+            "single-pool strict mode: target '{}' classified as heavy GPU workload; \
+             in-daemon execution not yet available",
+            target
+        );
+        emit_scheduler_event(
+            state,
+            SchedulerEvent::SinglePoolDenial {
+                request_id,
+                target: target.to_string(),
+                reason: reason.clone(),
+            },
+        );
+        return Ok(RunRunnerResult {
+            stdout: String::new(),
+            stderr: reason.clone(),
+            success: false,
+            exit_code: None,
+            elapsed_ms: 0,
+        });
+    }
+
+    let profiles = if mode == "run-list" {
+        vec![RunOrchestratorProfile::Safe]
+    } else {
+        let tlsf = state.runtime.tlsf_stats();
+        let hot = state.runtime.stats();
+        compute_orchestrator_profiles(&tlsf, &hot, target).map_err(io::Error::other)?
+    };
+
+    let total_attempts = profiles.len().max(1);
+    let mut aggregate_stdout = String::new();
+    let mut aggregate_stderr = String::new();
+    let mut total_elapsed_ms = 0u64;
+    let mut last_result: Option<RunRunnerResult> = None;
+
+    for (idx, profile) in profiles.into_iter().enumerate() {
+        let attempt = idx + 1;
+        let result = run_runner_once_with_events(
+            state,
+            request_id,
+            mode,
+            target,
+            entry,
+            runner_args,
+            overrides,
+            profile,
+            attempt,
+            total_attempts,
+        )?;
+        total_elapsed_ms += result.elapsed_ms;
+
+        if !result.stdout.is_empty() {
+            if !aggregate_stdout.is_empty() {
+                aggregate_stdout.push('\n');
+            }
+            aggregate_stdout.push_str(&format!(
+                "## attempt {}/{} [{}]\n{}",
+                attempt,
+                total_attempts,
+                profile.as_str(),
+                result.stdout
+            ));
+        }
+        if !result.stderr.is_empty() {
+            if !aggregate_stderr.is_empty() {
+                aggregate_stderr.push('\n');
+            }
+            aggregate_stderr.push_str(&format!(
+                "## attempt {}/{} [{}]\n{}",
+                attempt,
+                total_attempts,
+                profile.as_str(),
+                result.stderr
+            ));
+        }
+
+        let oom_like = is_oom_like_failure(&result.stdout, &result.stderr, result.exit_code);
+        let success = result.success;
+        last_result = Some(result);
+
+        if success {
+            break;
+        }
+
+        if oom_like && attempt < total_attempts {
+            emit_scheduler_event(
+                state,
+                SchedulerEvent::RunStderrChunk {
+                    request_id,
+                    chunk: "[orchestrator] OOM-like failure detected; retrying with safer profile".to_string(),
+                },
+            );
+            continue;
+        }
+        break;
+    }
+
+    let mut final_result =
+        last_result.ok_or_else(|| io::Error::other("orchestrator did not execute any run attempts"))?;
+    final_result.elapsed_ms = total_elapsed_ms.max(final_result.elapsed_ms);
+    if !aggregate_stdout.is_empty() {
+        final_result.stdout = aggregate_stdout;
+    }
+    if !aggregate_stderr.is_empty() {
+        final_result.stderr = aggregate_stderr;
+    }
+    Ok(final_result)
+}
 
 pub fn cleanup_exited_apps(state: &DaemonState) {
     let mut apps = state.apps.lock();
@@ -50,6 +810,7 @@ pub fn handle_status(state: &DaemonState) -> io::Result<String> {
         "utilization": tlsf.utilization_percent,
         "fragmentation": tlsf.fragmentation_ratio,
         "healthy": tlsf.is_healthy,
+        "single_pool_strict": state.config.single_pool_strict,
     });
     Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
 }
@@ -97,6 +858,7 @@ pub fn handle_metrics(state: &DaemonState) -> io::Result<String> {
         "pool_free": tlsf.free_bytes,
         "pool_util": tlsf.utilization_percent,
         "fragmentation": tlsf.fragmentation_ratio,
+        "single_pool_strict": state.config.single_pool_strict,
     });
     Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
 }
@@ -173,6 +935,12 @@ pub fn handle_app_start(state: &DaemonState, args: &[&str]) -> io::Result<String
         return Ok("{\"error\":\"usage: app-start <app> [args...]\"}\n".to_string());
     }
     let app = args[0];
+
+    // Policy enforcement: deny if not allowed
+    if let Some(denial) = evaluate_policy(state, "app-start", app) {
+        return Ok(denial);
+    }
+
     if !MANAGED_APPS.iter().any(|x| *x == app) {
         let response = serde_json::json!({
             "error": "app not allowed",
@@ -228,6 +996,12 @@ pub fn handle_app_stop(state: &DaemonState, args: &[&str]) -> io::Result<String>
         return Ok("{\"error\":\"usage: app-stop <id|name>\"}\n".to_string());
     }
     let selector = args[0];
+
+    // Policy enforcement: deny if not allowed
+    if let Some(denial) = evaluate_policy(state, "app-stop", selector) {
+        return Ok(denial);
+    }
+
     let mut apps = state.apps.lock();
     let target_id = if let Ok(id) = selector.parse::<u64>() {
         Some(id)
@@ -277,6 +1051,253 @@ pub fn handle_app_stop(state: &DaemonState, args: &[&str]) -> io::Result<String>
     Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
 }
 
+pub fn handle_run_file(state: &DaemonState, args: &[&str]) -> io::Result<String> {
+    let parsed = match parse_run_file_args(args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            let response = serde_json::json!({ "error": message });
+            return Ok(format!("{}\n", serde_json::to_string(&response).unwrap()));
+        }
+    };
+
+    if let Some(denial) = evaluate_policy(state, "run-file", &parsed.path) {
+        return Ok(denial);
+    }
+
+    let request_id = state.next_run_id.fetch_add(1, Ordering::Relaxed);
+    let mut runner_args = vec!["run-file".to_string(), parsed.path.clone()];
+    if let Some(entry) = &parsed.entry {
+        runner_args.push("--entry".to_string());
+        runner_args.push(entry.clone());
+    }
+    if !parsed.passthrough.is_empty() {
+        runner_args.push("--".to_string());
+        runner_args.extend(parsed.passthrough.clone());
+    }
+
+    match run_runner_command_with_events(
+        state,
+        request_id,
+        "run-file",
+        &parsed.path,
+        parsed.entry.as_deref(),
+        &runner_args,
+        &parsed.overrides,
+    ) {
+        Ok(result) => {
+            let response = serde_json::json!({
+                "ok": result.success,
+                "request_id": request_id,
+                "command": "run-file",
+                "path": parsed.path,
+                "entry": parsed.entry,
+                "args": parsed.passthrough,
+                "exit_code": result.exit_code,
+                "elapsed_ms": result.elapsed_ms,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            });
+            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+        }
+        Err(error) => {
+            emit_scheduler_event(
+                state,
+                SchedulerEvent::RunError {
+                    request_id,
+                    message: error.to_string(),
+                },
+            );
+            let response = serde_json::json!({
+                "ok": false,
+                "request_id": request_id,
+                "command": "run-file",
+                "path": parsed.path,
+                "entry": parsed.entry,
+                "args": parsed.passthrough,
+                "error": error.to_string(),
+            });
+            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+        }
+    }
+}
+
+pub fn handle_run_entry(state: &DaemonState, args: &[&str]) -> io::Result<String> {
+    let parsed = match parse_run_entry_args(args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            let response = serde_json::json!({ "error": message });
+            return Ok(format!("{}\n", serde_json::to_string(&response).unwrap()));
+        }
+    };
+
+    if let Some(denial) = evaluate_policy(state, "run-entry", &parsed.entry_id) {
+        return Ok(denial);
+    }
+
+    let request_id = state.next_run_id.fetch_add(1, Ordering::Relaxed);
+    let mut runner_args = vec!["run-entry".to_string(), parsed.entry_id.clone()];
+    if !parsed.passthrough.is_empty() {
+        runner_args.push("--".to_string());
+        runner_args.extend(parsed.passthrough.clone());
+    }
+
+    match run_runner_command_with_events(
+        state,
+        request_id,
+        "run-entry",
+        &parsed.entry_id,
+        None,
+        &runner_args,
+        &parsed.overrides,
+    ) {
+        Ok(result) => {
+            let response = serde_json::json!({
+                "ok": result.success,
+                "request_id": request_id,
+                "command": "run-entry",
+                "entry_id": parsed.entry_id,
+                "args": parsed.passthrough,
+                "streams_override": parsed.overrides.streams,
+                "pool_override": parsed.overrides.pool,
+                "exit_code": result.exit_code,
+                "elapsed_ms": result.elapsed_ms,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            });
+            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+        }
+        Err(error) => {
+            emit_scheduler_event(
+                state,
+                SchedulerEvent::RunError {
+                    request_id,
+                    message: error.to_string(),
+                },
+            );
+            let response = serde_json::json!({
+                "ok": false,
+                "request_id": request_id,
+                "command": "run-entry",
+                "entry_id": parsed.entry_id,
+                "args": parsed.passthrough,
+                "streams_override": parsed.overrides.streams,
+                "pool_override": parsed.overrides.pool,
+                "error": error.to_string(),
+            });
+            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+        }
+    }
+}
+
+pub fn handle_run_list(state: &DaemonState) -> io::Result<String> {
+    if let Some(denial) = evaluate_policy(state, "run-list", "workspace") {
+        return Ok(denial);
+    }
+
+    let request_id = state.next_run_id.fetch_add(1, Ordering::Relaxed);
+    emit_scheduler_event(
+        state,
+        SchedulerEvent::RunRequestAccepted {
+            request_id,
+            mode: "run-list".to_string(),
+            target: "workspace".to_string(),
+            entry: None,
+            args: vec!["run-list".to_string()],
+        },
+    );
+    emit_scheduler_event(
+        state,
+        SchedulerEvent::RunBuildStarted {
+            request_id,
+            command: "in-process run-list scan".to_string(),
+        },
+    );
+
+    let started = Instant::now();
+    let workspace_root = match resolve_workspace_root() {
+        Ok(root) => root,
+        Err(error) => {
+            emit_scheduler_event(
+                state,
+                SchedulerEvent::RunError {
+                    request_id,
+                    message: error.to_string(),
+                },
+            );
+            let response = serde_json::json!({
+                "ok": false,
+                "request_id": request_id,
+                "command": "run-list",
+                "error": error.to_string(),
+            });
+            return Ok(format!("{}\n", serde_json::to_string(&response).unwrap()));
+        }
+    };
+
+    match discover_run_entries(&workspace_root) {
+        Ok(entries) => {
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            emit_scheduler_event(
+                state,
+                SchedulerEvent::RunBuildFinished {
+                    request_id,
+                    success: true,
+                    elapsed_ms,
+                },
+            );
+            emit_scheduler_event(
+                state,
+                SchedulerEvent::RunFinished {
+                    request_id,
+                    success: true,
+                    exit_code: Some(0),
+                    elapsed_ms,
+                },
+            );
+            let payload = serde_json::json!({
+                "ok": true,
+                "count": entries.len(),
+                "entries": entries,
+            });
+            Ok(format!("{}\n", serde_json::to_string(&payload).unwrap()))
+        }
+        Err(error) => {
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            emit_scheduler_event(
+                state,
+                SchedulerEvent::RunBuildFinished {
+                    request_id,
+                    success: false,
+                    elapsed_ms,
+                },
+            );
+            emit_scheduler_event(
+                state,
+                SchedulerEvent::RunFinished {
+                    request_id,
+                    success: false,
+                    exit_code: Some(1),
+                    elapsed_ms,
+                },
+            );
+            emit_scheduler_event(
+                state,
+                SchedulerEvent::RunError {
+                    request_id,
+                    message: error.clone(),
+                },
+            );
+            let response = serde_json::json!({
+                "ok": false,
+                "request_id": request_id,
+                "command": "run-list",
+                "error": error,
+            });
+            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+        }
+    }
+}
+
 pub fn handle_help() -> io::Result<String> {
     let help = r#"{
   "ok": true,
@@ -291,6 +1312,9 @@ pub fn handle_help() -> io::Result<String> {
     "apps": "List managed app processes",
     "app-start <app> [args...]": "Start a managed app binary",
     "app-stop <id|name>": "Stop a managed app process",
+    "run-file <path> [--entry <name>] [--streams=N] [--pool=F] [-- <args...>]": "Run a Rust file (--streams/--pool override child limits)",
+    "run-entry <entry-id> [--streams=N] [--pool=F] [-- <args...>]": "Run entry by ID (--streams/--pool override child limits; heavy targets denied in strict mode)",
+    "run-list": "List discoverable Rust entries in workspace",
     "scheduler <subcommand>": "Scheduler control (queue-status, tenants, pause, resume, stats, policies, policy)",
     "audit-query [--tenant ID] [--last N]": "Query control plane audit log",
     "events-stream": "Subscribe to real-time event stream (JSON lines)",
@@ -318,8 +1342,12 @@ pub fn handle_scheduler_command(state: &DaemonState, args: &[&str]) -> io::Resul
     };
 
     let mut engine = state.policy_engine.lock();
+    let mut es = state.event_stream.lock();
+    let mut sched = state.scheduler.lock();
     let mut paused = state.scheduler_paused.load(Ordering::Relaxed);
-    let result = scheduler_commands::handle_scheduler_command(&cmd, &mut engine, &mut paused);
+    let result = scheduler_commands::handle_scheduler_command(
+        &cmd, &mut engine, &mut paused, &mut sched, Some(&mut es),
+    );
     state.scheduler_paused.store(paused, Ordering::Relaxed);
     Ok(result)
 }
@@ -328,13 +1356,15 @@ pub fn handle_scheduler_command(state: &DaemonState, args: &[&str]) -> io::Resul
 pub fn handle_scheduler_status(state: &DaemonState) -> io::Result<String> {
     let engine = state.policy_engine.lock();
     let paused = state.scheduler_paused.load(Ordering::Relaxed);
+    let sched = state.scheduler.lock();
+    let snap = sched.state_snapshot();
     let response = serde_json::json!({
         "ok": true,
         "paused": paused,
         "rule_count": engine.rule_count(),
         "audit_entries": engine.audit_log().len(),
-        "queue_depth": 0,
-        "active_jobs": 0,
+        "queue_depth": snap.queue_depth,
+        "active_jobs": snap.active_jobs,
     });
     Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
 }
@@ -342,11 +1372,35 @@ pub fn handle_scheduler_status(state: &DaemonState) -> io::Result<String> {
 /// Handle `scheduler-queue`: list queued/running jobs.
 pub fn handle_scheduler_queue(state: &DaemonState) -> io::Result<String> {
     let paused = state.scheduler_paused.load(Ordering::Relaxed);
+    let sched = state.scheduler.lock();
+
+    let queued: Vec<serde_json::Value> = sched.dispatcher().queued_jobs().iter().map(|job| {
+        serde_json::json!({
+            "job_id": job.id.0,
+            "tenant_id": job.tenant_id.0,
+            "state": job.state.to_string(),
+            "priority": format!("{:?}", job.priority),
+            "vram_estimate": job.estimated_vram_bytes,
+        })
+    }).collect();
+
+    let active: Vec<serde_json::Value> = sched.dispatcher().active_records().iter().map(|r| {
+        serde_json::json!({
+            "job_id": r.job_id.0,
+            "tenant_id": r.tenant_id.0,
+            "stream_id": r.stream_id,
+            "vram_reserved": r.estimated_vram_bytes,
+            "running_ms": r.started_at.elapsed().as_millis() as u64,
+        })
+    }).collect();
+
+    let total = queued.len() + active.len();
     let response = serde_json::json!({
         "ok": true,
         "paused": paused,
-        "jobs": [],
-        "count": 0,
+        "queued": queued,
+        "active": active,
+        "count": total,
     });
     Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
 }
@@ -469,6 +1523,12 @@ pub fn handle_job_submit(state: &DaemonState, args: &[&str]) -> io::Result<Strin
     }
 
     let command = args[0].to_string();
+
+    // Policy enforcement: deny if not allowed
+    if let Some(denial) = evaluate_policy(state, "job-submit", &command) {
+        return Ok(denial);
+    }
+
     let job_args: Vec<String> = args.iter().skip(1).map(|s| s.to_string()).collect();
     let name = command.rsplit('/').next().unwrap_or(&command).to_string();
     let policy = state.config.jobs.to_restart_policy();
@@ -507,6 +1567,11 @@ pub fn handle_job_stop(state: &DaemonState, args: &[&str]) -> io::Result<String>
             return Ok("{\"error\":\"job-stop requires a numeric job ID\"}\n".to_string());
         }
     };
+
+    // Policy enforcement: deny if not allowed
+    if let Some(denial) = evaluate_policy(state, "job-stop", &format!("job:{}", id)) {
+        return Ok(denial);
+    }
 
     let reason = if args.len() > 1 {
         args[1..].join(" ")
@@ -645,5 +1710,88 @@ pub fn handle_job_history(state: &DaemonState, args: &[&str]) -> io::Result<Stri
             });
             Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_classify_execution_mode_permissive() {
+        // When strict=false, all targets get ExternalProcess
+        assert_eq!(
+            classify_execution_mode("jitter_benchmark", false),
+            RunExecutionMode::ExternalProcess
+        );
+        assert_eq!(
+            classify_execution_mode("stress_test", false),
+            RunExecutionMode::ExternalProcess
+        );
+        assert_eq!(
+            classify_execution_mode("my_app", false),
+            RunExecutionMode::ExternalProcess
+        );
+        assert_eq!(
+            classify_execution_mode("training_loop", false),
+            RunExecutionMode::ExternalProcess
+        );
+    }
+
+    #[test]
+    fn test_classify_execution_mode_strict_heavy() {
+        // Heavy targets are denied in strict mode
+        let heavy_targets = [
+            "jitter_benchmark",
+            "ptx-runtime/examples/jitter_benchmark.rs#main",
+            "stress_test",
+            "latency_probe",
+            "bench_alloc",
+            "training_loop",
+            "inference_server",
+        ];
+        for target in heavy_targets {
+            assert_eq!(
+                classify_execution_mode(target, true),
+                RunExecutionMode::DeniedStrictMode,
+                "expected DeniedStrictMode for heavy target '{}'",
+                target,
+            );
+        }
+    }
+
+    #[test]
+    fn test_classify_execution_mode_strict_light() {
+        // Non-heavy targets are allowed even in strict mode
+        let light_targets = [
+            "my_app",
+            "hello_world",
+            "matrix_multiply",
+            "ptx-runtime/examples/basic.rs#main",
+        ];
+        for target in light_targets {
+            assert_eq!(
+                classify_execution_mode(target, true),
+                RunExecutionMode::ExternalProcess,
+                "expected ExternalProcess for light target '{}'",
+                target,
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_oom_like_failure_exit_codes() {
+        assert!(is_oom_like_failure("", "", Some(137)));
+        assert!(is_oom_like_failure("", "", Some(139)));
+        assert!(!is_oom_like_failure("", "", Some(1)));
+        assert!(!is_oom_like_failure("", "", Some(0)));
+    }
+
+    #[test]
+    fn test_is_oom_like_failure_messages() {
+        assert!(is_oom_like_failure("", "out of memory", None));
+        assert!(is_oom_like_failure("allocation failed", "", None));
+        assert!(is_oom_like_failure("", "CUDA stream create failed", None));
+        assert!(!is_oom_like_failure("all good", "no errors", None));
     }
 }

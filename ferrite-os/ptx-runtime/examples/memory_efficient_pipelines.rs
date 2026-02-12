@@ -9,9 +9,8 @@
 //! These patterns are CRITICAL for production ML systems!
 
 use ptx_runtime::PtxRuntime;
-use ptx_kernels::candle;
+use ptx_kernels::{GuardedBuffer, KernelContext, safe_api};
 use std::time::Instant;
-use std::ptr;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════╗");
@@ -125,23 +124,24 @@ fn ml_inference_pipeline(runtime: &PtxRuntime, pool_gb: f64) -> Result<(), Box<d
     unsafe {
         let runtime_ptr = runtime.raw();
         let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, 0);
+        let ctx = KernelContext::new(runtime_ptr, stream)?;
 
         for batch_idx in 0..num_batches {
             // Stage 1: Preprocessing (normalize)
             let input = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes_per_batch, stream);
             total_allocations += 1;
             current_memory += bytes_per_batch;
+            let ig = GuardedBuffer::new(input, bytes_per_batch, runtime_ptr)?;
 
             let preprocessed = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes_per_batch, stream);
             total_allocations += 1;
             current_memory += bytes_per_batch;
+            let og = GuardedBuffer::new(preprocessed, bytes_per_batch, runtime_ptr)?;
 
-            candle::candle_launch_utanh_f32(
-                elements_per_batch, 0, ptr::null(),
-                input as *const f32, preprocessed as *mut f32, stream
-            );
+            safe_api::unary::tanh(&ig, &og, elements_per_batch, &ctx)?;
 
             // FREE input immediately - done with it!
+            drop(ig);
             ptx_sys::gpu_hot_free(runtime_ptr, input);
             current_memory -= bytes_per_batch;
 
@@ -149,13 +149,12 @@ fn ml_inference_pipeline(runtime: &PtxRuntime, pool_gb: f64) -> Result<(), Box<d
             let layer1 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes_per_batch, stream);
             total_allocations += 1;
             current_memory += bytes_per_batch;
+            let l1g = GuardedBuffer::new(layer1, bytes_per_batch, runtime_ptr)?;
 
-            candle::candle_launch_urelu_f32(
-                elements_per_batch, 0, ptr::null(),
-                preprocessed as *const f32, layer1 as *mut f32, stream
-            );
+            safe_api::unary::relu(&og, &l1g, elements_per_batch, &ctx)?;
 
             // FREE preprocessed - done!
+            drop(og);
             ptx_sys::gpu_hot_free(runtime_ptr, preprocessed);
             current_memory -= bytes_per_batch;
 
@@ -163,13 +162,12 @@ fn ml_inference_pipeline(runtime: &PtxRuntime, pool_gb: f64) -> Result<(), Box<d
             let layer2 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes_per_batch, stream);
             total_allocations += 1;
             current_memory += bytes_per_batch;
+            let l2g = GuardedBuffer::new(layer2, bytes_per_batch, runtime_ptr)?;
 
-            candle::candle_launch_usigmoid_f32(
-                elements_per_batch, 0, ptr::null(),
-                layer1 as *const f32, layer2 as *mut f32, stream
-            );
+            safe_api::unary::sigmoid(&l1g, &l2g, elements_per_batch, &ctx)?;
 
             // FREE layer1 - done!
+            drop(l1g);
             ptx_sys::gpu_hot_free(runtime_ptr, layer1);
             current_memory -= bytes_per_batch;
 
@@ -177,13 +175,12 @@ fn ml_inference_pipeline(runtime: &PtxRuntime, pool_gb: f64) -> Result<(), Box<d
             let layer3 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes_per_batch, stream);
             total_allocations += 1;
             current_memory += bytes_per_batch;
+            let l3g = GuardedBuffer::new(layer3, bytes_per_batch, runtime_ptr)?;
 
-            candle::candle_launch_uexp_f32(
-                elements_per_batch, 0, ptr::null(),
-                layer2 as *const f32, layer3 as *mut f32, stream
-            );
+            safe_api::unary::exp(&l2g, &l3g, elements_per_batch, &ctx)?;
 
             // FREE layer2 - done!
+            drop(l2g);
             ptx_sys::gpu_hot_free(runtime_ptr, layer2);
             current_memory -= bytes_per_batch;
 
@@ -191,13 +188,12 @@ fn ml_inference_pipeline(runtime: &PtxRuntime, pool_gb: f64) -> Result<(), Box<d
             let output = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes_per_batch, stream);
             total_allocations += 1;
             current_memory += bytes_per_batch;
+            let outg = GuardedBuffer::new(output, bytes_per_batch, runtime_ptr)?;
 
-            candle::candle_launch_utanh_f32(
-                elements_per_batch, 0, ptr::null(),
-                layer3 as *const f32, output as *mut f32, stream
-            );
+            safe_api::unary::tanh(&l3g, &outg, elements_per_batch, &ctx)?;
 
             // FREE layer3 - done!
+            drop(l3g);
             ptx_sys::gpu_hot_free(runtime_ptr, layer3);
             current_memory -= bytes_per_batch;
 
@@ -207,6 +203,7 @@ fn ml_inference_pipeline(runtime: &PtxRuntime, pool_gb: f64) -> Result<(), Box<d
             }
 
             // FREE output after "sending to user"
+            drop(outg);
             ptx_sys::gpu_hot_free(runtime_ptr, output);
             current_memory -= bytes_per_batch;
 
@@ -263,6 +260,7 @@ fn massive_dataset_streaming(runtime: &PtxRuntime, pool_gb: f64) -> Result<(), B
     unsafe {
         let runtime_ptr = runtime.raw();
         let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, 0);
+        let ctx = KernelContext::new(runtime_ptr, stream)?;
 
         for chunk_idx in 0..num_chunks {
             // Allocate chunk
@@ -274,23 +272,21 @@ fn massive_dataset_streaming(runtime: &PtxRuntime, pool_gb: f64) -> Result<(), B
                 return Err(format!("Allocation failed at chunk {}", chunk_idx).into());
             }
 
+            let ig = GuardedBuffer::new(input, chunk_bytes, runtime_ptr)?;
+            let tg = GuardedBuffer::new(temp, chunk_bytes, runtime_ptr)?;
+            let og = GuardedBuffer::new(output, chunk_bytes, runtime_ptr)?;
+
             // Process: ReLU → Tanh → Sigmoid pipeline
-            candle::candle_launch_urelu_f32(
-                chunk_size, 0, ptr::null(),
-                input as *const f32, temp as *mut f32, stream
-            );
+            safe_api::unary::relu(&ig, &tg, chunk_size, &ctx)?;
 
-            candle::candle_launch_utanh_f32(
-                chunk_size, 0, ptr::null(),
-                temp as *const f32, output as *mut f32, stream
-            );
+            safe_api::unary::tanh(&tg, &og, chunk_size, &ctx)?;
 
-            candle::candle_launch_usigmoid_f32(
-                chunk_size, 0, ptr::null(),
-                output as *const f32, temp as *mut f32, stream
-            );
+            safe_api::unary::sigmoid(&og, &tg, chunk_size, &ctx)?;
 
             // FREE IMMEDIATELY - critical for streaming!
+            drop(ig);
+            drop(tg);
+            drop(og);
             ptx_sys::gpu_hot_free(runtime_ptr, input);
             ptx_sys::gpu_hot_free(runtime_ptr, temp);
             ptx_sys::gpu_hot_free(runtime_ptr, output);
@@ -352,40 +348,45 @@ fn overlapped_pipeline(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error::E
         for batch_idx in 0..num_batches {
             let stream_id = batch_idx % runtime.num_streams() as usize;
             let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id as i32);
+            let ctx = KernelContext::new(runtime_ptr, stream)?;
 
             // Stage 1: Allocate + Process
             let buf1 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
             let buf2 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
+            let b1g = GuardedBuffer::new(buf1, bytes, runtime_ptr)?;
+            let b2g = GuardedBuffer::new(buf2, bytes, runtime_ptr)?;
 
-            candle::candle_launch_urelu_f32(
-                batch_size, 0, ptr::null(),
-                buf1 as *const f32, buf2 as *mut f32, stream
-            );
+            safe_api::unary::relu(&b1g, &b2g, batch_size, &ctx)?;
 
+            drop(b1g);
             ptx_sys::gpu_hot_free(runtime_ptr, buf1);
 
             // Stage 2
             let buf3 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
-            candle::candle_launch_utanh_f32(
-                batch_size, 0, ptr::null(),
-                buf2 as *const f32, buf3 as *mut f32, stream
-            );
+            let b3g = GuardedBuffer::new(buf3, bytes, runtime_ptr)?;
+
+            safe_api::unary::tanh(&b2g, &b3g, batch_size, &ctx)?;
+
+            drop(b2g);
             ptx_sys::gpu_hot_free(runtime_ptr, buf2);
 
             // Stage 3
             let buf4 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
-            candle::candle_launch_usigmoid_f32(
-                batch_size, 0, ptr::null(),
-                buf3 as *const f32, buf4 as *mut f32, stream
-            );
+            let b4g = GuardedBuffer::new(buf4, bytes, runtime_ptr)?;
+
+            safe_api::unary::sigmoid(&b3g, &b4g, batch_size, &ctx)?;
+
+            drop(b3g);
             ptx_sys::gpu_hot_free(runtime_ptr, buf3);
 
             // Stage 4
             let buf5 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
-            candle::candle_launch_uexp_f32(
-                batch_size, 0, ptr::null(),
-                buf4 as *const f32, buf5 as *mut f32, stream
-            );
+            let b5g = GuardedBuffer::new(buf5, bytes, runtime_ptr)?;
+
+            safe_api::unary::exp(&b4g, &b5g, batch_size, &ctx)?;
+
+            drop(b4g);
+            drop(b5g);
             ptx_sys::gpu_hot_free(runtime_ptr, buf4);
             ptx_sys::gpu_hot_free(runtime_ptr, buf5);
         }

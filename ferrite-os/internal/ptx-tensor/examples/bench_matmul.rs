@@ -70,13 +70,13 @@ fn main() -> Result<()> {
 
     let a = Tensor::full(&[m, k], 1.0, DType::F32, &runtime)?;
     let b = Tensor::full(&[k, n], 2.0, DType::F32, &runtime)?;
-    runtime.sync_all();
+    runtime.sync_all()?;
 
     // Warmup
     for _ in 0..warmup {
         let _c = a.matmul(&b)?;
     }
-    runtime.sync_all();
+    runtime.sync_all()?;
 
     let start = Instant::now();
     let mut last = None;
@@ -84,7 +84,7 @@ fn main() -> Result<()> {
         let c = a.matmul(&b)?;
         last = Some(c);
     }
-    runtime.sync_all();
+    runtime.sync_all()?;
     let elapsed = start.elapsed();
     drop(last);
 

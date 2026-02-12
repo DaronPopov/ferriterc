@@ -16,7 +16,7 @@
 #![allow(dead_code)]
 #![allow(clippy::all)]
 
-use libc::{c_char, c_int, c_void, size_t, ssize_t};
+use libc::{c_char, c_int, c_uint, c_void, size_t, ssize_t};
 
 // CUDA types as opaque pointers
 pub type cudaStream_t = *mut c_void;
@@ -760,7 +760,7 @@ pub struct GPUHotConfig {
 impl Default for GPUHotConfig {
     fn default() -> Self {
         Self {
-            pool_fraction: 1.0,
+            pool_fraction: 0.6, // Must match C gpu_hot_default_config()
             fixed_pool_size: 0,
             min_pool_size: 256 * 1024 * 1024,
             max_pool_size: 0,
@@ -770,7 +770,7 @@ impl Default for GPUHotConfig {
             warning_threshold: 0.9,
             force_daemon_mode: false,
             quiet_init: false,
-            max_streams: GPU_HOT_MAX_STREAMS,
+            max_streams: 16, // Must match C gpu_hot_default_config(); GPU_HOT_MAX_STREAMS is the cap, not the default
         }
     }
 }
@@ -1862,6 +1862,18 @@ extern "C" {
         size: *mut size_t,
         resource: cudaGraphicsResource_t,
     ) -> cudaError_t;
+
+    // CUDA IPC for cross-process device memory sharing.
+    pub fn cudaIpcGetMemHandle(
+        handle: *mut cudaIpcMemHandle_t,
+        devPtr: *mut c_void,
+    ) -> cudaError_t;
+    pub fn cudaIpcOpenMemHandle(
+        devPtr: *mut *mut c_void,
+        handle: cudaIpcMemHandle_t,
+        flags: c_uint,
+    ) -> cudaError_t;
+    pub fn cudaIpcCloseMemHandle(devPtr: *mut c_void) -> cudaError_t;
 }
 
 // cudaError_t constants
@@ -1880,6 +1892,9 @@ pub const cudaMemcpyDefault: c_int = 4;
 pub const cudaGraphicsRegisterFlagsNone: u32 = 0;
 pub const cudaGraphicsRegisterFlagsReadOnly: u32 = 1;
 pub const cudaGraphicsRegisterFlagsWriteDiscard: u32 = 2;
+
+// cudaIpcMem flags
+pub const cudaIpcMemLazyEnablePeerAccess: c_uint = 1;
 
 // ============================================================================
 // PyTorch Allocator Bridge (experimental)

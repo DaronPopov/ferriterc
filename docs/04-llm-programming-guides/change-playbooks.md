@@ -33,3 +33,16 @@
 3. Re-check generated unit environment and paths.
 4. Validate with `systemctl status ferrite-daemon`.
 
+## Playbook E: Rust Entry Runner Command Change
+
+1. Update runner logic in `ferrite-os/internal/ptx-runner/src/main.rs`.
+2. Wire daemon handlers/routing in:
+   - `ferrite-os/internal/ptx-daemon/src/commands.rs`
+   - `ferrite-os/internal/ptx-daemon/src/server/command_pipeline.rs`
+   - `ferrite-os/internal/ptx-daemon/src/lifecycle.rs`
+3. Keep policy classification current in `ferrite-os/internal/ptx-daemon/src/policy/engine.rs`.
+4. Validate:
+   - `cd ferrite-os`
+   - `cargo check -p ptx-runner -p ferrite-daemon`
+   - `cargo test -p ferrite-daemon --lib`
+   - `cargo run -p ptx-runner -- run-list`

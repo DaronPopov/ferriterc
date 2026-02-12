@@ -288,25 +288,13 @@ pub struct SumBackward {
 
 impl GradFn for SumBackward {
     fn backward(&self, grad_output: &Tensor, _saved: &[Tensor]) -> Result<Vec<Option<Tensor>>> {
-        // For sum, gradient is broadcast (ones) back to input shape
-        // grad_input = grad_output.expand(input_shape)
-        // For now, we need to implement broadcast/expand
-        // Simple case: full reduction
-        if self.input_shape.len() == 1 {
-            // Full reduction case - broadcast scalar to all elements
-            let grad_input = ptx_tensor::Tensor::full(
-                &self.input_shape,
-                1.0,
-                grad_output.dtype(),
-                grad_output.runtime(),
-            )?;
-            Ok(vec![Some(grad_input.mul(grad_output)?)])
-        } else {
-            // Partial reduction - need expand/broadcast
-            Err(ptx_runtime::Error::NotSupported {
-                message: "Sum backward for partial reduction not yet implemented".to_string(),
-            })
-        }
+        let grad_input = crate::ops::reduction_backward::sum_backward(
+            grad_output,
+            &self.input_shape,
+            self.dim,
+            self.keepdim,
+        )?;
+        Ok(vec![Some(grad_input)])
     }
 
     fn name(&self) -> &'static str {
@@ -323,23 +311,13 @@ pub struct MeanBackward {
 
 impl GradFn for MeanBackward {
     fn backward(&self, grad_output: &Tensor, _saved: &[Tensor]) -> Result<Vec<Option<Tensor>>> {
-        let n: usize = self.input_shape.iter().product();
-        let scale = 1.0 / n as f32;
-
-        // For full reduction
-        if self.input_shape.len() == 1 || self.dim == -1 {
-            let grad_input = ptx_tensor::Tensor::full(
-                &self.input_shape,
-                scale,
-                grad_output.dtype(),
-                grad_output.runtime(),
-            )?;
-            Ok(vec![Some(grad_input.mul(grad_output)?)])
-        } else {
-            Err(ptx_runtime::Error::NotSupported {
-                message: "Mean backward for partial reduction not yet implemented".to_string(),
-            })
-        }
+        let grad_input = crate::ops::reduction_backward::mean_backward(
+            grad_output,
+            &self.input_shape,
+            self.dim,
+            self.keepdim,
+        )?;
+        Ok(vec![Some(grad_input)])
     }
 
     fn name(&self) -> &'static str {
@@ -390,17 +368,12 @@ impl GradFn for SoftmaxBackward {
 pub struct MatmulBackward;
 
 impl GradFn for MatmulBackward {
-    fn backward(&self, _grad_output: &Tensor, saved: &[Tensor]) -> Result<Vec<Option<Tensor>>> {
-        let _a = &saved[0];
-        let _b = &saved[1];
+    fn backward(&self, grad_output: &Tensor, saved: &[Tensor]) -> Result<Vec<Option<Tensor>>> {
+        let a = &saved[0];
+        let b = &saved[1];
 
-        // Need transpose for proper backward
-        // d/dA = grad @ B.T
-        // d/dB = A.T @ grad
-
-        Err(ptx_runtime::Error::NotSupported {
-            message: "Matmul backward requires transpose, not yet implemented".to_string(),
-        })
+        let (grad_a, grad_b) = crate::ops::matmul_backward::matmul_backward(grad_output, a, b)?;
+        Ok(vec![Some(grad_a), Some(grad_b)])
     }
 
     fn name(&self) -> &'static str {

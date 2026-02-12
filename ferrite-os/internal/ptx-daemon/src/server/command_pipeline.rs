@@ -37,6 +37,9 @@ pub(super) fn execute_command(
         "apps" => commands::handle_apps(state),
         "app-start" => commands::handle_app_start(state, &args_refs),
         "app-stop" => commands::handle_app_stop(state, &args_refs),
+        "run-file" => commands::handle_run_file(state, &args_refs),
+        "run-entry" => commands::handle_run_entry(state, &args_refs),
+        "run-list" => commands::handle_run_list(state),
         "shutdown" => {
             state.shutdown();
             Ok("{\"ok\":true,\"message\":\"shutting down\"}\n".to_string())

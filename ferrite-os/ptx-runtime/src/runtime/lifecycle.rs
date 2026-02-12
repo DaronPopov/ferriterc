@@ -60,8 +60,11 @@ impl PtxRuntime {
 
         let mut runtime_stats = ptx_sys::GPUHotStats::default();
         unsafe { ptx_sys::gpu_hot_get_stats(raw, &mut runtime_stats) };
-        let num_streams = if runtime_stats.active_streams > 0 {
-            runtime_stats.active_streams as u32
+        // stream_poll_count = min(actual_num_streams, 1024) — reflects the real
+        // stream count created by the C runtime (which applies env overrides).
+        // active_streams only counts streams with pending work (0 at init).
+        let num_streams = if runtime_stats.stream_poll_count > 0 {
+            runtime_stats.stream_poll_count as u32
         } else if stable_cfg.max_streams > 0 {
             stable_cfg.max_streams
         } else {
@@ -181,28 +184,27 @@ impl PtxRuntime {
     /// # Safety
     ///
     /// Caller must ensure:
-    /// - `ptr` was allocated by this runtime (via alloc_async)
     /// - `ptr` is not used after this call (no use-after-free)
     /// - `ptr` is freed exactly once (no double-free)
     /// - All GPU operations using `ptr` on other streams have completed
     ///
-    /// # Defensive Checks
+    /// # Errors
     ///
-    /// In debug builds, validates that pointer is owned by TLSF allocator.
-    pub unsafe fn free_async(&self, ptr: *mut libc::c_void, stream: &Stream) {
-        // SAFETY: Null pointer or unowned pointer reaching FFI is undefined behavior
-        assert!(
-            !ptr.is_null(),
-            "Attempted to free null pointer"
-        );
-        assert!(
-            self.owns_ptr(ptr),
-            "Attempted to free pointer not owned by this runtime: {:?}",
-            ptr
-        );
+    /// Returns `Error::InvalidPointer` if `ptr` is null.
+    /// Returns `Error::InvalidPointerOwnership` if `ptr` was not allocated by this runtime.
+    pub unsafe fn free_async(&self, ptr: *mut libc::c_void, stream: &Stream) -> Result<()> {
+        if ptr.is_null() {
+            return Err(Error::InvalidPointer);
+        }
+        if !self.owns_ptr(ptr) {
+            return Err(Error::InvalidPointerOwnership {
+                ptr_debug: format!("{:?}", ptr),
+            });
+        }
 
         // SAFETY: Caller must uphold documented preconditions
-        ptx_sys::gpu_hot_free_async(self.inner.raw, ptr, stream.raw())
+        ptx_sys::gpu_hot_free_async(self.inner.raw, ptr, stream.raw());
+        Ok(())
     }
 
     /// Poll and release completed deferred frees.

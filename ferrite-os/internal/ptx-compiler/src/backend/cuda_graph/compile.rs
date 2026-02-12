@@ -37,7 +37,7 @@ pub fn compile(
     let capture = runtime.begin_capture(stream_id, "compiled_graph")?;
 
     // Get the stream for emitting operations
-    let stream = runtime.stream(stream_id);
+    let stream = runtime.stream(stream_id)?;
 
     // Emit operations in topological order
     for node_id in graph.topo_order() {

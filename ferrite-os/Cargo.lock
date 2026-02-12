@@ -324,6 +324,7 @@ dependencies = [
  "ferrite-gpu-lang",
  "libc",
  "parking_lot",
+ "ptx-runner",
  "ptx-runtime",
  "ptx-sys",
  "ratatui",
@@ -824,6 +825,10 @@ dependencies = [
 [[package]]
 name = "ptx-runner"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "ptx-runtime"

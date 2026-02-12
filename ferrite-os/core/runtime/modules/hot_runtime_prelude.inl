@@ -495,6 +495,9 @@ GPUHotConfig gpu_hot_default_config(void) {
     // Stream configuration
     config.max_streams = 16;    // Default to 16 streams
 
+    // Single-pool strict mode (off by default)
+    config.single_pool_strict = false;
+
     return config;
 }
 
@@ -540,6 +543,15 @@ static bool parse_env_size(const char* key, size_t* out) {
 static void apply_env_overrides(GPUHotConfig* config) {
     if (!config) return;
 
+    // Stream count override
+    size_t max_streams = 0;
+    if (parse_env_size("PTX_MAX_STREAMS", &max_streams) && max_streams > 0) {
+        if (max_streams > GPU_HOT_MAX_STREAMS) {
+            max_streams = GPU_HOT_MAX_STREAMS;
+        }
+        config->max_streams = (unsigned int)max_streams;
+    }
+
     // Fixed pool size override
     size_t fixed = 0;
     if (parse_env_size("PTX_POOL_SIZE", &fixed) && fixed > 0) {
@@ -574,5 +586,10 @@ static void apply_env_overrides(GPUHotConfig* config) {
     if (getenv("PTX_POOL_WARN_DISABLE")) {
         config->warning_threshold = 0.0f;
     }
-}
 
+    // Single-pool strict mode override
+    const char* strict_val = getenv("PTX_SINGLE_POOL_STRICT");
+    if (strict_val && strict_val[0] == '1') {
+        config->single_pool_strict = true;
+    }
+}

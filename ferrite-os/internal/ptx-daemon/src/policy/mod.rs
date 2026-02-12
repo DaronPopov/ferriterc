@@ -13,6 +13,6 @@ pub mod engine;
 #[allow(unused_imports)]
 pub use audit::{AuditEntry, AuditLog};
 #[allow(unused_imports)]
-pub use decision::{DenialReason, PolicyContext, PolicyDecision};
+pub use decision::{DenialPayload, DenialReason, PolicyContext, PolicyDecision};
 #[allow(unused_imports)]
 pub use engine::{PolicyEngine, PolicyRule};

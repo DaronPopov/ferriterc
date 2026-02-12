@@ -15,6 +15,7 @@ pub fn optimize(mut graph: Graph) -> Result<Graph> {
     // Run passes in order
     graph = dead_code::eliminate_dead_code(graph)?;
     graph = constant_fold::fold_constants(graph)?;
+    graph = dead_code::eliminate_dead_code(graph)?; // clean up after folding
     graph = fusion::fuse_elementwise(graph)?;
 
     Ok(graph)

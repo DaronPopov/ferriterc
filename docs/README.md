@@ -46,3 +46,12 @@ It is written for engineers and LLM coding agents.
 - Install/provision runbook: `03-build-and-portability/runbooks/install-and-provision.md`
 - Debug/remediation runbook: `03-build-and-portability/runbooks/debugging-and-remediation.md`
 - Agent routing and validation gates: `04-llm-programming-guides/contracts/task-routing-and-gates.md`
+
+## CUDA Hardening Plans
+
+- Plan index: `plans/PLAN-INDEX.txt`
+- Runtime safety: `plans/PLAN-CUDA-HARDEN-01-runtime-safety.md`
+- Control-plane policy enforcement: `plans/PLAN-CUDA-HARDEN-02-control-plane-policy-enforcement.md`
+- Multi-tenant isolation and quotas: `plans/PLAN-CUDA-HARDEN-03-multitenant-isolation-and-quotas.md`
+- Recovery and determinism: `plans/PLAN-CUDA-HARDEN-04-recovery-and-determinism.md`
+- Kernel assurance and release gates: `plans/PLAN-CUDA-HARDEN-05-kernel-assurance-and-release-gates.md`

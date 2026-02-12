@@ -99,7 +99,7 @@ impl Storage {
     /// Synchronizes all GPU streams before copying to ensure all pending
     /// kernel writes are visible.
     pub fn to_host<T: Copy + Default>(&self) -> Result<Vec<T>> {
-        self.runtime.sync_all();
+        self.runtime.sync_all()?;
         let mut data = vec![T::default(); self.len];
         unsafe {
             self.ptr.copy_to_host(

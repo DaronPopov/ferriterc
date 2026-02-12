@@ -48,6 +48,8 @@ impl FailureClassifier {
     /// | StableApi           | Transient  | Transient API glitch              |
     /// | InitFailed          | Permanent  | Fundamental init problem          |
     /// | InvalidPointer      | Permanent  | Programming error                 |
+    /// | InvalidStreamId     | Permanent  | Invalid stream index              |
+    /// | InvalidPtrOwnership | Permanent  | Pointer not owned by runtime      |
     /// | NotInitialized      | Permanent  | Must initialize first             |
     /// | NotSupported        | Permanent  | Feature not available             |
     /// | InvalidOperation    | Permanent  | (mapped via Internal)             |
@@ -71,12 +73,16 @@ impl FailureClassifier {
             // Permanent: no point retrying.
             Error::InitFailed { .. } => FailureClass::Permanent,
             Error::InvalidPointer => FailureClass::Permanent,
+            Error::InvalidStreamId { .. } => FailureClass::Permanent,
+            Error::InvalidPointerOwnership { .. } => FailureClass::Permanent,
             Error::NotInitialized => FailureClass::Permanent,
             Error::NotSupported { .. } => FailureClass::Permanent,
             Error::ShapeMismatch { .. } => FailureClass::Permanent,
             Error::DTypeMismatch { .. } => FailureClass::Permanent,
             Error::JobStateInvalid { .. } => FailureClass::Permanent,
             Error::JobNotFound { .. } => FailureClass::Permanent,
+            Error::InvalidLaunchContext { .. } => FailureClass::Permanent,
+            Error::EmptyStreamPool => FailureClass::Permanent,
 
             // Scheduler / control-plane errors -- generally transient.
             Error::QuotaExceeded { .. } => FailureClass::Transient,
@@ -139,5 +145,19 @@ mod tests {
             detail: "disk full".into(),
         };
         assert_eq!(FailureClassifier::classify(&err), FailureClass::Transient);
+    }
+
+    #[test]
+    fn invalid_stream_id_is_permanent() {
+        let err = Error::InvalidStreamId { id: 99, pool_size: 4 };
+        assert_eq!(FailureClassifier::classify(&err), FailureClass::Permanent);
+    }
+
+    #[test]
+    fn invalid_pointer_ownership_is_permanent() {
+        let err = Error::InvalidPointerOwnership {
+            ptr_debug: "0xdeadbeef".into(),
+        };
+        assert_eq!(FailureClassifier::classify(&err), FailureClass::Permanent);
     }
 }

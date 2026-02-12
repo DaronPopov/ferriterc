@@ -13,9 +13,8 @@
 //! - MAXIMUM throughput!
 
 use ptx_runtime::PtxRuntime;
-use ptx_kernels::candle;
+use ptx_kernels::{GuardedBuffer, KernelContext, safe_api};
 use std::time::Instant;
-use std::ptr;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════╗");
@@ -110,29 +109,27 @@ fn compare_fusion_methods(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error
                 let stream_id = (i % runtime.num_streams()) as i32;
                 let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
 
+                let ctx = KernelContext::new(runtime_ptr, stream)?;
+
                 // Need 3 buffers for unfused
                 let input = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
                 let temp1 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
                 let temp2 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
                 let output = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
 
+                let ig = GuardedBuffer::new(input, bytes, runtime_ptr)?;
+                let t1g = GuardedBuffer::new(temp1, bytes, runtime_ptr)?;
+                let t2g = GuardedBuffer::new(temp2, bytes, runtime_ptr)?;
+                let og = GuardedBuffer::new(output, bytes, runtime_ptr)?;
+
                 // Kernel 1: ReLU
-                candle::candle_launch_urelu_f32(
-                    elements, 0, ptr::null(),
-                    input as *const f32, temp1 as *mut f32, stream
-                );
+                safe_api::unary::relu(&ig, &t1g, elements, &ctx)?;
 
                 // Kernel 2: Tanh
-                candle::candle_launch_utanh_f32(
-                    elements, 0, ptr::null(),
-                    temp1 as *const f32, temp2 as *mut f32, stream
-                );
+                safe_api::unary::tanh(&t1g, &t2g, elements, &ctx)?;
 
                 // Kernel 3: Sigmoid
-                candle::candle_launch_usigmoid_f32(
-                    elements, 0, ptr::null(),
-                    temp2 as *const f32, output as *mut f32, stream
-                );
+                safe_api::unary::sigmoid(&t2g, &og, elements, &ctx)?;
 
                 // Cleanup
                 ptx_sys::gpu_hot_free(runtime_ptr, input);
@@ -167,26 +164,22 @@ fn compare_fusion_methods(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error
                 let stream_id = (i % runtime.num_streams()) as i32;
                 let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
 
+                let ctx = KernelContext::new(runtime_ptr, stream)?;
+
                 // Only need 2 buffers for fused (ping-pong)
                 let buf1 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
                 let buf2 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
 
+                let bg1 = GuardedBuffer::new(buf1, bytes, runtime_ptr)?;
+                let bg2 = GuardedBuffer::new(buf2, bytes, runtime_ptr)?;
+
                 // Fused chain: ReLU → Tanh → Sigmoid
                 // (Launch back-to-back on same stream = fusion-like behavior)
-                candle::candle_launch_urelu_f32(
-                    elements, 0, ptr::null(),
-                    buf1 as *const f32, buf2 as *mut f32, stream
-                );
+                safe_api::unary::relu(&bg1, &bg2, elements, &ctx)?;
 
-                candle::candle_launch_utanh_f32(
-                    elements, 0, ptr::null(),
-                    buf2 as *const f32, buf1 as *mut f32, stream
-                );
+                safe_api::unary::tanh(&bg2, &bg1, elements, &ctx)?;
 
-                candle::candle_launch_usigmoid_f32(
-                    elements, 0, ptr::null(),
-                    buf1 as *const f32, buf2 as *mut f32, stream
-                );
+                safe_api::unary::sigmoid(&bg1, &bg2, elements, &ctx)?;
 
                 // Cleanup
                 ptx_sys::gpu_hot_free(runtime_ptr, buf1);
@@ -238,6 +231,8 @@ fn massive_parallel_fusion(runtime: &PtxRuntime) -> Result<(), Box<dyn std::erro
                 let stream_id = (i % runtime.num_streams()) as i32;
                 let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
 
+                let ctx = KernelContext::new(runtime_ptr, stream)?;
+
                 // Allocate buffers
                 let buf1 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
                 let buf2 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
@@ -247,31 +242,19 @@ fn massive_parallel_fusion(runtime: &PtxRuntime) -> Result<(), Box<dyn std::erro
                     break;
                 }
 
+                let bg1 = GuardedBuffer::new(buf1, bytes, runtime_ptr)?;
+                let bg2 = GuardedBuffer::new(buf2, bytes, runtime_ptr)?;
+
                 // Launch fused chain: 5 operations
-                candle::candle_launch_urelu_f32(
-                    elements, 0, ptr::null(),
-                    buf1 as *const f32, buf2 as *mut f32, stream
-                );
+                safe_api::unary::relu(&bg1, &bg2, elements, &ctx)?;
 
-                candle::candle_launch_utanh_f32(
-                    elements, 0, ptr::null(),
-                    buf2 as *const f32, buf1 as *mut f32, stream
-                );
+                safe_api::unary::tanh(&bg2, &bg1, elements, &ctx)?;
 
-                candle::candle_launch_usigmoid_f32(
-                    elements, 0, ptr::null(),
-                    buf1 as *const f32, buf2 as *mut f32, stream
-                );
+                safe_api::unary::sigmoid(&bg1, &bg2, elements, &ctx)?;
 
-                candle::candle_launch_uexp_f32(
-                    elements, 0, ptr::null(),
-                    buf2 as *const f32, buf1 as *mut f32, stream
-                );
+                safe_api::unary::exp(&bg2, &bg1, elements, &ctx)?;
 
-                candle::candle_launch_uabs_f32(
-                    elements, 0, ptr::null(),
-                    buf1 as *const f32, buf2 as *mut f32, stream
-                );
+                safe_api::unary::abs(&bg1, &bg2, elements, &ctx)?;
 
                 // Free immediately
                 ptx_sys::gpu_hot_free(runtime_ptr, buf1);
@@ -320,43 +303,30 @@ fn deep_fusion_chains(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error::Er
             let stream_id = (i % runtime.num_streams()) as i32;
             let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
 
+            let ctx = KernelContext::new(runtime_ptr, stream)?;
+
             let buf1 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
             let buf2 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
 
+            let bg1 = GuardedBuffer::new(buf1, bytes, runtime_ptr)?;
+            let bg2 = GuardedBuffer::new(buf2, bytes, runtime_ptr)?;
+
             // Deep fusion chain: 15 operations!
             for op in 0..fusion_depth {
-                let (src, dst) = if op % 2 == 0 {
-                    (buf1, buf2)
+                let (sg, dg) = if op % 2 == 0 {
+                    (&bg1, &bg2)
                 } else {
-                    (buf2, buf1)
+                    (&bg2, &bg1)
                 };
 
                 // Rotate through different operations
                 match op % 6 {
-                    0 => candle::candle_launch_urelu_f32(
-                        elements, 0, ptr::null(),
-                        src as *const f32, dst as *mut f32, stream
-                    ),
-                    1 => candle::candle_launch_utanh_f32(
-                        elements, 0, ptr::null(),
-                        src as *const f32, dst as *mut f32, stream
-                    ),
-                    2 => candle::candle_launch_usigmoid_f32(
-                        elements, 0, ptr::null(),
-                        src as *const f32, dst as *mut f32, stream
-                    ),
-                    3 => candle::candle_launch_uexp_f32(
-                        elements, 0, ptr::null(),
-                        src as *const f32, dst as *mut f32, stream
-                    ),
-                    4 => candle::candle_launch_uabs_f32(
-                        elements, 0, ptr::null(),
-                        src as *const f32, dst as *mut f32, stream
-                    ),
-                    5 => candle::candle_launch_usqrt_f32(
-                        elements, 0, ptr::null(),
-                        src as *const f32, dst as *mut f32, stream
-                    ),
+                    0 => safe_api::unary::relu(sg, dg, elements, &ctx)?,
+                    1 => safe_api::unary::tanh(sg, dg, elements, &ctx)?,
+                    2 => safe_api::unary::sigmoid(sg, dg, elements, &ctx)?,
+                    3 => safe_api::unary::exp(sg, dg, elements, &ctx)?,
+                    4 => safe_api::unary::abs(sg, dg, elements, &ctx)?,
+                    5 => safe_api::unary::sqrt(sg, dg, elements, &ctx)?,
                     _ => unreachable!(),
                 }
             }
@@ -415,6 +385,8 @@ fn max_throughput_stress(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error:
                 let stream_id = (i % runtime.num_streams()) as i32;
                 let stream = ptx_sys::gpu_hot_get_stream(runtime_ptr, stream_id);
 
+                let ctx = KernelContext::new(runtime_ptr, stream)?;
+
                 let buf1 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
                 let buf2 = ptx_sys::gpu_hot_alloc_async(runtime_ptr, bytes, stream);
 
@@ -422,21 +394,15 @@ fn max_throughput_stress(runtime: &PtxRuntime) -> Result<(), Box<dyn std::error:
                     break;
                 }
 
+                let bg1 = GuardedBuffer::new(buf1, bytes, runtime_ptr)?;
+                let bg2 = GuardedBuffer::new(buf2, bytes, runtime_ptr)?;
+
                 // 3-op fusion chain
-                candle::candle_launch_urelu_f32(
-                    elements, 0, ptr::null(),
-                    buf1 as *const f32, buf2 as *mut f32, stream
-                );
+                safe_api::unary::relu(&bg1, &bg2, elements, &ctx)?;
 
-                candle::candle_launch_utanh_f32(
-                    elements, 0, ptr::null(),
-                    buf2 as *const f32, buf1 as *mut f32, stream
-                );
+                safe_api::unary::tanh(&bg2, &bg1, elements, &ctx)?;
 
-                candle::candle_launch_usigmoid_f32(
-                    elements, 0, ptr::null(),
-                    buf1 as *const f32, buf2 as *mut f32, stream
-                );
+                safe_api::unary::sigmoid(&bg1, &bg2, elements, &ctx)?;
 
                 ptx_sys::gpu_hot_free(runtime_ptr, buf1);
                 ptx_sys::gpu_hot_free(runtime_ptr, buf2);
