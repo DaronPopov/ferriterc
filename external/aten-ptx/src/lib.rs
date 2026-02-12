@@ -286,7 +286,7 @@ pub fn init_pytorch_tlsf_ex(device_id: i32, pool_fraction: f64, num_streams: u32
     }
 
     adapter::init_torch_allocator(req.device_id);
-    adapter::warmup_cudarc_allocator()?;
+    adapter::warmup_cuda_allocator()?;
 
     Ok(())
 }

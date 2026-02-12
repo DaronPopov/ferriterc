@@ -55,10 +55,17 @@ pub fn reset_torch_stream(device_id: i32) {
     unsafe { aten_reset_default_stream(device_id) };
 }
 
-pub fn warmup_cudarc_allocator() -> Result<(), String> {
+pub fn warmup_cuda_allocator() -> Result<(), String> {
     unsafe {
-        let p = cudarc::driver::result::malloc_sync(256).map_err(|e| e.to_string())?;
-        cudarc::driver::result::free_sync(p).map_err(|e| e.to_string())?;
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        let rc = ptx_sys::cudaMalloc(&mut ptr, 256);
+        if rc != ptx_sys::cudaSuccess {
+            return Err(format!("cudaMalloc warmup failed (error {})", rc));
+        }
+        let rc = ptx_sys::cudaFree(ptr);
+        if rc != ptx_sys::cudaSuccess {
+            return Err(format!("cudaFree warmup failed (error {})", rc));
+        }
     }
     Ok(())
 }
