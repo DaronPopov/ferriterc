@@ -30,3 +30,6 @@ pub use ops::loss::Reduction;
 
 // Re-export runtime for convenience
 pub use ptx_runtime::{PtxRuntime, Error, Result};
+
+// Re-export bytemuck so downstream crates can use Pod/Zeroable bounds
+pub use bytemuck;

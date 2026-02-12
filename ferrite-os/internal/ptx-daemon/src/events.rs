@@ -87,7 +87,6 @@ pub enum DaemonEvent {
         command: String,
         success: bool,
     },
-    #[allow(dead_code)]
     AppEvent {
         app_name: String,
         message: String,

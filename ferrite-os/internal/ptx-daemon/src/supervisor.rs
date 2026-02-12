@@ -313,6 +313,7 @@ impl JobSupervisor {
 
         let child = Command::new(&job.command)
             .args(&job.args)
+            .env("FERRITE_JOB_ID", id.raw().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

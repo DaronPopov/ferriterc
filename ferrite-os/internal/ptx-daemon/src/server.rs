@@ -5,6 +5,7 @@ use std::sync::{mpsc, Arc};
 use tracing::info;
 
 use crate::config::DaemonConfig;
+use crate::event_stream::SchedulerEvent;
 use crate::events::{DaemonEvent, LogCategory, LogEntry};
 
 mod bootstrap;
@@ -76,6 +77,26 @@ pub fn run_server(config: DaemonConfig) -> io::Result<()> {
 
     if use_tui {
         let (tx, rx) = mpsc::channel::<DaemonEvent>();
+
+        // Bridge: forward SchedulerEvent → DaemonEvent so the TUI can render them.
+        let scheduler_rx = state.event_stream.lock().subscribe();
+        let tx_bridge = tx.clone();
+        std::thread::spawn(move || {
+            while let Ok(entry) = scheduler_rx.recv() {
+                let daemon_evt = match entry.event {
+                    SchedulerEvent::AppEvent { app_name, event_name, payload, .. } => {
+                        DaemonEvent::AppEvent {
+                            app_name,
+                            message: format!("{}: {}", event_name, payload),
+                        }
+                    }
+                    _ => continue,
+                };
+                if tx_bridge.send(daemon_evt).is_err() {
+                    break;
+                }
+            }
+        });
 
         let state_bg = Arc::clone(&state);
         let runner_bg = Arc::clone(&runner);

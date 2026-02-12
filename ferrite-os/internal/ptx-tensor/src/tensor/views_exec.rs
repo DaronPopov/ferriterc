@@ -5,7 +5,7 @@ impl Tensor {
     ///
     /// If the tensor is non-contiguous (e.g. from a transpose or slice),
     /// a contiguous GPU copy is materialized first, then copied to host.
-    pub fn to_vec<T: Copy + Default>(&self) -> Result<Vec<T>> {
+    pub fn to_vec<T: bytemuck::Pod>(&self) -> Result<Vec<T>> {
         if !self.is_contiguous() {
             let contig = self.contiguous()?;
             return contig.storage.to_host();

@@ -72,6 +72,9 @@ pub(super) fn execute_command(
         "audit-query" => commands::handle_audit_query(state, &args_refs),
         "events-stream" => commands::handle_events_stream(state),
 
+        // ── FerApp event ingestion ───────────────────────────────
+        "app-event" => commands::handle_app_event(state, &args_refs),
+
         // ── durable job commands (Plan-B) ──────────────────────
         "job-submit" => commands::handle_job_submit(state, &args_refs),
         "job-stop" => commands::handle_job_stop(state, &args_refs),

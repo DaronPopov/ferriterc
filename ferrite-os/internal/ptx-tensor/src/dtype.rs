@@ -116,7 +116,10 @@ impl fmt::Display for DType {
 }
 
 /// Trait for types that can be used as tensor elements.
-pub trait TensorDType: Copy + Default + Send + Sync + 'static {
+///
+/// Requires `bytemuck::Pod` to guarantee safe reinterpretation between
+/// byte slices and typed slices during GPU memory transfers.
+pub trait TensorDType: bytemuck::Pod + Default + Send + Sync + 'static {
     /// The corresponding DType variant.
     const DTYPE: DType;
 

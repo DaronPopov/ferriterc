@@ -127,6 +127,13 @@ pub enum SchedulerEvent {
         target: String,
         reason: String,
     },
+    /// Emitted by a FerApp application via the `app-event` command.
+    AppEvent {
+        app_name: String,
+        event_name: String,
+        payload: String,
+        tenant_id: Option<u64>,
+    },
 }
 
 /// A single entry in the event stream, with a monotonic sequence number.

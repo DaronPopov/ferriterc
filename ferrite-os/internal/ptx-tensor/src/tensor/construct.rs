@@ -79,7 +79,7 @@ impl Tensor {
     }
 
     /// Create a tensor from host data.
-    pub fn from_slice<T: Copy>(
+    pub fn from_slice<T: bytemuck::Pod>(
         data: &[T],
         shape: &[usize],
         dtype: DType,

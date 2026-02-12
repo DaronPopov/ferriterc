@@ -46,7 +46,7 @@ impl Storage {
     /// # Safety
     ///
     /// The caller must ensure the data pointer and length are valid.
-    pub unsafe fn from_host<T: Copy>(
+    pub unsafe fn from_host<T: bytemuck::Pod>(
         data: &[T],
         dtype: DType,
         runtime: &Arc<PtxRuntime>,
@@ -98,9 +98,9 @@ impl Storage {
     ///
     /// Synchronizes all GPU streams before copying to ensure all pending
     /// kernel writes are visible.
-    pub fn to_host<T: Copy + Default>(&self) -> Result<Vec<T>> {
+    pub fn to_host<T: bytemuck::Pod>(&self) -> Result<Vec<T>> {
         self.runtime.sync_all()?;
-        let mut data = vec![T::default(); self.len];
+        let mut data = vec![bytemuck::Zeroable::zeroed(); self.len];
         unsafe {
             self.ptr.copy_to_host(
                 data.as_mut_ptr() as *mut libc::c_void,

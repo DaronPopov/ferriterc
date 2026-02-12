@@ -1514,6 +1514,58 @@ pub fn handle_events_stream(state: &DaemonState) -> io::Result<String> {
     }
 }
 
+// ── FerApp event handler ──────────────────────────────────────────
+
+/// Handle `app-event <json>` -- ingest an application event from a FerApp.
+///
+/// Payload format:
+/// ```json
+/// {"app_name":"...", "event_name":"...", "payload":"...", "tenant_id": null}
+/// ```
+pub fn handle_app_event(state: &DaemonState, args: &[&str]) -> io::Result<String> {
+    let json_str = args.join(" ");
+    if json_str.is_empty() {
+        return Ok("{\"error\":\"usage: app-event {\\\"app_name\\\":\\\"...\\\", ...}\"}\n".to_string());
+    }
+
+    #[derive(serde::Deserialize)]
+    struct AppEventPayload {
+        app_name: String,
+        event_name: String,
+        payload: String,
+        tenant_id: Option<u64>,
+    }
+
+    let parsed: AppEventPayload = match serde_json::from_str(&json_str) {
+        Ok(p) => p,
+        Err(e) => {
+            let response = serde_json::json!({
+                "error": "invalid app-event payload",
+                "message": e.to_string(),
+            });
+            return Ok(format!("{}\n", serde_json::to_string(&response).unwrap()));
+        }
+    };
+
+    emit_scheduler_event(
+        state,
+        SchedulerEvent::AppEvent {
+            app_name: parsed.app_name.clone(),
+            event_name: parsed.event_name.clone(),
+            payload: parsed.payload,
+            tenant_id: parsed.tenant_id,
+        },
+    );
+
+    let response = serde_json::json!({
+        "ok": true,
+        "message": "event accepted",
+        "app_name": parsed.app_name,
+        "event_name": parsed.event_name,
+    });
+    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+}
+
 // ── durable job command handlers (Plan-B) ─────────────────────────
 
 /// Handle `job-submit <command> [args...]` -- submit a new durable job.
