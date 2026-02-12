@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve symlinks so this works when invoked from ~/.local/bin/ferrite-daemon.
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+DAEMON_RELEASE="$ROOT/ferrite-os/target/release/ferrite-daemon"
+DAEMON_DEBUG="$ROOT/ferrite-os/target/debug/ferrite-daemon"
+RUNTIME_LIB="$ROOT/ferrite-os/lib"
+
+if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+  export LD_LIBRARY_PATH="$RUNTIME_LIB:$LD_LIBRARY_PATH"
+else
+  export LD_LIBRARY_PATH="$RUNTIME_LIB"
+fi
+
+if [[ -z "${LIBTORCH:-}" && -d "$ROOT/external/libtorch" ]]; then
+  export LIBTORCH="$ROOT/external/libtorch"
+fi
+export LIBTORCH_BYPASS_VERSION_CHECK="${LIBTORCH_BYPASS_VERSION_CHECK:-1}"
+
+if [[ -n "${LIBTORCH:-}" && -d "${LIBTORCH}/lib" ]]; then
+  export LD_LIBRARY_PATH="${LIBTORCH}/lib:$LD_LIBRARY_PATH"
+fi
+
+if [[ -z "${FERRITE_GPU_NAME:-}" ]] && command -v nvidia-smi >/dev/null 2>&1; then
+  if gpu_name="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1)" \
+    && [[ -n "$gpu_name" ]] \
+    && [[ "$gpu_name" != Failed* ]]; then
+    export FERRITE_GPU_NAME="$gpu_name"
+  fi
+fi
+
+if [[ -x "$DAEMON_RELEASE" ]]; then
+  exec "$DAEMON_RELEASE" "$@"
+fi
+
+if [[ -x "$DAEMON_DEBUG" ]]; then
+  exec "$DAEMON_DEBUG" "$@"
+fi
+
+exec cargo run --manifest-path "$ROOT/ferrite-os/Cargo.toml" -p ferrite-daemon -- "$@"

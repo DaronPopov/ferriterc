@@ -52,9 +52,11 @@ impl ScriptRunner {
                 let data: Vec<f32> = (0..numel)
                     .map(|i| (i as f32) / (numel as f32) * 4.0 - 2.0)
                     .collect();
-                HostTensor::new(shape.clone(), data).unwrap()
+                HostTensor::new(shape.clone(), data).map_err(|e| {
+                    format!("failed to build input tensor for shape {:?}: {}", shape, e)
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         match self.lang_runtime.execute(program, &inputs) {
             Ok(output) => Ok(ExecResult {

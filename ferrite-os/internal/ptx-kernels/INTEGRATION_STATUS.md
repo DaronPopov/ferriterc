@@ -80,7 +80,7 @@ rust/ptx-kernels/
 
 ### Status: Repository Cloned
 
-Location: `/home/daron/weird_dif/flash-attention/`
+Location: `/path/to/ferriterc/flash-attention/`
 
 ### Flash Attention Overview
 
@@ -183,14 +183,14 @@ flash_bwd_hdim64_bf16_causal_sm80.cu # Backward, head_dim=64, BF16, causal
 
 ### Build Kernels
 ```bash
-cd /home/daron/weird_dif/rust/ptx-kernels
+cd /path/to/ferriterc/ferrite-os/internal/ptx-kernels
 cargo build --release
 ```
 
 ### Test Candle with TLSF
 ```bash
-cd /home/daron/weird_dif
-LD_LIBRARY_PATH=/home/daron/weird_dif/lib:$LD_LIBRARY_PATH \
+cd /path/to/ferriterc/ferrite-os
+LD_LIBRARY_PATH=/path/to/ferriterc/ferrite-os/lib:$LD_LIBRARY_PATH \
 ./target/release/examples/test_candle_tlsf
 ```
 
@@ -207,7 +207,7 @@ LD_LIBRARY_PATH=/home/daron/weird_dif/lib:$LD_LIBRARY_PATH \
 - **Candle Kernels**: https://github.com/huggingface/candle
 - **Flash Attention**: https://github.com/Dao-AILab/flash-attention
 - **CUTLASS**: https://github.com/NVIDIA/cutlass
-- **PTX-OS TLSF**: /home/daron/weird_dif/ptx-runtime
+- **PTX-OS TLSF**: /path/to/ferriterc/ferrite-os/ptx-runtime
 
 ---
 

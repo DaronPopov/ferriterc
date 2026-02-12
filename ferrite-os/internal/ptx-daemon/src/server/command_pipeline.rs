@@ -1,23 +1,52 @@
 use std::io;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::commands;
 use crate::state::DaemonState;
+use serde::Deserialize;
 
+#[derive(Debug)]
 pub(super) struct ParsedCommand {
     pub command: String,
     pub args: Vec<String>,
 }
 
-pub(super) fn parse_command_line(cmdline: &str) -> Option<ParsedCommand> {
-    let mut parts = cmdline.split_whitespace();
+#[derive(Debug, Deserialize)]
+struct CommandEnvelope {
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+pub(super) fn parse_command_line(cmdline: &str) -> Result<ParsedCommand, String> {
+    let trimmed = cmdline.trim();
+    if trimmed.is_empty() {
+        return Err("empty command".to_string());
+    }
+
+    // New structured protocol: {"command":"run-file","args":["...","..."]}.
+    // Keeps argument boundaries and quoting intact.
+    if trimmed.starts_with('{') {
+        let envelope: CommandEnvelope = serde_json::from_str(trimmed)
+            .map_err(|e| format!("invalid command envelope: {e}"))?;
+        let command = envelope.command.trim().to_lowercase();
+        if command.is_empty() {
+            return Err("empty command".to_string());
+        }
+        return Ok(ParsedCommand {
+            command,
+            args: envelope.args,
+        });
+    }
+
+    // Legacy text protocol: command and whitespace-separated args.
+    let mut parts = trimmed.split_whitespace();
     let command = parts.next().unwrap_or("").to_lowercase();
     if command.is_empty() {
-        return None;
+        return Err("empty command".to_string());
     }
     let args = parts.map(|s| s.to_string()).collect();
-    Some(ParsedCommand { command, args })
+    Ok(ParsedCommand { command, args })
 }
 
 pub(super) fn execute_command(
@@ -83,11 +112,41 @@ pub(super) fn execute_command(
         "job-history" => commands::handle_job_history(state, &args_refs),
 
         _ => {
-            state.failed_requests.fetch_add(1, Ordering::Relaxed);
             Ok(format!(
                 "{{\"error\":\"unknown command\",\"command\":\"{}\"}}\n",
                 parsed.command
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_command_line;
+
+    #[test]
+    fn parses_legacy_text_protocol() {
+        let parsed = parse_command_line("run-file foo.rs -- --arg value").unwrap();
+        assert_eq!(parsed.command, "run-file");
+        assert_eq!(parsed.args, vec!["foo.rs", "--", "--arg", "value"]);
+    }
+
+    #[test]
+    fn parses_json_envelope_and_preserves_arg_boundaries() {
+        let parsed = parse_command_line(
+            r#"{"command":"run-file","args":["my script.rs","--","--name","hello world"]}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.command, "run-file");
+        assert_eq!(
+            parsed.args,
+            vec!["my script.rs", "--", "--name", "hello world"]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_json_envelope() {
+        let err = parse_command_line(r#"{"command":1}"#).unwrap_err();
+        assert!(err.contains("invalid command envelope"));
     }
 }

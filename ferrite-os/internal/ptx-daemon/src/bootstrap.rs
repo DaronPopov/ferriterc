@@ -62,7 +62,8 @@ pub fn print_usage() {
     eprintln!();
     eprintln!("ENVIRONMENT:");
     eprintln!("    FERRITE_DEVICE           GPU device ID");
-    eprintln!("    FERRITE_SOCKET           Socket path");
+    eprintln!("    FERRITE_SOCKET           Socket path (canonical)");
+    eprintln!("    FERRITE_DAEMON_SOCKET    Socket path (compat alias)");
     eprintln!("    FERRITE_MAX_STREAMS      Maximum streams");
     eprintln!("    FERRITE_BOOT_KERNEL      Boot persistent kernel");
     eprintln!("    FERRITE_WATCH            Enable watch mode");
@@ -76,6 +77,18 @@ pub fn parse_cli() -> Result<CliInvocation, i32> {
     let mut command: Option<String> = None;
     let mut command_args: Vec<String> = Vec::new();
     let mut args = env::args().skip(1).peekable();
+
+    let next_value = |flag: &str,
+                      args: &mut std::iter::Peekable<std::iter::Skip<std::env::Args>>|
+     -> Result<String, i32> {
+        match args.next() {
+            Some(value) => Ok(value),
+            None => {
+                eprintln!("{flag} requires a value");
+                Err(2)
+            }
+        }
+    };
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -94,28 +107,37 @@ pub fn parse_cli() -> Result<CliInvocation, i32> {
                 }
             }
             "--socket" => {
-                config.socket_path = args.next().expect("--socket requires a value");
+                config.socket_path = next_value("--socket", &mut args)?;
             }
             "--device" => {
-                config.device_id = args
-                    .next()
-                    .expect("--device requires a value")
-                    .parse()
-                    .expect("Invalid device ID");
+                let value = next_value("--device", &mut args)?;
+                config.device_id = match value.parse() {
+                    Ok(parsed) => parsed,
+                    Err(_) => {
+                        eprintln!("Invalid device ID: {value}");
+                        return Err(2);
+                    }
+                };
             }
             "--streams" => {
-                config.max_streams = args
-                    .next()
-                    .expect("--streams requires a value")
-                    .parse()
-                    .expect("Invalid streams value");
+                let value = next_value("--streams", &mut args)?;
+                config.max_streams = match value.parse() {
+                    Ok(parsed) => parsed,
+                    Err(_) => {
+                        eprintln!("Invalid streams value: {value}");
+                        return Err(2);
+                    }
+                };
             }
             "--pool-fraction" => {
-                config.pool_fraction = args
-                    .next()
-                    .expect("--pool-fraction requires a value")
-                    .parse()
-                    .expect("Invalid pool fraction");
+                let value = next_value("--pool-fraction", &mut args)?;
+                config.pool_fraction = match value.parse() {
+                    Ok(parsed) => parsed,
+                    Err(_) => {
+                        eprintln!("Invalid pool fraction: {value}");
+                        return Err(2);
+                    }
+                };
             }
             "--boot-kernel" => {
                 config.boot_kernel = true;
@@ -124,23 +146,26 @@ pub fn parse_cli() -> Result<CliInvocation, i32> {
                 config.watch_enabled = true;
             }
             "--watch-ms" => {
-                config.watch_ms = args
-                    .next()
-                    .expect("--watch-ms requires a value")
-                    .parse()
-                    .expect("Invalid watch interval");
+                let value = next_value("--watch-ms", &mut args)?;
+                config.watch_ms = match value.parse() {
+                    Ok(parsed) => parsed,
+                    Err(_) => {
+                        eprintln!("Invalid watch interval: {value}");
+                        return Err(2);
+                    }
+                };
             }
             "--log-dir" => {
-                config.log_dir = Some(args.next().expect("--log-dir requires a value"));
+                config.log_dir = Some(next_value("--log-dir", &mut args)?);
             }
             "--apps-bin-dir" => {
-                config.apps_bin_dir = Some(args.next().expect("--apps-bin-dir requires a value"));
+                config.apps_bin_dir = Some(next_value("--apps-bin-dir", &mut args)?);
             }
             "--headless" => {
                 config.headless = true;
             }
             "--gpu-name" => {
-                config.gpu_name = Some(args.next().expect("--gpu-name requires a value"));
+                config.gpu_name = Some(next_value("--gpu-name", &mut args)?);
             }
             val if !val.starts_with("--") => {
                 if command.is_none() {

@@ -23,26 +23,35 @@ pub(super) fn init_logging(config: &DaemonConfig, use_tui: bool) {
         let log_dir = config.log_dir.clone().unwrap_or_else(|| "/tmp".to_string());
         let file_appender = tracing_appender::rolling::daily(&log_dir, "ferrite-daemon.log");
         let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-        tracing_subscriber::fmt()
+        if let Err(e) = tracing_subscriber::fmt()
             .with_writer(non_blocking)
             .with_ansi(false)
             .with_target(true)
             .with_thread_ids(true)
-            .init();
+            .try_init()
+        {
+            eprintln!("ferrite-daemon logging init skipped: {}", e);
+        }
     } else if let Some(log_dir) = &config.log_dir {
         let file_appender = tracing_appender::rolling::daily(log_dir, "ferrite-daemon.log");
         let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-        tracing_subscriber::fmt()
+        if let Err(e) = tracing_subscriber::fmt()
             .with_writer(non_blocking)
             .with_ansi(false)
             .with_target(true)
             .with_thread_ids(true)
-            .init();
+            .try_init()
+        {
+            eprintln!("ferrite-daemon logging init skipped: {}", e);
+        }
     } else {
-        tracing_subscriber::fmt()
+        if let Err(e) = tracing_subscriber::fmt()
             .with_target(true)
             .with_thread_ids(true)
-            .init();
+            .try_init()
+        {
+            eprintln!("ferrite-daemon logging init skipped: {}", e);
+        }
     }
 }
 
@@ -117,14 +126,20 @@ pub(super) fn boot_kernel_if_requested(config: &DaemonConfig, runtime: &Arc<PtxR
 pub(super) fn build_state(
     runtime: Arc<PtxRuntime>,
     config: DaemonConfig,
-) -> (Arc<DaemonState>, Arc<parking_lot::Mutex<ScriptRunner>>) {
+) -> io::Result<(Arc<DaemonState>, Arc<parking_lot::Mutex<ScriptRunner>>)> {
+    const FALLBACK_JOB_STATE_DIR: &str = "/tmp/ferrite-jobs-fallback";
+
     // Initialize the durable job supervisor.
     let job_store = match JobStore::new(&config.jobs.state_dir) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("failed to create job store at {}: {}; using /tmp fallback", config.jobs.state_dir, e);
-            JobStore::new("/tmp/ferrite-jobs-fallback")
-                .expect("failed to create fallback job store")
+            JobStore::new(FALLBACK_JOB_STATE_DIR).map_err(|fallback_err| {
+                io::Error::other(format!(
+                    "failed to create job store at {} ({}) and fallback {} ({})",
+                    config.jobs.state_dir, e, FALLBACK_JOB_STATE_DIR, fallback_err
+                ))
+            })?
         }
     };
 
@@ -132,8 +147,12 @@ pub(super) fn build_state(
         Ok(pair) => pair,
         Err(e) => {
             tracing::error!("job supervisor init failed: {}; starting with empty supervisor", e);
-            let fallback_store = JobStore::new("/tmp/ferrite-jobs-fallback")
-                .expect("failed to create fallback job store");
+            let fallback_store = JobStore::new(FALLBACK_JOB_STATE_DIR).map_err(|fallback_err| {
+                io::Error::other(format!(
+                    "job supervisor init failed ({}) and fallback store {} creation failed ({})",
+                    e, FALLBACK_JOB_STATE_DIR, fallback_err
+                ))
+            })?;
             // Create an empty supervisor with no recovered jobs.
             (crate::supervisor::JobSupervisor::empty(fallback_store), Vec::new())
         }
@@ -156,5 +175,5 @@ pub(super) fn build_state(
     }
 
     let runner = Arc::new(parking_lot::Mutex::new(script_runner));
-    (state, runner)
+    Ok((state, runner))
 }

@@ -694,21 +694,64 @@ fn run_command(mut cmd: Command) -> Result<(), String> {
 }
 
 fn apply_ld_library_path(cmd: &mut Command, repo_root: &Path) {
-    let lib_dir = repo_root.join("lib");
-    if !lib_dir.exists() {
-        return;
-    }
-    let lib_str = lib_dir.to_string_lossy().to_string();
     let existing = env::var("LD_LIBRARY_PATH").unwrap_or_default();
-    if existing.split(':').any(|p| p == lib_str) {
+    let mut prepend: Vec<String> = Vec::new();
+
+    for dir in runtime_lib_candidates(repo_root) {
+        push_unique_existing_dir(&mut prepend, dir);
+    }
+
+    for dir in libtorch_lib_candidates(repo_root) {
+        push_unique_existing_dir(&mut prepend, dir);
+    }
+
+    if prepend.is_empty() {
         return;
     }
-    let new_val = if existing.is_empty() {
-        lib_str
-    } else {
-        format!("{}:{}", lib_str, existing)
-    };
-    cmd.env("LD_LIBRARY_PATH", new_val);
+
+    for existing_path in existing.split(':') {
+        let p = existing_path.trim();
+        if p.is_empty() || prepend.iter().any(|v| v == p) {
+            continue;
+        }
+        prepend.push(p.to_string());
+    }
+
+    cmd.env("LD_LIBRARY_PATH", prepend.join(":"));
+}
+
+fn push_unique_existing_dir(out: &mut Vec<String>, path: PathBuf) {
+    if !path.exists() {
+        return;
+    }
+    let val = fs::canonicalize(&path)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string();
+    if out.iter().any(|v| v == &val) {
+        return;
+    }
+    out.push(val);
+}
+
+fn runtime_lib_candidates(repo_root: &Path) -> Vec<PathBuf> {
+    vec![
+        repo_root.join("ferrite-os/lib"),
+        repo_root.join("lib"),
+    ]
+}
+
+fn libtorch_lib_candidates(repo_root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+
+    if let Ok(root) = env::var("LIBTORCH") {
+        let env_path = PathBuf::from(root).join("lib");
+        out.push(env_path);
+    }
+
+    out.push(repo_root.join("external/libtorch/lib"));
+    out.push(repo_root.join("../external/libtorch/lib"));
+    out
 }
 
 /// Read the actual `[package] name` from a crate's Cargo.toml.

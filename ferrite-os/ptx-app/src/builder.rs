@@ -99,7 +99,9 @@ impl FerApp {
 
     /// Set an explicit daemon socket path.
     ///
-    /// Default: auto-detect from `FERRITE_DAEMON_SOCKET` or `/tmp/ferrite.sock`.
+    /// Default: auto-detect from `FERRITE_SOCKET`/`FERRITE_DAEMON_SOCKET`,
+    /// then daemon-style per-user defaults. Falls back to `/tmp/ferrite.sock`
+    /// for legacy compatibility.
     pub fn daemon_socket(mut self, path: &str) -> Self {
         self.daemon_socket = Some(path.to_string());
         self

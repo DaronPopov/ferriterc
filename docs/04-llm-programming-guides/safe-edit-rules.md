@@ -27,6 +27,7 @@ After shell changes, run:
 bash -n install.sh
 bash -n ferrite-run
 bash -n scripts/resolve_cuda_compat.sh
+bash -n scripts/install/lib/*.sh
 ```
 
 ## Rule 5: Include Minimal Verification Notes

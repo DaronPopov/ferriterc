@@ -1,5 +1,4 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, Paragraph};
 use ratatui::Frame;
@@ -25,22 +24,23 @@ pub(super) fn draw_clean(frame: &mut Frame, state: &mut TuiState) {
         .constraints([
             Constraint::Length(1),        // 0: header
             Constraint::Length(1),        // 1: activity wave
-            Constraint::Length(1),        // 2: mode/status
-            Constraint::Length(1),        // 3: core stats 1
-            Constraint::Length(1),        // 4: core stats 2
+            Constraint::Length(1),        // 2: core stats 1
+            Constraint::Length(1),        // 3: core stats 2
+            Constraint::Length(1),        // 4: group separator
             Constraint::Length(1),        // 5: memory stats
             Constraint::Length(1),        // 6: health
             Constraint::Length(nvml_h),   // 7: NVML hardware (when available)
             Constraint::Length(owner_h),  // 8: VRAM owners (when active)
             Constraint::Length(1),        // 9: profiling summary
-            Constraint::Min(0),           // 10: optional recent log
+            Constraint::Min(0),           // 10: recent log
             Constraint::Length(1),        // 11: prompt
         ])
         .split(area);
 
     draw_clean_header(frame, rows[0], state);
     draw_activity_wave(frame, rows[1], state);
-    draw_clean_stats(frame, rows[2], rows[3], rows[4], rows[5], rows[6], state);
+    draw_clean_stats(frame, rows[2], rows[3], rows[5], rows[6], state);
+    super::draw_thin_rule(frame, rows[4]);
     if nvml_h > 0 {
         draw_clean_nvml(frame, rows[7], state);
     }
@@ -64,20 +64,18 @@ fn draw_clean_header(frame: &mut Frame, area: Rect, state: &TuiState) {
 
     let line = Line::from(vec![
         Span::styled("ferrite daemon", style::accent_bold()),
-        Span::styled("  ", Style::default()),
+        Span::styled("  ", style::spacer()),
         Span::styled(status.0, style::semantic_bold(status.1)),
-        Span::styled("  ", Style::default()),
+        Span::styled("  ", style::spacer()),
         Span::styled(
             format!("uptime {}", fmt_uptime(state.uptime_secs)),
             style::label(),
         ),
-        Span::styled("  ", Style::default()),
+        Span::styled("  ", style::spacer()),
         Span::styled(
             format!("device {}", state.device_name),
             style::label(),
         ),
-        Span::styled("  ", Style::default()),
-        Span::styled("view clean", style::accent()),
     ]);
 
     frame.render_widget(Paragraph::new(line), area);
@@ -85,7 +83,6 @@ fn draw_clean_header(frame: &mut Frame, area: Rect, state: &TuiState) {
 
 fn draw_clean_stats(
     frame: &mut Frame,
-    mode_area: Rect,
     line1: Rect,
     line2: Rect,
     line3: Rect,
@@ -97,13 +94,6 @@ fn draw_clean_stats(
         .as_ref()
         .map(|p| p.total_ms as f32)
         .unwrap_or(0.0);
-
-    let mode = Line::from(vec![
-        Span::styled("mode ", style::label()),
-        Span::styled("clean", style::accent_bold()),
-        Span::styled("  /sysmon on for visual dashboard", style::label()),
-    ]);
-    frame.render_widget(Paragraph::new(mode), mode_area);
 
     let metrics_1 = Line::from(vec![
         Span::styled("GPU ", style::label()),
@@ -181,8 +171,7 @@ fn draw_clean_recent(frame: &mut Frame, area: Rect, state: &TuiState) {
         return;
     }
     let title = Line::from(vec![
-        Span::styled("recent ", style::label()),
-        Span::styled("(last 40 events)", style::label()),
+        Span::styled("recent", style::label()),
     ]);
     frame.render_widget(
         Paragraph::new(title),

@@ -64,22 +64,35 @@ CUDA compatibility is selected from `compat.toml` based on detected toolkit vers
 3. Builds `external/ferrite-torch` examples
 4. Builds `external/ferrite-xla` backend example
 5. Validates torch runtime scripts
-6. Checks `finetune_engine/` scripts compile
-7. Checks `mathematics_engine/` scripts compile
+6. Checks `ferrite-os/workloads/finetune_engine/` scripts compile
+7. Checks `ferrite-os/workloads/mathematics_engine/` scripts compile
 
 ## Running Scripts
 
 ```bash
-./ferrite-run finetune_engine/scripting_finetune.rs
-./ferrite-run mathematics_engine/monte_carlo/path_pricer.rs -- --paths 10000000
+./ferrite-run ferrite-os/workloads/finetune_engine/scripting_finetune.rs
+./ferrite-run ferrite-os/workloads/mathematics_engine/monte_carlo/path_pricer.rs -- --paths 10000000
 ```
 
 `ferrite-run` auto-detects the `--torch` feature from import statements.
+
+Legacy top-level paths (`finetune_engine/`, `mathematics_engine/`) are kept as compatibility symlinks.
+
+## Running Daemon
+
+```bash
+./ferrite-daemon serve
+./ferrite-daemon ping
+./ferrite-daemon run-list
+```
+
+`ferrite-daemon` is a root-level wrapper that sets runtime/libtorch library paths and launches the daemon binary.
 
 ## Components
 
 ```
 ferriterc/
+  ferrite-daemon         Root daemon launcher wrapper
   ferrite-os/            GPU runtime core (TLSF allocator, stream/runtime plumbing, IPC)
   ferrite-gpu-lang/      Rust GPU scripting layer
   external/
@@ -87,7 +100,7 @@ ferriterc/
     cudarc-ptx/          CUDA driver abstraction
     ferrite-torch/       Torch integration examples
     ferrite-xla/         XLA backend integration
-  finetune_engine/       ML fine-tuning control plane
+  ferrite-os/workloads/finetune_engine/  ML fine-tuning control plane
     scripting_finetune   LoRA fine-tuning script entrypoint
     checkpoint/          Adapter checkpoint save/load
     loader/              Safetensors shard loader
@@ -99,7 +112,7 @@ ferriterc/
     telemetry/           Training metrics + divergence detection
     distributed/         Multi-GPU wave scheduling
     architectures/       Model architecture experiments
-  mathematics_engine/    Quantitative finance compute modules
+  ferrite-os/workloads/mathematics_engine/  Quantitative finance compute modules
     monte_carlo/         Monte Carlo pricing
     portfolio/           Covariance and portfolio analytics
     risk/                VaR/CVaR workflows

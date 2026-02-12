@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use ptx_runtime::scheduler::{JobId, Scheduler, TenantId};
+use tracing::warn;
 
 use crate::event_stream::{SchedulerEvent, SchedulerEventStream};
 use crate::policy::decision::{PolicyContext, PolicyDecision};
@@ -200,6 +201,17 @@ impl SchedulerResponse {
     }
 }
 
+fn encode_response(resp: &SchedulerResponse) -> String {
+    match serde_json::to_string(resp) {
+        Ok(json) => format!("{json}\n"),
+        Err(e) => {
+            warn!(error = %e, "failed to serialize scheduler response");
+            "{\"command\":\"scheduler\",\"success\":false,\"data\":null,\"error\":\"internal serialization error\"}\n"
+                .to_string()
+        }
+    }
+}
+
 // ── handler dispatch ──────────────────────────────────────────────
 
 /// Execute a scheduler command, checking policy first.
@@ -240,7 +252,7 @@ pub fn handle_scheduler_command(
 
     if decision.is_denied() {
         let resp = SchedulerResponse::denied(cmd.action_name(), &decision);
-        return format!("{}\n", serde_json::to_string(&resp).unwrap());
+        return encode_response(&resp);
     }
 
     let resp = match cmd {
@@ -254,17 +266,25 @@ pub fn handle_scheduler_command(
             }))
         }
         SchedulerCommand::TenantList => {
-            let tenants: Vec<serde_json::Value> = scheduler.registry().list().iter().map(|&tid| {
-                let tenant = scheduler.registry().get(tid).unwrap();
-                let snap = tenant.usage.snapshot();
-                serde_json::json!({
-                    "tenant_id": tid.0,
-                    "label": &tenant.label,
-                    "active_jobs": snap.active_jobs,
-                    "active_streams": snap.active_streams,
-                    "vram_used": snap.current_vram_bytes,
+            let tenants: Vec<serde_json::Value> = scheduler
+                .registry()
+                .list()
+                .iter()
+                .filter_map(|&tid| {
+                    let Some(tenant) = scheduler.registry().get(tid) else {
+                        warn!(tenant_id = tid.0, "tenant id present in list but missing from registry");
+                        return None;
+                    };
+                    let snap = tenant.usage.snapshot();
+                    Some(serde_json::json!({
+                        "tenant_id": tid.0,
+                        "label": &tenant.label,
+                        "active_jobs": snap.active_jobs,
+                        "active_streams": snap.active_streams,
+                        "vram_used": snap.current_vram_bytes,
+                    }))
                 })
-            }).collect();
+                .collect();
             let count = tenants.len();
             SchedulerResponse::ok("tenant-list", serde_json::json!({
                 "tenants": tenants,
@@ -410,7 +430,7 @@ pub fn handle_scheduler_command(
         }
     };
 
-    format!("{}\n", serde_json::to_string(&resp).unwrap())
+    encode_response(&resp)
 }
 
 #[cfg(test)]

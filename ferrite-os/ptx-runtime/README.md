@@ -444,12 +444,12 @@ cargo test --features gpu-tests
 
 ## Benchmarks
 
-See `../systemic_benchmarks/` for comprehensive validation:
+Use `../scripts/ptx_bench_all.sh` for benchmark orchestration, plus these core examples:
 
-- allocation_comparison: TLSF vs cudaMalloc performance
-- stream_scaling: Concurrent stream handling
-- latency_analysis: Real-time latency characterization
-- multithreaded_stress: Thread safety validation
+- `jitter_benchmark`: runtime jitter and latency stability
+- `fused_kernel_benchmark`: fused-kernel execution path
+- `candle_performance_benchmark`: candle op throughput
+- `telemetry_demo`: end-to-end runtime telemetry visibility
 
 ## Performance Tuning
 
@@ -521,7 +521,7 @@ at your option.
 
 ## See Also
 
-- [PTX-OS Architecture](../ARCHITECTURE.md)
-- [Safety Analysis](../SAFETY.md)
-- [PTX-Compute API](../rust/ptx-compute/README.md)
-- [Systemic Benchmarks](../systemic_benchmarks/README.md)
+- [Runtime Architecture Guide](../../docs/02-runtime-architecture/README.md)
+- [Build and Portability Guide](../../docs/03-build-and-portability/README.md)
+- [PTX-Compute API](../internal/ptx-compute/README.md)
+- [Benchmark Runner](../scripts/ptx_bench_all.sh)

@@ -9,9 +9,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Discover the daemon socket path using the same logic as ptx-daemon.
+/// Discover the daemon socket path using the same logic as ferrite-daemon.
 pub fn discover_socket() -> String {
     if let Ok(s) = std::env::var("FERRITE_SOCKET") {
+        return s;
+    }
+    if let Ok(s) = std::env::var("FERRITE_DAEMON_SOCKET") {
+        // Backward-compatible alias used by some clients.
         return s;
     }
     let uid = unsafe { libc::geteuid() };

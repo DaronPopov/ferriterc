@@ -403,6 +403,9 @@ impl DaemonConfig {
         }
         if let Ok(val) = env::var("FERRITE_SOCKET") {
             self.socket_path = val;
+        } else if let Ok(val) = env::var("FERRITE_DAEMON_SOCKET") {
+            // Backward-compatible alias used by older clients.
+            self.socket_path = val;
         }
         if let Ok(val) = env::var("FERRITE_PID_FILE") {
             self.pid_file = val;

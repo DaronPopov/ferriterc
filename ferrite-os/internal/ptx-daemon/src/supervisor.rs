@@ -327,7 +327,12 @@ impl JobSupervisor {
                 // an open file descriptor per job.
                 std::mem::forget(child);
 
-                let job = self.jobs.get_mut(&id).unwrap();
+                let job = self.jobs.get_mut(&id).ok_or_else(|| Error::Internal {
+                    message: format!(
+                        "job {} missing from registry during running transition",
+                        id.raw()
+                    ),
+                })?;
                 job.mark_running(pid)?;
                 self.store.save(job)?;
 
@@ -336,7 +341,12 @@ impl JobSupervisor {
             }
             Err(e) => {
                 let msg = format!("spawn failed: {}", e);
-                let job = self.jobs.get_mut(&id).unwrap();
+                let job = self.jobs.get_mut(&id).ok_or_else(|| Error::Internal {
+                    message: format!(
+                        "job {} missing from registry during failure transition",
+                        id.raw()
+                    ),
+                })?;
                 job.record_failure(msg)?;
                 self.store.save(job)?;
                 Ok(())

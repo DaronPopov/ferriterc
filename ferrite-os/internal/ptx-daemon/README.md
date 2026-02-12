@@ -50,7 +50,7 @@ ferrite-daemon is a persistent system service that manages the Ferrite-OS GPU ru
 ### Build
 
 ```bash
-cargo build --release -p ptx-daemon
+cargo build --release -p ferrite-daemon
 ```
 
 ### Install Binary
@@ -80,21 +80,8 @@ cp internal/ptx-daemon/ferrite-daemon.toml ~/.config/ferrite-os/daemon.toml
 ### Install Systemd Service
 
 ```bash
-# Install service file
-sudo cp internal/ptx-daemon/ferrite-daemon.service /etc/systemd/system/
-
-# Create user and group
-sudo useradd -r -s /bin/false -G video,render ferrite
-
-# Create directories
-sudo mkdir -p /var/run/ferrite-os /var/log/ferrite-os
-sudo chown ferrite:ferrite /var/run/ferrite-os /var/log/ferrite-os
-sudo chmod 755 /var/run/ferrite-os /var/log/ferrite-os
-
-# Enable and start
-sudo systemctl daemon-reload
-sudo systemctl enable ferrite-daemon
-sudo systemctl start ferrite-daemon
+# From repository root, generate + install service using installer flow
+./install.sh --enable-service
 ```
 
 ## Usage
@@ -289,8 +276,8 @@ device_id = 0
 socket_path = "/var/run/ferrite-os/daemon.sock"
 pid_file = "/var/run/ferrite-os/daemon.pid"
 max_clients = 32
-max_streams = 64
-pool_fraction = 0.7
+max_streams = 128
+pool_fraction = 0.25
 keepalive_ms = 5000
 watch_ms = 1000
 watch_enabled = false
@@ -536,18 +523,18 @@ max_clients = 64
 ### Building
 
 ```bash
-cargo build -p ptx-daemon
+cargo build -p ferrite-daemon
 ```
 
 ### Testing
 
 ```bash
 # Start test daemon
-cargo run -p ptx-daemon -- serve --socket /tmp/test.sock
+cargo run -p ferrite-daemon -- serve --socket /tmp/test.sock
 
 # Test commands
-cargo run -p ptx-daemon -- ping --socket /tmp/test.sock
-cargo run -p ptx-daemon -- status --socket /tmp/test.sock
+cargo run -p ferrite-daemon -- ping --socket /tmp/test.sock
+cargo run -p ferrite-daemon -- status --socket /tmp/test.sock
 ```
 
 ### Debugging
@@ -555,7 +542,7 @@ cargo run -p ptx-daemon -- status --socket /tmp/test.sock
 Enable debug logging:
 
 ```bash
-RUST_LOG=debug cargo run -p ptx-daemon -- serve
+RUST_LOG=debug cargo run -p ferrite-daemon -- serve
 ```
 
 ## License
@@ -570,5 +557,5 @@ at your option.
 ## See Also
 
 - [Ferrite-OS Main Documentation](../../README.md)
-- [Architecture Overview](../../ARCHITECTURE.md)
+- [Runtime Architecture Guide](../../../docs/02-runtime-architecture/README.md)
 - [ptx-runtime Documentation](../../ptx-runtime/README.md)

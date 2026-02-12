@@ -54,6 +54,12 @@ fn evaluate_policy(state: &DaemonState, action: &str, resource: &str) -> Option<
     decision.to_denial_json(action, resource)
 }
 
+fn to_json_line<T: serde::Serialize>(value: &T) -> io::Result<String> {
+    serde_json::to_string(value)
+        .map(|json| format!("{json}\n"))
+        .map_err(|e| io::Error::other(format!("serialize response: {e}")))
+}
+
 #[derive(Debug)]
 struct RunRunnerResult {
     stdout: String,
@@ -812,7 +818,7 @@ pub fn handle_status(state: &DaemonState) -> io::Result<String> {
         "healthy": tlsf.is_healthy,
         "single_pool_strict": state.config.single_pool_strict,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 pub fn handle_stats(state: &DaemonState) -> io::Result<String> {
@@ -827,7 +833,7 @@ pub fn handle_stats(state: &DaemonState) -> io::Result<String> {
         "registered_kernels": stats.registered_kernels,
         "total_ops": stats.total_ops,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 pub fn handle_metrics(state: &DaemonState) -> io::Result<String> {
@@ -860,7 +866,7 @@ pub fn handle_metrics(state: &DaemonState) -> io::Result<String> {
         "fragmentation": tlsf.fragmentation_ratio,
         "single_pool_strict": state.config.single_pool_strict,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 pub fn handle_snapshot(state: &DaemonState) -> io::Result<String> {
@@ -875,7 +881,7 @@ pub fn handle_snapshot(state: &DaemonState) -> io::Result<String> {
         "queue_head": snap.queue_head,
         "queue_tail": snap.queue_tail,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 pub fn handle_health(state: &DaemonState) -> io::Result<String> {
@@ -898,7 +904,7 @@ pub fn handle_health(state: &DaemonState) -> io::Result<String> {
         "running_apps": running_apps,
         "max_clients": state.config.max_clients,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 pub fn handle_keepalive(state: &DaemonState) -> io::Result<String> {
@@ -927,7 +933,7 @@ pub fn handle_apps(state: &DaemonState) -> io::Result<String> {
         "managed_apps": MANAGED_APPS,
         "apps_bin_dir": state.config.apps_bin_dir,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 pub fn handle_app_start(state: &DaemonState, args: &[&str]) -> io::Result<String> {
@@ -947,7 +953,7 @@ pub fn handle_app_start(state: &DaemonState, args: &[&str]) -> io::Result<String
             "app": app,
             "allowed": MANAGED_APPS,
         });
-        return Ok(format!("{}\n", serde_json::to_string(&response).unwrap()));
+        return to_json_line(&response);
     }
 
     let app_args: Vec<String> = args.iter().skip(1).map(|s| s.to_string()).collect();
@@ -967,7 +973,7 @@ pub fn handle_app_start(state: &DaemonState, args: &[&str]) -> io::Result<String
                 "target": target,
                 "message": e.to_string(),
             });
-            return Ok(format!("{}\n", serde_json::to_string(&response).unwrap()));
+            return to_json_line(&response);
         }
     };
 
@@ -988,7 +994,7 @@ pub fn handle_app_start(state: &DaemonState, args: &[&str]) -> io::Result<String
         "name": app,
         "pid": pid,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 pub fn handle_app_stop(state: &DaemonState, args: &[&str]) -> io::Result<String> {
@@ -1016,10 +1022,17 @@ pub fn handle_app_stop(state: &DaemonState, args: &[&str]) -> io::Result<String>
             "error": "app not found",
             "selector": selector,
         });
-        return Ok(format!("{}\n", serde_json::to_string(&response).unwrap()));
+        return to_json_line(&response);
     };
 
-    let mut app = apps.remove(&id).expect("app id resolved but missing");
+    let Some(mut app) = apps.remove(&id) else {
+        let response = serde_json::json!({
+            "error": "app registry inconsistent",
+            "selector": selector,
+            "id": id,
+        });
+        return to_json_line(&response);
+    };
     let name = app.name.clone();
     let pid = app.child.id();
 
@@ -1048,7 +1061,7 @@ pub fn handle_app_stop(state: &DaemonState, args: &[&str]) -> io::Result<String>
             "pid": pid,
         })
     };
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 pub fn handle_run_file(state: &DaemonState, args: &[&str]) -> io::Result<String> {
@@ -1056,7 +1069,7 @@ pub fn handle_run_file(state: &DaemonState, args: &[&str]) -> io::Result<String>
         Ok(parsed) => parsed,
         Err(message) => {
             let response = serde_json::json!({ "error": message });
-            return Ok(format!("{}\n", serde_json::to_string(&response).unwrap()));
+            return to_json_line(&response);
         }
     };
 
@@ -1097,7 +1110,7 @@ pub fn handle_run_file(state: &DaemonState, args: &[&str]) -> io::Result<String>
                 "stdout": result.stdout,
                 "stderr": result.stderr,
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
         Err(error) => {
             emit_scheduler_event(
@@ -1116,7 +1129,7 @@ pub fn handle_run_file(state: &DaemonState, args: &[&str]) -> io::Result<String>
                 "args": parsed.passthrough,
                 "error": error.to_string(),
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
     }
 }
@@ -1126,7 +1139,7 @@ pub fn handle_run_entry(state: &DaemonState, args: &[&str]) -> io::Result<String
         Ok(parsed) => parsed,
         Err(message) => {
             let response = serde_json::json!({ "error": message });
-            return Ok(format!("{}\n", serde_json::to_string(&response).unwrap()));
+            return to_json_line(&response);
         }
     };
 
@@ -1164,7 +1177,7 @@ pub fn handle_run_entry(state: &DaemonState, args: &[&str]) -> io::Result<String
                 "stdout": result.stdout,
                 "stderr": result.stderr,
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
         Err(error) => {
             emit_scheduler_event(
@@ -1184,7 +1197,7 @@ pub fn handle_run_entry(state: &DaemonState, args: &[&str]) -> io::Result<String
                 "pool_override": parsed.overrides.pool,
                 "error": error.to_string(),
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
     }
 }
@@ -1230,7 +1243,7 @@ pub fn handle_run_list(state: &DaemonState) -> io::Result<String> {
                 "command": "run-list",
                 "error": error.to_string(),
             });
-            return Ok(format!("{}\n", serde_json::to_string(&response).unwrap()));
+            return to_json_line(&response);
         }
     };
 
@@ -1259,7 +1272,7 @@ pub fn handle_run_list(state: &DaemonState) -> io::Result<String> {
                 "count": entries.len(),
                 "entries": entries,
             });
-            Ok(format!("{}\n", serde_json::to_string(&payload).unwrap()))
+            to_json_line(&payload)
         }
         Err(error) => {
             let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -1293,7 +1306,7 @@ pub fn handle_run_list(state: &DaemonState) -> io::Result<String> {
                 "command": "run-list",
                 "error": error,
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
     }
 }
@@ -1366,7 +1379,7 @@ pub fn handle_scheduler_status(state: &DaemonState) -> io::Result<String> {
         "queue_depth": snap.queue_depth,
         "active_jobs": snap.active_jobs,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 /// Handle `scheduler-queue`: list queued/running jobs.
@@ -1402,7 +1415,7 @@ pub fn handle_scheduler_queue(state: &DaemonState) -> io::Result<String> {
         "active": active,
         "count": total,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 /// Handle `scheduler-policy`: show active policies and recent decisions.
@@ -1433,7 +1446,7 @@ pub fn handle_scheduler_policy(state: &DaemonState) -> io::Result<String> {
         "rules": rules,
         "recent_decisions": recent,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 /// Handle `audit-query [--tenant ID] [--last N]`.
@@ -1500,7 +1513,7 @@ pub fn handle_audit_query(state: &DaemonState, args: &[&str]) -> io::Result<Stri
         "tenant_filter": tenant_filter,
         "entries": entries,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 /// Handle `events-stream`: return recent events as JSON lines.
@@ -1543,7 +1556,7 @@ pub fn handle_app_event(state: &DaemonState, args: &[&str]) -> io::Result<String
                 "error": "invalid app-event payload",
                 "message": e.to_string(),
             });
-            return Ok(format!("{}\n", serde_json::to_string(&response).unwrap()));
+            return to_json_line(&response);
         }
     };
 
@@ -1563,7 +1576,7 @@ pub fn handle_app_event(state: &DaemonState, args: &[&str]) -> io::Result<String
         "app_name": parsed.app_name,
         "event_name": parsed.event_name,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 // ── durable job command handlers (Plan-B) ─────────────────────────
@@ -1595,14 +1608,14 @@ pub fn handle_job_submit(state: &DaemonState, args: &[&str]) -> io::Result<Strin
                 "job_id": id.raw(),
                 "name": name,
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
         Err(e) => {
             let response = serde_json::json!({
                 "error": "job submit failed",
                 "message": e.to_string(),
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
     }
 }
@@ -1639,14 +1652,14 @@ pub fn handle_job_stop(state: &DaemonState, args: &[&str]) -> io::Result<String>
                 "message": "job stopped",
                 "job_id": id,
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
         Err(e) => {
             let response = serde_json::json!({
                 "error": "job stop failed",
                 "message": e.to_string(),
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
     }
 }
@@ -1678,14 +1691,14 @@ pub fn handle_job_status(state: &DaemonState, args: &[&str]) -> io::Result<Strin
                 "last_failure": job.last_failure,
                 "process_pid": job.process_pid,
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
         None => {
             let response = serde_json::json!({
                 "error": "job not found",
                 "job_id": id,
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
     }
 }
@@ -1712,7 +1725,7 @@ pub fn handle_job_list(state: &DaemonState) -> io::Result<String> {
         "count": jobs.len(),
         "jobs": jobs,
     });
-    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+    to_json_line(&response)
 }
 
 /// Handle `job-history <id>` -- show full state transition history for a job.
@@ -1753,14 +1766,14 @@ pub fn handle_job_history(state: &DaemonState, args: &[&str]) -> io::Result<Stri
                 "transition_count": transitions.len(),
                 "transitions": transitions,
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
         None => {
             let response = serde_json::json!({
                 "error": "job not found",
                 "job_id": id,
             });
-            Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
+            to_json_line(&response)
         }
     }
 }

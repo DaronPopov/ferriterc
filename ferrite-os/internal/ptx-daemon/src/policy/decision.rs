@@ -61,7 +61,10 @@ impl PolicyDecision {
     /// for `Allow`.
     pub fn to_denial_json(&self, action: &str, resource: &str) -> Option<String> {
         self.to_denial_payload(action, resource)
-            .map(|p| format!("{}\n", serde_json::to_string(&p).unwrap()))
+            .map(|p| match serde_json::to_string(&p) {
+                Ok(json) => format!("{json}\n"),
+                Err(_) => "{\"ok\":false,\"error\":\"policy denied\"}\n".to_string(),
+            })
     }
 }
 

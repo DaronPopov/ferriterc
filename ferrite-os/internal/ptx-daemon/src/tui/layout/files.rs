@@ -1,5 +1,4 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, Paragraph};
 use ratatui::Frame;
@@ -89,12 +88,12 @@ pub(super) fn draw_files(frame: &mut Frame, state: &mut TuiState) {
             format!(" {} ", mode_label),
             style::badge(mode_color),
         ),
-        Span::styled("  ", Style::default()),
+        Span::styled("  ", style::spacer()),
         Span::styled(&filename, style::value()),
         Span::styled(dirty_indicator, style::semantic(style::warn())),
-        Span::styled("  ", Style::default()),
+        Span::styled("  ", style::spacer()),
         Span::styled(&cursor_pos, style::label()),
-        Span::styled("  ", Style::default()),
+        Span::styled("  ", style::spacer()),
         Span::styled(&pct, style::label()),
     ];
     if !run_indicator.is_empty() {
@@ -203,20 +202,8 @@ fn draw_files_tree(frame: &mut Frame, area: Rect, state: &mut TuiState) {
         .unwrap_or_else(|_| "/".to_string());
 
     let title = Line::from(vec![
-        Span::styled(
-            " files ",
-            Style::default()
-                .fg(if matches!(state.files_focus, FilesFocus::Tree) {
-                    style::info()
-                } else {
-                    style::fg_dim()
-                })
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            &breadcrumb,
-            style::label(),
-        ),
+        Span::styled(" files ", style::files_tree_title(state.files_focus)),
+        Span::styled(&breadcrumb, style::label()),
         Span::styled(
             "─".repeat(area.width.saturating_sub(7 + breadcrumb.len() as u16) as usize),
             style::rule_line(),
@@ -289,23 +276,12 @@ fn draw_files_editor(frame: &mut Frame, area: Rect, state: &mut TuiState) {
         return;
     }
 
-    let (mode_tag, mode_tag_color) = style::editor_mode_tag(state.editor_mode);
+    let (mode_tag, _) = style::editor_mode_tag(state.editor_mode);
 
     let title = Line::from(vec![
         Span::styled(
             format!(" {} ", mode_tag),
-            Style::default()
-                .fg(if matches!(state.files_focus, FilesFocus::Editor) {
-                    style::bg()
-                } else {
-                    style::fg_dim()
-                })
-                .bg(if matches!(state.files_focus, FilesFocus::Editor) {
-                    mode_tag_color
-                } else {
-                    style::bg()
-                })
-                .add_modifier(Modifier::BOLD),
+            style::files_editor_badge(state.editor_mode, state.files_focus),
         ),
         Span::styled(
             "─".repeat(area.width.saturating_sub(6) as usize),

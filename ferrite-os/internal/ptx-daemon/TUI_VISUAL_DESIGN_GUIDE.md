@@ -43,7 +43,7 @@ This guide defines a cohesive visual system for the Ferrite daemon TUI:
 1. Critical `bad` contrast is borderline/low in some themes.
 Default `bad` on `bg` is ~4.32:1; Sandstone `bad` on `bg` is ~3.80:1.
 2. `fg_dim` is below strong body readability thresholds in Default (~3.99:1), so it should stay metadata-only.
-3. Emphasis usage is mostly coherent, but direct inline `Style::default()` composition is common in layouts; contributors can bypass semantic wrappers unintentionally.
+3. ~~Resolved~~ Inline `Style::default()` composition has been eliminated from all layout files. All visual styling now routes through `style.rs` semantic tokens (`spacer()`, `panel_title()`, `files_tree_title()`, `files_editor_badge()`, etc.).
 4. Some status values rely heavily on color; text tags exist, but icon/tag pairing should be enforced as a rule.
 
 ## 4. Color and Contrast Specification
@@ -213,7 +213,7 @@ POOL FAIL        (FAIL)  -> text: FAIL + color: bad
 1. `style.rs` is the only place for theme palette values.
 2. New semantic intent should first be added to `style.rs` as accessor/helper.
 3. Layout modules should consume semantic helpers (`style::label()`, `style::status_token()`) rather than raw ad-hoc RGB definitions.
-4. Inline `Style::default()` composition is allowed only for local combination of existing semantic colors (for example inverse badges).
+4. Inline `Style::default()` composition is allowed only in `widgets.rs` (parameterized widget rendering) and `style.rs` itself (token definitions). Layout files must use semantic token helpers exclusively.
 
 ## 9. Adoption Protocol
 

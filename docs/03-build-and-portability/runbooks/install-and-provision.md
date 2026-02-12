@@ -1,15 +1,21 @@
-# Runbook: Install and Provision
+# 03.01 Runbook: Install and Provision
 
 ## Preconditions
 - Linux (`x86_64` or `aarch64`)
-- NVIDIA driver
-- CUDA toolkit (`nvcc` available)
+- NVIDIA driver installed
+- CUDA toolkit is auto-installed if absent (only driver required)
 
 ## Standard Install
 ```bash
 git clone https://github.com/DaronPopov/ferriterc.git
 cd ferriterc
 ./install.sh
+```
+
+## Core-Only Install
+```bash
+./install.sh --core-only
+./install.sh --core-only --sm 86
 ```
 
 ## Pinned Install

@@ -5,7 +5,7 @@ pub mod scheduler;
 mod shell;
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -37,7 +37,7 @@ fn draw_section_header(frame: &mut Frame, area: Rect, title: &str) {
     let tail_len = area.width.saturating_sub(label.len() as u16 + 2) as usize;
     let line = Line::from(vec![
         Span::styled("▌", style::indicator()),
-        Span::styled(" ", Style::default()),
+        Span::styled(" ", style::spacer()),
         Span::styled(label, style::heading()),
         Span::styled("─".repeat(tail_len), style::rule_line()),
     ]);
@@ -45,6 +45,17 @@ fn draw_section_header(frame: &mut Frame, area: Rect, title: &str) {
         Paragraph::new(line),
         Rect::new(area.x, area.y, area.width, 1),
     );
+}
+
+fn draw_thin_rule(frame: &mut Frame, area: Rect) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let line = Line::from(Span::styled(
+        "─".repeat(area.width as usize),
+        style::rule_line(),
+    ));
+    frame.render_widget(Paragraph::new(line), Rect::new(area.x, area.y, area.width, 1));
 }
 
 fn section_body(area: Rect) -> Rect {

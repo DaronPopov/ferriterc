@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::events::LogCategory;
-use crate::tui::state::EditorMode;
+use crate::tui::state::{EditorMode, FilesFocus};
 
 // ── theme variant ────────────────────────────────────────────────
 
@@ -253,6 +253,53 @@ fn colors() -> &'static ThemeColors {
 /// Selected row style for tables/lists.
 #[inline] pub fn selected_row() -> Style { Style::new().fg(fg_bright()).bg(selection()) }
 
+/// Inert spacer — carries no visual weight, just inherits surroundings.
+#[inline] pub fn spacer() -> Style { Style::new() }
+
+// ── panel / focus tokens ──────────────────────────────────────────
+
+/// Panel title when focused (bright accent, bold).
+#[inline] pub fn panel_title_focused() -> Style {
+    Style::new().fg(info()).add_modifier(Modifier::BOLD)
+}
+
+/// Panel title when unfocused (dim, bold).
+#[inline] pub fn panel_title_unfocused() -> Style {
+    Style::new().fg(fg_dim()).add_modifier(Modifier::BOLD)
+}
+
+/// Editor mode badge when the editor pane is focused: inverse badge
+/// using the mode's semantic color.
+#[inline] pub fn editor_badge_focused(mode: EditorMode) -> Style {
+    let (_, color) = editor_mode_tag(mode);
+    badge(color)
+}
+
+/// Editor mode badge when the editor pane is unfocused: dim text, no
+/// background — the badge fades to a quiet label.
+#[inline] pub fn editor_badge_unfocused() -> Style {
+    Style::new().fg(fg_dim()).add_modifier(Modifier::BOLD)
+}
+
+/// Panel title style dispatched by focus state.
+#[inline] pub fn panel_title(focused: bool) -> Style {
+    if focused { panel_title_focused() } else { panel_title_unfocused() }
+}
+
+/// Files tree title style dispatched by focus state.
+#[inline] pub fn files_tree_title(focus: FilesFocus) -> Style {
+    panel_title(matches!(focus, FilesFocus::Tree))
+}
+
+/// Files editor mode badge dispatched by focus state.
+#[inline] pub fn files_editor_badge(mode: EditorMode, focus: FilesFocus) -> Style {
+    if matches!(focus, FilesFocus::Editor) {
+        editor_badge_focused(mode)
+    } else {
+        editor_badge_unfocused()
+    }
+}
+
 // ── semantic helpers ───────────────────────────────────────────────
 
 /// Daemon status: returns (label, color) for the running state.
@@ -314,10 +361,10 @@ pub fn latency_color(ms: f32) -> Color {
 pub fn log_styles(cat: LogCategory) -> (Style, Style) {
     match cat {
         LogCategory::Sys => (label(), value()),
-        LogCategory::Jit => (Style::new().fg(info()), value()),
-        LogCategory::Run => (Style::new().fg(good()), value()),
-        LogCategory::App => (Style::new().fg(warn()), value()),
-        LogCategory::Err => (error_bold(), Style::new().fg(bad())),
+        LogCategory::Jit => (semantic(info()), value()),
+        LogCategory::Run => (semantic(good()), value()),
+        LogCategory::App => (semantic(warn()), value()),
+        LogCategory::Err => (error_bold(), semantic(bad())),
     }
 }
 

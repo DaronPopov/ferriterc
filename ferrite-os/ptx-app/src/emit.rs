@@ -32,16 +32,15 @@ impl Emitter {
         };
 
         if let Some(client) = &self.client {
-            let cmd = format!(
-                "app-event {}",
-                serde_json::json!({
-                    "app_name": self.app_name,
-                    "event_name": name,
-                    "payload": payload_json,
-                    "tenant_id": self.tenant_id,
-                })
-            );
-            if let Err(e) = client.send_command(&cmd) {
+            let payload = serde_json::json!({
+                "app_name": self.app_name,
+                "event_name": name,
+                "payload": payload_json,
+                "tenant_id": self.tenant_id,
+            })
+            .to_string();
+            let args = vec![payload];
+            if let Err(e) = client.send_command_parts("app-event", &args) {
                 tracing::warn!(
                     event = name,
                     error = %e,

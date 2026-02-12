@@ -21,11 +21,11 @@ pub fn dispatch(invocation: CliInvocation) -> Result<(), i32> {
         | "shutdown" | "help" | "apps" | "app-start" | "app-stop"
         | "run-file" | "run-entry" | "run-list"
         | "job-submit" | "job-stop" | "job-status" | "job-list" | "job-history") => {
-            let mut line = cmd.to_string();
-            for arg in &invocation.command_args {
-                line.push(' ');
-                line.push_str(arg);
-            }
+            let line = serde_json::json!({
+                "command": cmd,
+                "args": invocation.command_args,
+            })
+            .to_string();
             if let Err(e) = server::connect_and_send(&invocation.config.socket_path, &line) {
                 eprintln!("Command error: {}", e);
                 return Err(1);

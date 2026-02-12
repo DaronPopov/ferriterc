@@ -78,12 +78,18 @@ run_build() {
     LIBTORCH="${LIBTORCH}" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
       cargo run --release --no-default-features --features "torch,${CUDARC_CUDA_FEATURE}" --example script_cv_detect >/dev/null
 
+    local FINETUNE_DIR="$ROOT/ferrite-os/workloads/finetune_engine"
+    local MATH_DIR="$ROOT/ferrite-os/workloads/mathematics_engine"
+    # Backward compatibility for older tree layouts.
+    [[ -d "$FINETUNE_DIR" ]] || FINETUNE_DIR="$ROOT/finetune_engine"
+    [[ -d "$MATH_DIR" ]] || MATH_DIR="$ROOT/mathematics_engine"
+
     echo "[6/${STEPS}] Checking finetune_engine scripts"
     cd "$ROOT/ferrite-gpu-lang"
-    check_engine_scripts "$ROOT/finetune_engine" "finetune_engine"
+    check_engine_scripts "$FINETUNE_DIR" "finetune_engine"
 
     echo "[7/${STEPS}] Checking mathematics_engine scripts"
-    check_engine_scripts "$ROOT/mathematics_engine" "mathematics_engine"
+    check_engine_scripts "$MATH_DIR" "mathematics_engine"
 
     echo "[8/${STEPS}] Building ferrite daemon"
     cd "$ROOT/ferrite-os"
@@ -101,10 +107,18 @@ run_build() {
   else
     echo "[warn] ferrite binary not found at ${FERRITE_BIN}, skipping symlink"
   fi
-  # Also symlink ferrite-daemon for direct access
+  # Symlink ferrite-daemon wrapper for direct access from any directory.
+  # Wrapper handles runtime + libtorch environment and forwards to the binary.
+  local DAEMON_WRAPPER="$ROOT/ferrite-daemon"
   local DAEMON_BIN="$ROOT/ferrite-os/target/release/ferrite-daemon"
-  if [[ -f "$DAEMON_BIN" ]]; then
+  if [[ -x "$DAEMON_WRAPPER" ]]; then
+    ln -sf "$DAEMON_WRAPPER" "${INSTALL_BIN}/ferrite-daemon"
+    echo "[info] symlinked: ${INSTALL_BIN}/ferrite-daemon -> ${DAEMON_WRAPPER}"
+  elif [[ -f "$DAEMON_BIN" ]]; then
     ln -sf "$DAEMON_BIN" "${INSTALL_BIN}/ferrite-daemon"
+    echo "[info] symlinked: ${INSTALL_BIN}/ferrite-daemon -> ${DAEMON_BIN}"
+  else
+    echo "[warn] ferrite-daemon wrapper/binary not found, skipping symlink"
   fi
 }
 
@@ -125,6 +139,7 @@ print_success() {
     echo "  Run scripts with: ./ferrite-run <script.rs> --torch"
   fi
   echo "  Launch the shell:  ferrite"
+  echo "  Launch daemon:     ferrite-daemon"
   echo ""
   if [[ ":${PATH}:" != *":${INSTALL_BIN}:"* ]]; then
     echo "  [note] Add ~/.local/bin to your PATH if not already present:"

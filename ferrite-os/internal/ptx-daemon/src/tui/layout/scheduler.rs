@@ -12,7 +12,6 @@
 //! - `Tab` — cycle sub-panels
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table};
 use ratatui::Frame;
@@ -61,7 +60,7 @@ fn draw_scheduler_header(frame: &mut Frame, area: Rect, state: &TuiState) {
 
     let title = Line::from(vec![
         Span::styled("scheduler", style::accent_bold()),
-        Span::styled("  ", Style::default()),
+        Span::styled("  ", style::spacer()),
         paused_tag,
         Span::styled(
             format!(

@@ -13,6 +13,8 @@
 external/.cache/
 external/libtorch/
 *.log
+testkit/reports/*.json
+!testkit/reports/.gitkeep
 
 # Downloaded model weights
 ferrite-gpu-lang/models/

@@ -4,11 +4,12 @@
 
 1. Edit `compat.toml` for mapping changes.
 2. Edit `scripts/resolve_cuda_compat.sh` if resolution logic changes.
-3. Edit `install.sh` for CLI/workflow changes.
+3. Edit `install.sh` or `scripts/install/lib/*.sh` for CLI/workflow changes (especially `args.sh`, `build.sh`, `cuda.sh`).
 4. Update `INSTALL.md` and install section in `README.md`.
 5. Validate:
    - `bash -n install.sh`
    - `bash -n scripts/resolve_cuda_compat.sh`
+   - `bash -n scripts/install/lib/*.sh`
    - `scripts/resolve_cuda_compat.sh --format env`
 
 ## Playbook B: Runtime Build/Link Failure
@@ -46,3 +47,15 @@
    - `cargo check -p ptx-runner -p ferrite-daemon`
    - `cargo test -p ferrite-daemon --lib`
    - `cargo run -p ptx-runner -- run-list`
+
+## Playbook F: Core-Only Mode Change
+
+When modifying what gets built in core-only vs full mode:
+
+1. Update `scripts/install/lib/args.sh` for flag parsing.
+2. Update `scripts/install/lib/build.sh` for `run_build()` conditionals and `print_success()`.
+3. Update `scripts/install/install.sh` for orchestration flow.
+4. Update `scripts/install/lib/service.sh` for systemd unit LIBTORCH guard.
+5. Validate:
+   - `bash -n scripts/install/lib/*.sh`
+   - `bash -n install.sh`

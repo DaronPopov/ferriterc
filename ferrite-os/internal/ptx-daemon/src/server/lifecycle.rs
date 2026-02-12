@@ -12,8 +12,13 @@ use crate::state::DaemonState;
 
 pub(super) fn start_signal_handler(state: Arc<DaemonState>) {
     thread::spawn(move || {
-        let mut signals =
-            Signals::new([SIGTERM, SIGINT, SIGHUP]).expect("Failed to register signal handlers");
+        let mut signals = match Signals::new([SIGTERM, SIGINT, SIGHUP]) {
+            Ok(signals) => signals,
+            Err(e) => {
+                warn!(error = %e, "Failed to register signal handlers");
+                return;
+            }
+        };
 
         for sig in signals.forever() {
             match sig {

@@ -1,0 +1,29 @@
+name = "boot-health"
+description = "Boot daemon in headless mode and validate basic health endpoints"
+
+[daemon]
+strict_mode = false
+headless = true
+command_timeout_ms = 30000
+startup_timeout_ms = 30000
+
+[[steps]]
+send = "ping"
+expect_ok = true
+
+[[steps]]
+send = "status"
+expect_ok = true
+
+[[steps]]
+send = "health"
+expect_ok = true
+
+[[invariants]]
+kind = "daemon_healthy"
+
+[[invariants]]
+kind = "json_field_eq"
+command = "status"
+field = "healthy"
+value = true

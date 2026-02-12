@@ -23,6 +23,7 @@ pub fn run_watch_client(socket: &str, watch_ms: u64) -> io::Result<()> {
         let mut stream = UnixStream::connect(socket)?;
         stream.write_all(b"metrics\n")?;
         stream.flush()?;
+        stream.shutdown(std::net::Shutdown::Write)?;
 
         let mut resp = String::new();
         stream.read_to_string(&mut resp)?;

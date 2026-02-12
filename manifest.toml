@@ -24,6 +24,6 @@ components = [
   "external/cudarc-ptx",
   "external/ferrite-torch",
   "external/ferrite-xla",
-  "finetune_engine",
-  "mathematics_engine",
+  "ferrite-os/workloads/finetune_engine",
+  "ferrite-os/workloads/mathematics_engine",
 ]

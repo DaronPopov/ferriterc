@@ -11,6 +11,11 @@ Define deterministic diagnostics and actionable error categories across install/
 - `ptx_doctor` command contract
 - Structured daemon command responses (JSON response/error payloads)
 - Installer error messages and exit-code behavior
+- `scripts/install/lib/diag.sh` defines the `diag_emit` function (structured diagnostic reporting with plain text and JSON output)
+- CUDA toolkit auto-install diagnostic codes:
+  - `INS-CUDA-0010`: cannot auto-install CUDA toolkit on this distro
+  - `INS-CUDA-0011`: nvcc not on PATH after install
+  - `INS-CUDA-0012`: CUDA toolkit auto-installed successfully
 
 ## Forbidden Cross-Dependencies
 - No behavior-changing runtime edits from diagnostics-only work

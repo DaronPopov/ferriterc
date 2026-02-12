@@ -70,7 +70,13 @@ pub fn run_server(config: DaemonConfig) -> io::Result<()> {
         "none",
     );
 
-    let (state, runner) = bootstrap::build_state(runtime, config.clone());
+    let (state, runner) = match bootstrap::build_state(runtime, config.clone()) {
+        Ok(state) => state,
+        Err(e) => {
+            let _ = fs::remove_file(&config.socket_path);
+            return Err(e);
+        }
+    };
 
     lifecycle::start_signal_handler(Arc::clone(&state));
     lifecycle::start_keepalive_thread(Arc::clone(&state));

@@ -40,3 +40,19 @@ path = "src/bin/gpu_logwatch.rs"
 [[bin]]
 name = "dataflow_proof"
 path = "src/bin/dataflow_proof.rs"
+
+[[bin]]
+name = "ascii_tensor_orbit"
+path = "src/bin/ascii_tensor_orbit.rs"
+
+[[bin]]
+name = "gpu_heartbeat_journal"
+path = "src/bin/gpu_heartbeat_journal.rs"
+
+[[bin]]
+name = "memory_churn_guard"
+path = "src/bin/memory_churn_guard.rs"
+
+[[bin]]
+name = "ipc_ring_pipeline"
+path = "src/bin/ipc_ring_pipeline.rs"

@@ -7,7 +7,7 @@ Examples demonstrating the high-level compute API.
 All examples require the PTX-OS library to be in the library path:
 
 ```bash
-LD_LIBRARY_PATH=/path/to/weird_dif/lib:$LD_LIBRARY_PATH \
+LD_LIBRARY_PATH=/path/to/ferriterc/ferrite-os/lib:$LD_LIBRARY_PATH \
   cargo run --release -p ptx-compute --example EXAMPLE_NAME
 ```
 

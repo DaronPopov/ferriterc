@@ -17,10 +17,9 @@ User-facing components and validation:
   - Virtual memory management
   - Inter-process communication
 
-- **[systemic_benchmarks/](systemic_benchmarks/)** - Comprehensive validation suite
-  - Performance benchmarks
-  - Stress tests
-  - Stability validation
+- **[benchmarks/](benchmarks/)** - Benchmark outputs and run artifacts
+  - Generated reports from benchmark runs
+  - Historical perf snapshots
 
 ## Middle Layer: Implementation
 
@@ -50,12 +49,11 @@ C/CUDA implementation:
 
 ## Documentation
 
-- **[docs/](docs/)** - All documentation
-  - `API_REFERENCE.md` - Complete API documentation
-  - `ARCHITECTURE.md` - System design and implementation
-  - `INSTALL.md` - Installation guide
-  - `DOCUMENTATION_INDEX.md` - Documentation index
-  - `SAFETY.md` - Safety analysis and unsafe code audit
+- **[../docs/](../docs/)** - Repository-level documentation
+  - `01-system-overview/README.md` - System map and contracts
+  - `02-runtime-architecture/README.md` - Runtime internals
+  - `03-build-and-portability/README.md` - Build/install portability
+  - `04-llm-programming-guides/README.md` - Agent-oriented change guides
 
 ## Utilities
 
@@ -73,7 +71,7 @@ C/CUDA implementation:
 cargo run --release --example telemetry_demo -p ptx-runtime
 
 # Run benchmarks
-cargo run --release --bin allocation_comparison -p systemic_benchmarks
+scripts/ptx_bench_all.sh --no-build
 
 # Start daemon
 cargo run --release -p ferrite-daemon -- serve --config internal/ptx-daemon/dev-config.toml
@@ -81,7 +79,7 @@ cargo run --release -p ferrite-daemon -- serve --config internal/ptx-daemon/dev-
 
 ## Documentation Guide
 
-- **Getting Started**: See [docs/INSTALL.md](docs/INSTALL.md)
+- **Getting Started**: See [../INSTALL.md](../INSTALL.md)
 - **System Overview**: See [README.md](README.md)
-- **API Reference**: See [docs/API_REFERENCE.md](docs/API_REFERENCE.md)
-- **Architecture**: See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- **Runtime Architecture**: See [../docs/02-runtime-architecture/README.md](../docs/02-runtime-architecture/README.md)
+- **Build and Portability**: See [../docs/03-build-and-portability/README.md](../docs/03-build-and-portability/README.md)

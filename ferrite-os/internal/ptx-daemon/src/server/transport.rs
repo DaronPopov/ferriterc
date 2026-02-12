@@ -14,6 +14,106 @@ use crate::state::{ClientGuard, DaemonState};
 
 use super::command_pipeline;
 
+fn response_has_error(payload: &str) -> bool {
+    for line in payload.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !trimmed.starts_with('{') {
+            return false;
+        }
+        return serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|value| value.as_object().map(|obj| obj.contains_key("error")))
+            .unwrap_or(false);
+    }
+    false
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestAccounting {
+    failed_delta: u64,
+    success: bool,
+}
+
+impl RequestAccounting {
+    fn parse_error() -> Self {
+        Self {
+            failed_delta: 1,
+            success: false,
+        }
+    }
+
+    fn from_payload(payload: &str) -> Self {
+        let success = !response_has_error(payload);
+        Self {
+            failed_delta: if success { 0 } else { 1 },
+            success,
+        }
+    }
+
+    fn io_error() -> Self {
+        Self {
+            failed_delta: 1,
+            success: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RequestAccounting, response_has_error};
+
+    #[test]
+    fn response_has_error_true_when_json_contains_error_field() {
+        assert!(response_has_error("{\"error\":\"boom\"}\n"));
+    }
+
+    #[test]
+    fn response_has_error_false_when_json_without_error_field() {
+        assert!(!response_has_error("{\"ok\":true}\n"));
+    }
+
+    #[test]
+    fn response_has_error_false_for_non_json_payload() {
+        assert!(!response_has_error("plain text response\n"));
+    }
+
+    #[test]
+    fn response_has_error_ignores_leading_empty_lines() {
+        assert!(response_has_error("\n\n{\"error\":\"bad\"}\n"));
+    }
+
+    #[test]
+    fn accounting_parse_error_is_failed() {
+        let acc = RequestAccounting::parse_error();
+        assert_eq!(acc.failed_delta, 1);
+        assert!(!acc.success);
+    }
+
+    #[test]
+    fn accounting_success_payload_is_not_failed() {
+        let acc = RequestAccounting::from_payload("{\"ok\":true}\n");
+        assert_eq!(acc.failed_delta, 0);
+        assert!(acc.success);
+    }
+
+    #[test]
+    fn accounting_error_payload_is_failed() {
+        let acc = RequestAccounting::from_payload("{\"error\":\"bad\"}\n");
+        assert_eq!(acc.failed_delta, 1);
+        assert!(!acc.success);
+    }
+
+    #[test]
+    fn accounting_io_error_is_failed() {
+        let acc = RequestAccounting::io_error();
+        assert_eq!(acc.failed_delta, 1);
+        assert!(!acc.success);
+    }
+}
+
 pub(super) fn run_socket_listener(
     listener: UnixListener,
     state: Arc<DaemonState>,
@@ -21,9 +121,10 @@ pub(super) fn run_socket_listener(
     config: DaemonConfig,
     event_tx: Option<mpsc::Sender<DaemonEvent>>,
 ) {
-    listener
-        .set_nonblocking(true)
-        .expect("Cannot set non-blocking");
+    if let Err(e) = listener.set_nonblocking(true) {
+        error!(error = %e, "Cannot set listener non-blocking");
+        return;
+    }
 
     while state.is_running() {
         match listener.accept() {
@@ -72,22 +173,36 @@ fn handle_client(
     let mut buf = String::new();
     stream.read_to_string(&mut buf)?;
     let cmdline = buf.trim();
+    state.total_requests.fetch_add(1, Ordering::Relaxed);
 
-    let Some(parsed) = command_pipeline::parse_command_line(cmdline) else {
-        stream.write_all(b"{\"error\":\"empty command\"}\n")?;
-        state.failed_requests.fetch_add(1, Ordering::Relaxed);
-        return Ok(());
+    let parsed = match command_pipeline::parse_command_line(cmdline) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            let response = serde_json::json!({ "error": message });
+            stream.write_all(format!("{}\n", response).as_bytes())?;
+            let accounting = RequestAccounting::parse_error();
+            state
+                .failed_requests
+                .fetch_add(accounting.failed_delta, Ordering::Relaxed);
+            if let Some(ref tx) = event_tx {
+                tx.send(DaemonEvent::ClientHandled {
+                    command: "invalid-command".to_string(),
+                    success: accounting.success,
+                })
+                .ok();
+            }
+            return Ok(());
+        }
     };
 
     trace!(command = %parsed.command, args = ?parsed.args, "Handling client request");
-    state.total_requests.fetch_add(1, Ordering::Relaxed);
 
     // Agent commands are routed through the TUI event channel for
     // synchronous execution on the main thread.
     if parsed.command == "agent" {
         if let Some(ref tx) = event_tx {
             let json_str = parsed.args.join(" ");
-            match serde_json::from_str::<crate::tui::agent::protocol::AgentCommand>(&json_str) {
+            let response_payload = match serde_json::from_str::<crate::tui::agent::protocol::AgentCommand>(&json_str) {
                 Ok(cmd) => {
                     let (reply_tx, reply_rx) = mpsc::channel();
                     tx.send(DaemonEvent::AgentCommandSync(cmd, reply_tx)).ok();
@@ -96,23 +211,26 @@ fn handle_client(
                             let json = serde_json::to_string(&resp).unwrap_or_else(|_| {
                                 "{\"error\":\"serialize failed\"}".to_string()
                             });
-                            stream.write_all(json.as_bytes())?;
-                            stream.write_all(b"\n")?;
+                            format!("{json}\n")
                         }
-                        Err(_) => {
-                            stream.write_all(b"{\"error\":\"timeout waiting for TUI\"}\n")?;
-                        }
+                        Err(_) => "{\"error\":\"timeout waiting for TUI\"}\n".to_string(),
                     }
                 }
-                Err(e) => {
-                    let msg = format!("{{\"error\":\"invalid agent JSON: {}\"}}\n", e);
-                    stream.write_all(msg.as_bytes())?;
-                }
+                Err(e) => format!("{{\"error\":\"invalid agent JSON: {}\"}}\n", e),
+            };
+
+            stream.write_all(response_payload.as_bytes())?;
+            let accounting = RequestAccounting::from_payload(&response_payload);
+            if accounting.failed_delta > 0 {
+                state
+                    .failed_requests
+                    .fetch_add(accounting.failed_delta, Ordering::Relaxed);
             }
+
             if let Some(ref tx2) = event_tx {
                 tx2.send(DaemonEvent::ClientHandled {
                     command: parsed.command,
-                    success: true,
+                    success: accounting.success,
                 })
                 .ok();
             }
@@ -120,19 +238,27 @@ fn handle_client(
         }
     }
 
-    let response = command_pipeline::execute_command(&state, &parsed);
-    let success = response.is_ok();
-
-    match response {
+    let success = match command_pipeline::execute_command(&state, &parsed) {
         Ok(msg) => {
             stream.write_all(msg.as_bytes())?;
+            let accounting = RequestAccounting::from_payload(&msg);
+            if accounting.failed_delta > 0 {
+                state
+                    .failed_requests
+                    .fetch_add(accounting.failed_delta, Ordering::Relaxed);
+            }
+            accounting.success
         }
         Err(e) => {
             let err_msg = format!("{{\"error\":\"{}\"}}\n", e);
             stream.write_all(err_msg.as_bytes())?;
-            state.failed_requests.fetch_add(1, Ordering::Relaxed);
+            let accounting = RequestAccounting::io_error();
+            state
+                .failed_requests
+                .fetch_add(accounting.failed_delta, Ordering::Relaxed);
+            accounting.success
         }
-    }
+    };
 
     if let Some(tx) = event_tx {
         tx.send(DaemonEvent::ClientHandled {

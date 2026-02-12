@@ -1,0 +1,33 @@
+name = "run-entry-light"
+description = "Run lightweight continuous ASCII+tensor app via run-entry"
+
+[daemon]
+strict_mode = false
+headless = true
+command_timeout_ms = 120000
+startup_timeout_ms = 30000
+env = { DURATION = "1" }
+
+[[steps]]
+send = "run-list"
+expect_ok = true
+
+[[steps]]
+send = "run-entry ferrite-apps/src/bin/ascii_tensor_orbit.rs#main"
+expect_ok = true
+
+[[invariants]]
+kind = "stdout_contains"
+step_index = 1
+substring = "ASCII Tensor Orbit"
+
+[[invariants]]
+kind = "json_field_eq"
+command = "status"
+field = "healthy"
+value = true
+
+[[invariants]]
+kind = "stderr_not_contains"
+step_index = 1
+substring = "single-pool strict mode"

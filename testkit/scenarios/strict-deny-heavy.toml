@@ -1,0 +1,17 @@
+name = "strict-deny-heavy"
+description = "Strict mode should deny heavy benchmark run-entry"
+
+[daemon]
+strict_mode = true
+headless = true
+command_timeout_ms = 60000
+startup_timeout_ms = 30000
+
+[[steps]]
+send = "run-entry ptx-runtime/examples/jitter_benchmark.rs#main"
+expect_ok = false
+
+[[invariants]]
+kind = "stderr_contains"
+step_index = 0
+substring = "single-pool strict mode"

@@ -1,20 +1,19 @@
-# Build and Portability
+# 03.00 Build and Portability
 
 ## Install Pipeline
 
 Installer entrypoint: `install.sh`
 
-Core stages:
+Core stages (from `scripts/install/install.sh`):
 
-1. Host checks/tool bootstrap.
-2. CUDA discovery.
-3. Compatibility resolution from `compat.toml`.
-4. CUPTI verification/installation attempt.
-5. libtorch provisioning (or pinned URL usage).
-6. Build `ferrite-os`.
-7. Build Rust/Torch integration layers.
-8. Run compile/runtime validation steps.
-9. Optional systemd daemon setup.
+1. Platform/arch detection (`detect_platform_arch`).
+2. Defaults + CLI parsing (`init_install_defaults`, `parse_install_args`).
+3. Preflight checks: host tools, fetch tools, CUDA toolkit auto-install if `nvcc` absent, Rust toolchain (`run_preflight_checks`).
+4. Compatibility resolution from `compat.toml` (skipped if `--core-only`).
+5. CUDA env setup + SM detection (`setup_cuda_env`, `auto_detect_sm`, `export_build_env`).
+6. Libtorch provisioning (skipped if `--core-only`).
+7. Build (`run_build` — 3 steps core-only, 9 steps full).
+8. Optional systemd service install (`--enable-service`).
 
 ## Compatibility Resolution
 
@@ -63,6 +62,13 @@ Equivalent explicit flags:
 ./install.sh --sm 89 --libtorch-url "<URL>" --libtorch-tag cu126 --cudarc-feature cuda-12060
 ```
 
+Core-only mode (skips libtorch and torch-dependent crates):
+
+```bash
+./install.sh --core-only
+./install.sh --core-only --sm 86
+```
+
 ## Boot Service
 
 Optional systemd setup:
@@ -78,7 +84,7 @@ Installs and enables:
 
 ## Portability Checklist
 
-Before calling a machine "supported":
+Before calling a machine "supported" (full mode):
 
 1. Installer runs cleanly from fresh clone.
 2. Compatibility resolver selects expected CUDA family.
@@ -87,7 +93,19 @@ Before calling a machine "supported":
 5. At least one runtime script executes.
 6. Optional daemon service starts and stays healthy.
 
+Core-only variant:
+
+1. Installer runs cleanly with `--core-only` from fresh clone.
+2. CUDA toolkit auto-installs if absent (only NVIDIA driver required).
+3. Core build (3 steps) completes.
+4. `ferrite` and `ferrite-daemon` binaries are functional.
+
+Installed command surface:
+
+- Installer symlinks `ferrite` and `ferrite-daemon` into `~/.local/bin/`.
+- With `~/.local/bin` on `PATH`, daemon is invokable from any directory as `ferrite-daemon`.
+
 ## Runbooks
 
-- Install and provisioning: `runbooks/install-and-provision.md`
-- Debugging and remediation: `runbooks/debugging-and-remediation.md`
+- `03.01`: Install and provisioning: `runbooks/install-and-provision.md`
+- `03.02`: Debugging and remediation: `runbooks/debugging-and-remediation.md`

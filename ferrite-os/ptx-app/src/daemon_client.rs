@@ -2,13 +2,23 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::AppError;
 
 /// Default daemon socket path.
-const DEFAULT_SOCKET_PATH: &str = "/tmp/ferrite.sock";
+const LEGACY_DEFAULT_SOCKET_PATH: &str = "/tmp/ferrite.sock";
+
+fn current_default_socket_path() -> String {
+    let uid = unsafe { libc::geteuid() };
+    if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
+        format!("{}/ferrite-daemon.sock", xdg)
+    } else {
+        format!("/tmp/ferrite-os-{}/daemon.sock", uid)
+    }
+}
 
 /// Client for sending commands to the Ferrite daemon over a Unix socket.
 pub(crate) struct DaemonClient {
@@ -25,11 +35,22 @@ impl DaemonClient {
 
     /// Auto-detect the daemon socket path.
     ///
-    /// Checks `FERRITE_DAEMON_SOCKET` env var, then falls back to the default.
+    /// Checks `FERRITE_SOCKET`, then `FERRITE_DAEMON_SOCKET`, then current defaults.
+    /// Keeps legacy `/tmp/ferrite.sock` as a fallback when present.
     pub fn auto_detect() -> Self {
-        let path = std::env::var("FERRITE_DAEMON_SOCKET")
-            .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
-        Self::new(path)
+        if let Ok(path) = std::env::var("FERRITE_SOCKET") {
+            return Self::new(path);
+        }
+        if let Ok(path) = std::env::var("FERRITE_DAEMON_SOCKET") {
+            return Self::new(path);
+        }
+
+        let current = current_default_socket_path();
+        if Path::new(&current).exists() || !Path::new(LEGACY_DEFAULT_SOCKET_PATH).exists() {
+            return Self::new(current);
+        }
+
+        Self::new(LEGACY_DEFAULT_SOCKET_PATH)
     }
 
     /// Check if the daemon socket exists (does not guarantee connectivity).
@@ -84,17 +105,24 @@ impl DaemonClient {
         Ok(response)
     }
 
+    /// Send a structured command envelope to preserve argument boundaries.
+    pub fn send_command_parts(&self, command: &str, args: &[String]) -> Result<String, AppError> {
+        let envelope = serde_json::json!({
+            "command": command,
+            "args": args,
+        });
+        self.send_command(&envelope.to_string())
+    }
+
     /// Submit a job to the daemon and return the job ID.
     pub fn submit_job(
         &self,
         command: &str,
         args: &[String],
     ) -> Result<u64, AppError> {
-        let mut parts = vec!["job-submit".to_string(), command.to_string()];
-        parts.extend(args.iter().cloned());
-        let cmd = parts.join(" ");
-
-        let response = self.send_command(&cmd)?;
+        let mut payload_args = vec![command.to_string()];
+        payload_args.extend(args.iter().cloned());
+        let response = self.send_command_parts("job-submit", &payload_args)?;
         let parsed: serde_json::Value =
             serde_json::from_str(response.trim()).map_err(|e| AppError::DaemonUnavailable {
                 message: format!("invalid daemon response: {}", e),

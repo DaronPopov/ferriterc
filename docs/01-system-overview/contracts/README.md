@@ -1,17 +1,17 @@
-# Subsystem Contracts (A-G)
+# 01.01 Subsystem Contracts (A-G)
 
 This directory defines architecture contracts for refactor plans A through G.
 Each contract is behavior-preserving and maps to concrete repository paths.
 
 ## Contract Pages
 
-- `subsystem-a-tui.md`
-- `subsystem-b-cuda-os-layer.md`
-- `subsystem-c-rust-runtime-core.md`
-- `subsystem-d-installer-provisioner.md`
-- `subsystem-e-external-integrations.md`
-- `subsystem-f-daemon-service-lifecycle.md`
-- `subsystem-g-diagnostics-error-contracts.md`
+- `01.02` (`A`): `subsystem-a-tui.md`
+- `01.03` (`B`): `subsystem-b-cuda-os-layer.md`
+- `01.04` (`C`): `subsystem-c-rust-runtime-core.md`
+- `01.05` (`D`): `subsystem-d-installer-provisioner.md`
+- `01.06` (`E`): `subsystem-e-external-integrations.md`
+- `01.07` (`F`): `subsystem-f-daemon-service-lifecycle.md`
+- `01.08` (`G`): `subsystem-g-diagnostics-error-contracts.md`
 
 ## Allowed Dependency Directions
 

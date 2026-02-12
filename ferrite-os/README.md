@@ -145,8 +145,7 @@ cargo build --release
 cargo test --package ptx-runtime --test integration_tests -- --ignored
 
 # Run benchmarks
-cd systemic_benchmarks
-cargo run --release --bin allocation_comparison
+scripts/ptx_bench_all.sh --no-build
 ```
 
 ## Usage
@@ -196,13 +195,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Documentation
 
 ### Core Documentation
-- [Architecture Overview](ARCHITECTURE.md) - System design and implementation details
-- [Safety Analysis](SAFETY.md) - Audit of unsafe code blocks and invariants
-- [PTX-Compute API](PTX_COMPUTE_API.md) - High-level compute operation reference
+- [Runtime Architecture](../docs/02-runtime-architecture/README.md) - Runtime internals and boundaries
+- [Build and Portability](../docs/03-build-and-portability/README.md) - Installer and compatibility flow
+- [System Overview](../docs/01-system-overview/README.md) - Repository and subsystem map
 
 ### Integration Guides
 - [PyTorch Integration](ptx-runtime/PYTORCH_INTEGRATION.md) - Using PyTorch kernels with Ferrite-OS
-- [Massive Streaming](MASSIVE_STREAMING_DEMO.md) - 100K concurrent streams demonstration
+- [Runtime Operations Runbook](../docs/02-runtime-architecture/runbooks/runtime-operations.md) - Daemon and script execution workflow
 
 ### API Reference
 - [ptx-runtime](ptx-runtime/README.md) - Core runtime and memory management
@@ -291,17 +290,16 @@ System V shared memory enables multiple processes to share a single GPU context:
 
 ## Benchmarks
 
-Comprehensive validation suite available in `systemic_benchmarks/`:
+Benchmark and stress runs are driven through `scripts/ptx_bench_all.sh`:
 
-- **allocation_comparison**: TLSF vs cudaMalloc performance
-- **stream_scaling**: Concurrent stream handling (32 to 10,000 streams)
-- **stability_test**: Long-running stress test (5 minutes)
-- **real_workload**: ML inference simulation
-- **memory_pressure**: OOM recovery and extreme memory pressure
-- **multithreaded_stress**: Thread safety and concurrent access
-- **latency_analysis**: Real-time suitability and percentile latencies
+- **jitter_benchmark** (`ptx-runtime/examples`) - runtime jitter and latency stability
+- **fused_kernel_benchmark** (`ptx-runtime/examples`) - fused-kernel execution path
+- **candle_performance_benchmark** (`ptx-runtime/examples`) - candle op throughput
+- **bench_dynamic_shapes** (`internal/ptx-tensor/examples`) - shape variability impact
+- **bench_ops** (`internal/ptx-tensor/examples`) - elementwise op throughput
+- **bench_matmul** (`internal/ptx-tensor/examples`) - matrix multiply baseline
 
-See [systemic_benchmarks/README.md](systemic_benchmarks/README.md) for details.
+Outputs are written under `benchmarks/`.
 
 ## Development Roadmap
 
@@ -325,7 +323,7 @@ Contributions are welcome. Please ensure:
 - New features include documentation and tests
 - Unsafe code includes safety documentation
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+See `../docs/04-llm-programming-guides/README.md` for change and validation playbooks.
 
 ## License
 

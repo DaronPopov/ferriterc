@@ -1,5 +1,4 @@
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -22,14 +21,14 @@ pub(in crate::tui::layout) fn draw_title(frame: &mut Frame, area: Rect, state: &
     let mut spans = vec![
         Span::styled("ferrite", style::accent_bold()),
         Span::styled(" daemon", style::label()),
-        Span::styled("  ", Style::default()),
+        Span::styled("  ", style::spacer()),
         Span::styled(hb.symbol(), style::semantic(status.1)),
-        Span::styled(" ", Style::default()),
+        Span::styled(" ", style::spacer()),
         Span::styled(
             status.0,
             style::semantic_bold(status.1),
         ),
-        Span::styled("  ", Style::default()),
+        Span::styled("  ", style::spacer()),
         Span::styled("gpu ", style::label()),
         Span::styled(
             format!("{:.1}%", state.display_gpu_util),
@@ -43,7 +42,7 @@ pub(in crate::tui::layout) fn draw_title(frame: &mut Frame, area: Rect, state: &
         Span::styled("  pool ", style::label()),
         Span::styled(pool.0.to_string(), style::semantic(pool.1)),
     ];
-    spans.push(Span::styled("  ", Style::default()));
+    spans.push(Span::styled("  ", style::spacer()));
     spans.push(Span::styled(
         format!("up {}", fmt_uptime(state.uptime_secs)),
         style::label(),
@@ -62,7 +61,7 @@ pub(in crate::tui::layout) fn draw_title(frame: &mut Frame, area: Rect, state: &
             Span::styled("apps  ", style::label()),
             Span::styled("none", style::label()),
             Span::styled(
-                format!("  device {}  view sysmon", state.device_name),
+                format!("  device {}", state.device_name),
                 style::label(),
             ),
         ])
@@ -70,7 +69,7 @@ pub(in crate::tui::layout) fn draw_title(frame: &mut Frame, area: Rect, state: &
         let mut line = vec![Span::styled("apps  ", style::label())];
         for (idx, app) in state.processes.iter().enumerate() {
             if idx > 0 {
-                line.push(Span::styled("  ", Style::default()));
+                line.push(Span::styled("  ", style::spacer()));
             }
             line.push(Span::styled(spinner.frame(), style::semantic(style::good())));
             line.push(Span::styled(
@@ -79,7 +78,7 @@ pub(in crate::tui::layout) fn draw_title(frame: &mut Frame, area: Rect, state: &
             ));
         }
         line.push(Span::styled(
-            format!("  device {}  view sysmon", state.device_name),
+            format!("  device {}", state.device_name),
             style::label(),
         ));
         Line::from(line)

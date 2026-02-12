@@ -29,6 +29,7 @@ A good task prompt should specify:
 Update installer compatibility mapping for CUDA 12.9.
 Only touch install/compat docs and scripts.
 Keep existing defaults unchanged.
+Scope: full mode (not --core-only).
 Run shell syntax checks after edits.
 ```
 
