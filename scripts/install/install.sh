@@ -38,9 +38,15 @@ main() {
   # provisioning boundary
   if [[ "${CORE_ONLY}" != "true" ]]; then
     ensure_libtorch
-    export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LIBTORCH}/lib:${LD_LIBRARY_PATH:-}"
+    # Include ferrite-os runtime, libtorch, and external integration libs
+    export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LIBTORCH}/lib:${ROOT}/external/aten-ptx/target/release:${ROOT}/external/candle-ptx/target/release:${ROOT}/external/onnxruntime-ptx/target/release:${LD_LIBRARY_PATH:-}"
   else
     export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LD_LIBRARY_PATH:-}"
+  fi
+
+  # Optional: provision OpenCV for capture feature
+  if [[ "${WITH_CAPTURE}" == "true" ]]; then
+    ensure_opencv
   fi
 
   # build/install boundary

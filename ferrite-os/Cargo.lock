@@ -415,6 +415,7 @@ dependencies = [
  "libc",
  "ptx-kernels",
  "ptx-runtime",
+ "ptx-sys",
  "ptx-tensor",
  "rlsf",
  "serde",

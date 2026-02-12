@@ -14,10 +14,18 @@ pub struct CompileReport {
     pub parse_time: Duration,
     /// Time spent in AST validation.
     pub validate_time: Duration,
-    /// Time spent in the lowering pass.
+    /// Time spent in the lowering pass (AST → HIR).
     pub lower_time: Duration,
+    /// Time spent in constant folding.
+    pub const_fold_time: Duration,
+    /// Time spent in common subexpression elimination.
+    pub cse_time: Duration,
     /// Time spent in the fusion optimizer.
     pub fuse_time: Duration,
+    /// Time spent in dead code elimination.
+    pub dce_time: Duration,
+    /// Time spent in code generation (HIR → Program).
+    pub codegen_time: Duration,
     /// Time spent in shape-checking / compile.
     pub compile_time: Duration,
     /// Total wall-clock time for the full pipeline.
@@ -34,6 +42,36 @@ pub struct CompileReport {
     pub cache_hit: bool,
 }
 
+impl CompileReport {
+    /// Create a zeroed report for cache hits.
+    pub fn cache_hit_report(
+        total_time: Duration,
+        node_count: usize,
+        input_count: usize,
+        output_shape: Vec<usize>,
+        fusion_enabled: bool,
+    ) -> Self {
+        Self {
+            lex_time: Duration::ZERO,
+            parse_time: Duration::ZERO,
+            validate_time: Duration::ZERO,
+            lower_time: Duration::ZERO,
+            const_fold_time: Duration::ZERO,
+            cse_time: Duration::ZERO,
+            fuse_time: Duration::ZERO,
+            dce_time: Duration::ZERO,
+            codegen_time: Duration::ZERO,
+            compile_time: Duration::ZERO,
+            total_time,
+            node_count,
+            input_count,
+            output_shape,
+            fusion_enabled,
+            cache_hit: true,
+        }
+    }
+}
+
 impl std::fmt::Display for CompileReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.cache_hit {
@@ -45,13 +83,18 @@ impl std::fmt::Display for CompileReport {
         } else {
             write!(
                 f,
-                "compile: lex={:?} parse={:?} validate={:?} lower={:?} fuse={:?} compile={:?} | \
+                "compile: lex={:?} parse={:?} validate={:?} lower={:?} \
+                 const_fold={:?} cse={:?} fuse={:?} dce={:?} codegen={:?} compile={:?} | \
                  total={:?} | nodes={} inputs={} out={:?} fusion={}",
                 self.lex_time,
                 self.parse_time,
                 self.validate_time,
                 self.lower_time,
+                self.const_fold_time,
+                self.cse_time,
                 self.fuse_time,
+                self.dce_time,
+                self.codegen_time,
                 self.compile_time,
                 self.total_time,
                 self.node_count,

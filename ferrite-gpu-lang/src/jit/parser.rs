@@ -3,15 +3,21 @@
 /// Grammar (informal):
 /// ```text
 /// script     := stmt*
-/// stmt       := fn_def | tile_stmt | return_stmt | let_stmt
+/// stmt       := fn_def | tile_stmt | if_stmt | for_stmt | return_stmt | let_stmt
 /// fn_def     := 'fn' IDENT '(' params ')' ':' stmt* 'end'
 /// params     := (IDENT (',' IDENT)*)?
 /// return_stmt:= 'return' IDENT
 /// let_stmt   := IDENT '=' expr
 /// tile_stmt  := 'tile' IDENT 'over' input_list ':' stmt* 'end'
 /// input_list := IDENT | '(' IDENT (',' IDENT)* ')'
+/// if_stmt    := 'if' expr 'then' stmt* ('elif' expr 'then' stmt*)* ('else' stmt*)? 'end'
+/// for_stmt   := 'for' IDENT 'in' INT '..' INT ':' stmt* 'end'
 ///
-/// expr       := add_expr
+/// expr       := logic_or
+/// logic_or   := logic_and ('or' logic_and)*
+/// logic_and  := logic_not ('and' logic_not)*
+/// logic_not  := 'not' logic_not | comparison
+/// comparison := add_expr (('<' | '>' | '<=' | '>=' | '==' | '!=') add_expr)?
 /// add_expr   := mul_expr (('+' | '-') mul_expr)*
 /// mul_expr   := unary_expr (('*' | '/') unary_expr)*
 /// unary_expr := '-' unary_expr | atom
@@ -24,16 +30,16 @@
 /// ```
 
 use super::ast::*;
-use super::lexer::{Span, Spanned, Token};
+use super::lexer::{Span, Spanned as LexSpanned, Token};
 use super::JitError;
 
 pub struct Parser {
-    tokens: Vec<Spanned>,
+    tokens: Vec<LexSpanned>,
     pos: usize,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Spanned>) -> Self {
+    pub fn new(tokens: Vec<LexSpanned>) -> Self {
         Self { tokens, pos: 0 }
     }
 
@@ -53,6 +59,8 @@ impl Parser {
         match self.peek() {
             Token::Fn => self.fn_def(),
             Token::Tile => self.tile_stmt(),
+            Token::If => self.if_stmt(),
+            Token::For => self.for_stmt(),
             Token::Return => self.return_stmt(),
             Token::Ident(_) => self.let_stmt(),
             other => Err(self.err(format!("expected statement, got {:?}", other))),
@@ -60,6 +68,7 @@ impl Parser {
     }
 
     fn fn_def(&mut self) -> Result<Stmt, JitError> {
+        let start_span = self.span();
         self.eat(&Token::Fn)?;
         let name = self.ident()?;
         self.eat(&Token::LParen)?;
@@ -71,12 +80,14 @@ impl Parser {
         while !self.check(&Token::End) && !self.at_eof() {
             body.push(self.stmt()?);
         }
+        let end_span = self.span();
         self.eat(&Token::End)?;
 
-        Ok(Stmt::FnDef { name, params, body })
+        Ok(Stmt::FnDef { name, params, body, span: start_span.merge(end_span) })
     }
 
     fn tile_stmt(&mut self) -> Result<Stmt, JitError> {
+        let start_span = self.span();
         self.eat(&Token::Tile)?;
         let output = self.ident()?;
         self.eat(&Token::Over)?;
@@ -107,9 +118,76 @@ impl Parser {
         while !self.check(&Token::End) && !self.at_eof() {
             body.push(self.stmt()?);
         }
+        let end_span = self.span();
         self.eat(&Token::End)?;
 
-        Ok(Stmt::Tile { output, inputs, body })
+        Ok(Stmt::Tile { output, inputs, body, span: start_span.merge(end_span) })
+    }
+
+    fn if_stmt(&mut self) -> Result<Stmt, JitError> {
+        let start_span = self.span();
+        self.eat(&Token::If)?;
+        let cond = self.expr()?;
+        self.eat(&Token::Then)?;
+
+        let mut body = Vec::new();
+        while !self.check(&Token::Elif) && !self.check(&Token::Else)
+            && !self.check(&Token::End) && !self.at_eof()
+        {
+            body.push(self.stmt()?);
+        }
+        let mut branches = vec![(cond, body)];
+
+        // elif branches
+        while self.check(&Token::Elif) {
+            self.advance();
+            let elif_cond = self.expr()?;
+            self.eat(&Token::Then)?;
+            let mut elif_body = Vec::new();
+            while !self.check(&Token::Elif) && !self.check(&Token::Else)
+                && !self.check(&Token::End) && !self.at_eof()
+            {
+                elif_body.push(self.stmt()?);
+            }
+            branches.push((elif_cond, elif_body));
+        }
+
+        // else branch
+        let else_body = if self.check(&Token::Else) {
+            self.advance();
+            let mut eb = Vec::new();
+            while !self.check(&Token::End) && !self.at_eof() {
+                eb.push(self.stmt()?);
+            }
+            Some(eb)
+        } else {
+            None
+        };
+
+        let end_span = self.span();
+        self.eat(&Token::End)?;
+
+        Ok(Stmt::If { branches, else_body, span: start_span.merge(end_span) })
+    }
+
+    fn for_stmt(&mut self) -> Result<Stmt, JitError> {
+        let start_span = self.span();
+        self.eat(&Token::For)?;
+        let var = self.ident()?;
+        self.eat(&Token::In)?;
+        let start = self.expect_int()?;
+        self.eat(&Token::DotDot)?;
+        let end = self.expect_int()?;
+        self.eat(&Token::Colon)?;
+
+        let mut body = Vec::new();
+        while !self.check(&Token::End) && !self.at_eof() {
+            body.push(self.stmt()?);
+        }
+        let end_span = self.span();
+        self.eat(&Token::End)?;
+
+        Ok(Stmt::For { var, start, end, body, span: start_span.merge(end_span) })
     }
 
     fn params(&mut self) -> Result<Vec<String>, JitError> {
@@ -126,25 +204,87 @@ impl Parser {
     }
 
     fn return_stmt(&mut self) -> Result<Stmt, JitError> {
+        let span = self.span();
         self.advance(); // eat 'return'
         let name = self.ident()?;
-        Ok(Stmt::Return(name))
+        Ok(Stmt::Return { name, span })
     }
 
     fn let_stmt(&mut self) -> Result<Stmt, JitError> {
+        let span = self.span();
         let name = self.ident()?;
         self.eat(&Token::Eq)?;
         let value = self.expr()?;
-        Ok(Stmt::Let { name, value })
+        Ok(Stmt::Let { name, value, span })
     }
 
     // ── expressions (precedence climbing) ─────────────────────────
 
-    fn expr(&mut self) -> Result<Expr, JitError> {
-        self.add_expr()
+    fn expr(&mut self) -> Result<SExpr, JitError> {
+        self.logic_or()
     }
 
-    fn add_expr(&mut self) -> Result<Expr, JitError> {
+    fn logic_or(&mut self) -> Result<SExpr, JitError> {
+        let mut left = self.logic_and()?;
+        while self.check(&Token::Or) {
+            self.advance();
+            let right = self.logic_and()?;
+            let span = left.span.merge(right.span);
+            left = SExpr::new(
+                Expr::Logic { op: LogicOp::Or, left: Box::new(left), right: Box::new(right) },
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    fn logic_and(&mut self) -> Result<SExpr, JitError> {
+        let mut left = self.logic_not()?;
+        while self.check(&Token::And) {
+            self.advance();
+            let right = self.logic_not()?;
+            let span = left.span.merge(right.span);
+            left = SExpr::new(
+                Expr::Logic { op: LogicOp::And, left: Box::new(left), right: Box::new(right) },
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    fn logic_not(&mut self) -> Result<SExpr, JitError> {
+        if self.check(&Token::Not) {
+            let start_span = self.span();
+            self.advance();
+            let inner = self.logic_not()?;
+            let span = start_span.merge(inner.span);
+            Ok(SExpr::new(Expr::LogicNot(Box::new(inner)), span))
+        } else {
+            self.comparison()
+        }
+    }
+
+    fn comparison(&mut self) -> Result<SExpr, JitError> {
+        let left = self.add_expr()?;
+        let op = match self.peek() {
+            Token::Lt => CmpOp::Lt,
+            Token::Gt => CmpOp::Gt,
+            Token::Le => CmpOp::Le,
+            Token::Ge => CmpOp::Ge,
+            Token::EqEq => CmpOp::Eq,
+            Token::Ne => CmpOp::Ne,
+            _ => return Ok(left),
+        };
+        self.advance();
+        let right = self.add_expr()?;
+        let span = left.span.merge(right.span);
+        Ok(SExpr::new(
+            Expr::Cmp { op, left: Box::new(left), right: Box::new(right) },
+            span,
+        ))
+    }
+
+    fn add_expr(&mut self) -> Result<SExpr, JitError> {
         let mut left = self.mul_expr()?;
         loop {
             let op = match self.peek() {
@@ -154,16 +294,16 @@ impl Parser {
             };
             self.advance();
             let right = self.mul_expr()?;
-            left = Expr::BinOp {
-                op,
-                left: Box::new(left),
-                right: Box::new(right),
-            };
+            let span = left.span.merge(right.span);
+            left = SExpr::new(
+                Expr::BinOp { op, left: Box::new(left), right: Box::new(right) },
+                span,
+            );
         }
         Ok(left)
     }
 
-    fn mul_expr(&mut self) -> Result<Expr, JitError> {
+    fn mul_expr(&mut self) -> Result<SExpr, JitError> {
         let mut left = self.unary_expr()?;
         loop {
             let op = match self.peek() {
@@ -173,26 +313,29 @@ impl Parser {
             };
             self.advance();
             let right = self.unary_expr()?;
-            left = Expr::BinOp {
-                op,
-                left: Box::new(left),
-                right: Box::new(right),
-            };
+            let span = left.span.merge(right.span);
+            left = SExpr::new(
+                Expr::BinOp { op, left: Box::new(left), right: Box::new(right) },
+                span,
+            );
         }
         Ok(left)
     }
 
-    fn unary_expr(&mut self) -> Result<Expr, JitError> {
+    fn unary_expr(&mut self) -> Result<SExpr, JitError> {
         if self.check(&Token::Minus) {
+            let start_span = self.span();
             self.advance();
             let inner = self.unary_expr()?;
-            Ok(Expr::Neg(Box::new(inner)))
+            let span = start_span.merge(inner.span);
+            Ok(SExpr::new(Expr::Neg(Box::new(inner)), span))
         } else {
             self.atom()
         }
     }
 
-    fn atom(&mut self) -> Result<Expr, JitError> {
+    fn atom(&mut self) -> Result<SExpr, JitError> {
+        let start_span = self.span();
         match self.peek() {
             Token::LParen => {
                 self.advance(); // eat '('
@@ -203,34 +346,35 @@ impl Parser {
             Token::LBracket => self.shape(),
             Token::Float(v) => {
                 self.advance();
-                Ok(Expr::Float(v))
+                Ok(SExpr::new(Expr::Float(v), start_span))
             }
             Token::Int(_) => self.int_lit(),
             Token::True => {
                 self.advance();
-                Ok(Expr::Bool(true))
+                Ok(SExpr::new(Expr::Bool(true), start_span))
             }
             Token::False => {
                 self.advance();
-                Ok(Expr::Bool(false))
+                Ok(SExpr::new(Expr::Bool(false), start_span))
             }
             Token::Ident(_) => {
                 let name = self.ident()?;
                 if self.check(&Token::LParen) {
-                    self.call(name)
+                    self.call(name, start_span)
                 } else {
-                    Ok(Expr::Var(name))
+                    Ok(SExpr::new(Expr::Var(name), start_span))
                 }
             }
             other => Err(self.err(format!("expected expression, got {:?}", other))),
         }
     }
 
-    fn call(&mut self, func: String) -> Result<Expr, JitError> {
+    fn call(&mut self, func: String, start_span: Span) -> Result<SExpr, JitError> {
         self.eat(&Token::LParen)?;
         let args = self.args()?;
+        let end_span = self.span();
         self.eat(&Token::RParen)?;
-        Ok(Expr::Call { func, args })
+        Ok(SExpr::new(Expr::Call { func, args }, start_span.merge(end_span)))
     }
 
     fn args(&mut self) -> Result<Vec<Arg>, JitError> {
@@ -260,7 +404,8 @@ impl Parser {
         Ok(Arg::Positional(value))
     }
 
-    fn shape(&mut self) -> Result<Expr, JitError> {
+    fn shape(&mut self) -> Result<SExpr, JitError> {
+        let start_span = self.span();
         self.eat(&Token::LBracket)?;
         let mut dims = Vec::new();
         if !self.check(&Token::RBracket) {
@@ -273,13 +418,15 @@ impl Parser {
                 dims.push(self.expect_int()? as usize);
             }
         }
+        let end_span = self.span();
         self.eat(&Token::RBracket)?;
-        Ok(Expr::Shape(dims))
+        Ok(SExpr::new(Expr::Shape(dims), start_span.merge(end_span)))
     }
 
-    fn int_lit(&mut self) -> Result<Expr, JitError> {
+    fn int_lit(&mut self) -> Result<SExpr, JitError> {
+        let span = self.span();
         let v = self.expect_int()?;
-        Ok(Expr::Int(v))
+        Ok(SExpr::new(Expr::Int(v), span))
     }
 
     // ── helpers ──────────────────────────────────────────────────
@@ -343,7 +490,7 @@ impl Parser {
         self.tokens
             .get(self.pos)
             .map(|s| s.span)
-            .unwrap_or(Span { line: 0, col: 0 })
+            .unwrap_or(Span { line: 0, col: 0, offset: 0, len: 0 })
     }
 
     fn err(&self, message: String) -> JitError {
@@ -356,6 +503,6 @@ impl Parser {
     }
 }
 
-pub fn parse(tokens: Vec<Spanned>) -> Result<Script, JitError> {
+pub fn parse(tokens: Vec<LexSpanned>) -> Result<Script, JitError> {
     Parser::new(tokens).parse()
 }

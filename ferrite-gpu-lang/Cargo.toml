@@ -11,12 +11,15 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ptx-runtime = { path = "../ferrite-os/crates/public/ptx-runtime" }
 ptx-kernels = { path = "../ferrite-os/crates/internal/ptx-kernels", features = ["candle-kernels"] }
+ptx-sys = { path = "../ferrite-os/crates/internal/ptx-sys" }
 ptx-tensor = { path = "../ferrite-os/crates/internal/ptx-tensor" }
 ferrite-apps = { path = "../ferrite-os/crates/public/ferrite-apps" }
 libc = "0.2"
 anyhow = "1.0"
 tch = { version = "0.22", optional = true }
 aten-ptx = { path = "../external/aten-ptx", optional = true }
+candle-ptx = { path = "../external/candle-ptx", optional = true }
+onnxruntime-ptx = { path = "../external/onnxruntime-ptx", optional = true }
 cudarc = { path = "../external/cudarc-ptx", optional = true, features = ["ptx-alloc"] }
 rlsf = "0.2.1"
 opencv = { version = "0.93", optional = true, default-features = false, features = ["videoio", "imgproc"] }
@@ -24,6 +27,8 @@ opencv = { version = "0.93", optional = true, default-features = false, features
 [features]
 default = ["cuda-12080"]
 torch = ["dep:tch", "dep:aten-ptx", "dep:cudarc"]
+candle = ["dep:candle-ptx", "dep:cudarc"]
+onnxruntime = ["dep:onnxruntime-ptx"]
 capture = ["dep:opencv"]
 cuda-11080 = ["cudarc/cuda-11080"]
 cuda-12000 = ["cudarc/cuda-12000"]
@@ -195,3 +200,14 @@ required-features = ["capture"]
 name = "camera_cv"
 path = "examples/capture/camera_cv.rs"
 required-features = ["capture", "torch"]
+
+[[example]]
+name = "script_hybrid_pipeline"
+path = "examples/scripts/script_hybrid_pipeline.rs"
+required-features = ["capture"]
+
+# Redirect transitive cudarc dependencies (from candle-core etc.) to the local
+# TLSF-patched fork. [patch] sections are only honoured at the workspace root,
+# so this must live here rather than in candle-ptx's own Cargo.toml.
+[patch.crates-io]
+cudarc = { path = "../external/cudarc-ptx" }

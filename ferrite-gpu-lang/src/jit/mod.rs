@@ -7,7 +7,9 @@
 ///
 /// ```text
 /// script text ──▶ lexer ──▶ tokens ──▶ parser ──▶ AST
-///       ──▶ lower ──▶ Program ──▶ compile() ──▶ CompiledProgram
+///       ──▶ validate ──▶ lower(→HirGraph) ──▶ const_fold
+///       ──▶ cse ──▶ fusion ──▶ dce ──▶ codegen(→Program)
+///       ──▶ compile() ──▶ CompiledProgram
 ///       ──▶ GpuLangRuntime::execute() ──▶ CUDA kernels
 /// ```
 ///
@@ -35,8 +37,13 @@
 /// ```
 
 pub mod ast;
+pub mod codegen;
+pub mod const_fold;
+pub mod cse;
+pub mod dce;
 pub mod execute;
 pub mod fusion;
+pub mod hir;
 pub mod lexer;
 pub mod lowering;
 pub mod lower;
@@ -59,21 +66,16 @@ use crate::{CompiledProgram, LangError};
 
 /// Current disk cache schema version.  Bump when the serialized
 /// format changes in incompatible ways.
-const CACHE_SCHEMA_VERSION: u32 = 1;
+const CACHE_SCHEMA_VERSION: u32 = 2;
 
 /// Compile-time fingerprint of the compiler.  Changes whenever
 /// the Op enum, fusion pass, or lowering logic changes in ways
 /// that affect the serialized `CompiledProgram`.
 fn compiler_fingerprint() -> u64 {
-    // Hash key compiler-identity constants.  In a real release build
-    // this would incorporate the crate version or a git hash.  For
-    // now we derive it from the Op variant count and the cache
-    // schema so that structural changes invalidate the cache.
     let mut h = DefaultHasher::new();
     // Number of Op variants (update when Op enum changes).
-    16u32.hash(&mut h);
+    47u32.hash(&mut h);
     CACHE_SCHEMA_VERSION.hash(&mut h);
-    // Include the crate version from Cargo.toml.
     env!("CARGO_PKG_VERSION").hash(&mut h);
     h.finish()
 }
@@ -112,6 +114,7 @@ pub enum JitError {
         code: &'static str,
         message: String,
         hint: String,
+        span: Option<lexer::Span>,
     },
 
     #[error(transparent)]
@@ -120,9 +123,6 @@ pub enum JitError {
 
 impl JitError {
     /// Stable error code for programmatic matching.
-    ///
-    /// Returns `Some("V001")` etc. for validation errors, `None` for
-    /// other error classes (lex, parse, lower, lang).
     pub fn code(&self) -> Option<&'static str> {
         match self {
             JitError::Validate { code, .. } => Some(code),
@@ -134,6 +134,14 @@ impl JitError {
     pub fn hint(&self) -> Option<&str> {
         match self {
             JitError::Validate { hint, .. } => Some(hint),
+            _ => None,
+        }
+    }
+
+    /// Source span, when available.
+    pub fn span(&self) -> Option<lexer::Span> {
+        match self {
+            JitError::Validate { span, .. } => *span,
             _ => None,
         }
     }
@@ -170,13 +178,8 @@ impl JitEngine {
     }
 
     /// Enable or disable the fusion optimization pass.
-    ///
-    /// When disabled, compile output is equivalent to running with no
-    /// optimizer — useful for bisecting whether a bug is in the fusion
-    /// pass or elsewhere.  Default: enabled.
     pub fn set_fusion_enabled(&mut self, enabled: bool) {
         self.fusion_enabled = enabled;
-        // Invalidate memory cache since compiled programs may differ.
         self.cache.clear();
     }
 
@@ -186,7 +189,6 @@ impl JitEngine {
     }
 
     /// Enable disk-backed AOT cache at the given directory.
-    /// Creates the directory if it doesn't exist.
     pub fn enable_disk_cache(&mut self, dir: PathBuf) -> std::io::Result<()> {
         std::fs::create_dir_all(&dir)?;
         self.disk_cache_dir = Some(dir);
@@ -199,14 +201,9 @@ impl JitEngine {
     }
 
     /// Compile a script to a `CompiledProgram`.
-    ///
-    /// Returns a cached version when the same script text has been
-    /// compiled before (keyed by 64-bit hash). Falls through to disk
-    /// cache when enabled.
     pub fn compile(&mut self, script: &str) -> Result<&CompiledProgram> {
         let hash = hash_script(script);
         if !self.cache.contains_key(&hash) {
-            // Try loading from disk cache
             if let Some(loaded) = self.load_from_disk(hash) {
                 self.disk_hits += 1;
                 self.cache.insert(hash, loaded);
@@ -229,43 +226,28 @@ impl JitEngine {
         if self.cache.contains_key(&hash) {
             let t = std::time::Instant::now();
             let compiled = &self.cache[&hash];
-            let report = report::CompileReport {
-                lex_time: std::time::Duration::ZERO,
-                parse_time: std::time::Duration::ZERO,
-                validate_time: std::time::Duration::ZERO,
-                lower_time: std::time::Duration::ZERO,
-                fuse_time: std::time::Duration::ZERO,
-                compile_time: std::time::Duration::ZERO,
-                total_time: t.elapsed(),
-                node_count: compiled.node_count(),
-                input_count: compiled.input_count(),
-                output_shape: compiled.output_shape().to_vec(),
-                fusion_enabled: self.fusion_enabled,
-                cache_hit: true,
-            };
+            let report = report::CompileReport::cache_hit_report(
+                t.elapsed(),
+                compiled.node_count(),
+                compiled.input_count(),
+                compiled.output_shape().to_vec(),
+                self.fusion_enabled,
+            );
             return Ok((compiled, report));
         }
 
-        // Try disk cache.
         if let Some(loaded) = self.load_from_disk(hash) {
             let t = std::time::Instant::now();
             self.disk_hits += 1;
             self.cache.insert(hash, loaded);
             let compiled = &self.cache[&hash];
-            let report = report::CompileReport {
-                lex_time: std::time::Duration::ZERO,
-                parse_time: std::time::Duration::ZERO,
-                validate_time: std::time::Duration::ZERO,
-                lower_time: std::time::Duration::ZERO,
-                fuse_time: std::time::Duration::ZERO,
-                compile_time: std::time::Duration::ZERO,
-                total_time: t.elapsed(),
-                node_count: compiled.node_count(),
-                input_count: compiled.input_count(),
-                output_shape: compiled.output_shape().to_vec(),
-                fusion_enabled: self.fusion_enabled,
-                cache_hit: true,
-            };
+            let report = report::CompileReport::cache_hit_report(
+                t.elapsed(),
+                compiled.node_count(),
+                compiled.input_count(),
+                compiled.output_shape().to_vec(),
+                self.fusion_enabled,
+            );
             return Ok((compiled, report));
         }
 
@@ -281,7 +263,7 @@ impl JitEngine {
         self.cache.len()
     }
 
-    /// Drop all cached programs (memory only — does not clear disk).
+    /// Drop all cached programs (memory only).
     pub fn clear_cache(&mut self) {
         self.cache.clear();
     }
@@ -312,7 +294,6 @@ impl JitEngine {
         let path = self.cache_path(hash)?;
         let data = std::fs::read_to_string(&path).ok()?;
         let envelope: CacheEnvelope = serde_json::from_str(&data).ok()?;
-        // Reject stale entries from a different compiler version or schema.
         if envelope.schema_version != CACHE_SCHEMA_VERSION {
             return None;
         }
@@ -401,6 +382,55 @@ mod tests {
         assert!(tokenize("x = @bad").is_err());
     }
 
+    #[test]
+    fn lex_new_keywords() {
+        let toks = tokenize("if then else elif for in and or not while do").unwrap();
+        let kinds: Vec<_> = toks.iter().map(|t| &t.token).collect();
+        assert_eq!(*kinds[0], Token::If);
+        assert_eq!(*kinds[1], Token::Then);
+        assert_eq!(*kinds[2], Token::Else);
+        assert_eq!(*kinds[3], Token::Elif);
+        assert_eq!(*kinds[4], Token::For);
+        assert_eq!(*kinds[5], Token::In);
+        assert_eq!(*kinds[6], Token::And);
+        assert_eq!(*kinds[7], Token::Or);
+        assert_eq!(*kinds[8], Token::Not);
+        assert_eq!(*kinds[9], Token::While);
+        assert_eq!(*kinds[10], Token::Do);
+    }
+
+    #[test]
+    fn lex_comparison_operators() {
+        let toks = tokenize("< > <= >= == !=").unwrap();
+        let kinds: Vec<_> = toks.iter().map(|t| &t.token).collect();
+        assert_eq!(*kinds[0], Token::Lt);
+        assert_eq!(*kinds[1], Token::Gt);
+        assert_eq!(*kinds[2], Token::Le);
+        assert_eq!(*kinds[3], Token::Ge);
+        assert_eq!(*kinds[4], Token::EqEq);
+        assert_eq!(*kinds[5], Token::Ne);
+    }
+
+    #[test]
+    fn lex_dotdot() {
+        let toks = tokenize("0..10").unwrap();
+        let kinds: Vec<_> = toks.iter().map(|t| &t.token).collect();
+        assert!(matches!(kinds[0], Token::Int(0)));
+        assert_eq!(*kinds[1], Token::DotDot);
+        assert!(matches!(kinds[2], Token::Int(10)));
+    }
+
+    #[test]
+    fn lex_span_offset() {
+        let toks = tokenize("x = relu(y)").unwrap();
+        // 'x' is at offset 0
+        assert_eq!(toks[0].span.offset, 0);
+        assert_eq!(toks[0].span.len, 1);
+        // '=' is at offset 2
+        assert_eq!(toks[1].span.offset, 2);
+        assert_eq!(toks[1].span.len, 1);
+    }
+
     // ── parser ───────────────────────────────────────────────────
 
     #[test]
@@ -469,16 +499,50 @@ mod tests {
     #[test]
     fn parse_empty_fn() {
         let res = tokenize("fn noop(): end\nx = input([1])\nreturn x");
-        // "end" immediately after colon → body is empty, return missing
-        // This should parse (body has no stmts) but lower will fail later
         assert!(res.is_ok());
+    }
+
+    #[test]
+    fn parse_if_stmt() {
+        let toks = tokenize(
+            r#"
+            x = input([4])
+            y = input([4])
+            if x > y then
+                z = x
+            else
+                z = y
+            end
+            return z
+        "#,
+        )
+        .unwrap();
+        let script = parser::parse(toks).unwrap();
+        // x, y, if, return
+        assert_eq!(script.stmts.len(), 4);
+    }
+
+    #[test]
+    fn parse_for_stmt() {
+        let toks = tokenize(
+            r#"
+            x = input([4])
+            for i in 0..3:
+                x = relu(x)
+            end
+            return x
+        "#,
+        )
+        .unwrap();
+        let script = parser::parse(toks).unwrap();
+        assert_eq!(script.stmts.len(), 3); // let x, for, return
     }
 
     // ── lowering ─────────────────────────────────────────────────
 
     #[test]
     fn lower_simple_chain() {
-        let toks = tokenize(
+        let ast = parse::parse_script(
             r#"
             x = input([1, 1, 1, 4])
             h = relu(x)
@@ -487,8 +551,8 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
+        let hir = lower::lower(ast).unwrap();
+        let program = codegen::codegen(&hir).unwrap();
         let compiled = program.compile().unwrap();
         assert_eq!(compiled.output_shape(), &[1, 1, 1, 4]);
         assert_eq!(compiled.input_shapes().len(), 1);
@@ -496,7 +560,7 @@ mod tests {
 
     #[test]
     fn lower_two_inputs() {
-        let toks = tokenize(
+        let ast = parse::parse_script(
             r#"
             a = input([1, 4])
             b = input([1, 4])
@@ -505,8 +569,8 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
+        let hir = lower::lower(ast).unwrap();
+        let program = codegen::codegen(&hir).unwrap();
         let compiled = program.compile().unwrap();
         assert_eq!(compiled.input_shapes().len(), 2);
         assert_eq!(compiled.output_shape(), &[1, 4]);
@@ -514,7 +578,7 @@ mod tests {
 
     #[test]
     fn lower_fn_inline() {
-        let toks = tokenize(
+        let ast = parse::parse_script(
             r#"
             fn activate(x):
                 h = relu(x)
@@ -527,8 +591,8 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
+        let hir = lower::lower(ast).unwrap();
+        let program = codegen::codegen(&hir).unwrap();
         let compiled = program.compile().unwrap();
         assert_eq!(compiled.output_shape(), &[1, 1, 1, 4]);
         assert_eq!(compiled.input_shapes().len(), 1);
@@ -536,7 +600,7 @@ mod tests {
 
     #[test]
     fn lower_multi_fn() {
-        let toks = tokenize(
+        let ast = parse::parse_script(
             r#"
             fn layer1(x):
                 y = relu(x)
@@ -553,15 +617,15 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
+        let hir = lower::lower(ast).unwrap();
+        let program = codegen::codegen(&hir).unwrap();
         let compiled = program.compile().unwrap();
         assert_eq!(compiled.output_shape(), &[1, 4]);
     }
 
     #[test]
     fn lower_cumsum() {
-        let toks = tokenize(
+        let ast = parse::parse_script(
             r#"
             x = input([2, 3, 4])
             y = cumsum(x, dim=1)
@@ -569,15 +633,15 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
+        let hir = lower::lower(ast).unwrap();
+        let program = codegen::codegen(&hir).unwrap();
         let compiled = program.compile().unwrap();
         assert_eq!(compiled.output_shape(), &[2, 3, 4]);
     }
 
     #[test]
     fn lower_topk() {
-        let toks = tokenize(
+        let ast = parse::parse_script(
             r#"
             x = input([2, 10])
             y = topk(x, k=3, dim=1, largest=true)
@@ -585,15 +649,15 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
+        let hir = lower::lower(ast).unwrap();
+        let program = codegen::codegen(&hir).unwrap();
         let compiled = program.compile().unwrap();
-        assert_eq!(compiled.output_shape(), &[2, 3]); // dim=1 → k=3
+        assert_eq!(compiled.output_shape(), &[2, 3]);
     }
 
     #[test]
     fn lower_deep_chain() {
-        let toks = tokenize(
+        let ast = parse::parse_script(
             r#"
             x = input([1, 1, 1, 8])
             a = relu(x)
@@ -604,31 +668,50 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
+        let hir = lower::lower(ast).unwrap();
+        let program = codegen::codegen(&hir).unwrap();
         let compiled = program.compile().unwrap();
         assert_eq!(compiled.output_shape(), &[1, 1, 1, 8]);
+    }
+
+    #[test]
+    fn lower_new_unary_ops() {
+        let ast = parse::parse_script(
+            r#"
+            x = input([2, 4])
+            a = gelu(x)
+            b = silu(a)
+            c = abs(b)
+            d = sqrt(c)
+            e = exp(d)
+            f = log(e)
+            return f
+        "#,
+        )
+        .unwrap();
+        let hir = lower::lower(ast).unwrap();
+        let program = codegen::codegen(&hir).unwrap();
+        let compiled = program.compile().unwrap();
+        assert_eq!(compiled.output_shape(), &[2, 4]);
     }
 
     // ── error cases ──────────────────────────────────────────────
 
     #[test]
     fn error_undefined_var() {
-        let toks = tokenize("x = relu(undefined_var)\nreturn x").unwrap();
-        let ast = parser::parse(toks).unwrap();
+        let ast = parse::parse_script("x = relu(undefined_var)\nreturn x").unwrap();
         assert!(lower::lower(ast).is_err());
     }
 
     #[test]
     fn error_unknown_function() {
-        let toks = tokenize("x = input([1, 4])\ny = nonexistent(x)\nreturn y").unwrap();
-        let ast = parser::parse(toks).unwrap();
+        let ast = parse::parse_script("x = input([1, 4])\ny = nonexistent(x)\nreturn y").unwrap();
         assert!(lower::lower(ast).is_err());
     }
 
     #[test]
     fn error_shape_mismatch() {
-        let toks = tokenize(
+        let ast = parse::parse_script(
             r#"
             a = input([1, 4])
             b = input([1, 8])
@@ -637,18 +720,16 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
-        // Shape mismatch caught during compile()
+        let hir = lower::lower(ast).unwrap();
+        let program = codegen::codegen(&hir).unwrap();
         assert!(program.compile().is_err());
     }
 
     #[test]
     fn error_missing_return() {
-        let toks = tokenize("x = input([1, 4])\ny = relu(x)").unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
-        // No set_output → MissingOutput
+        let ast = parse::parse_script("x = input([1, 4])\ny = relu(x)").unwrap();
+        let hir = lower::lower(ast).unwrap();
+        let program = codegen::codegen(&hir).unwrap();
         assert!(program.compile().is_err());
     }
 
@@ -662,7 +743,7 @@ mod tests {
         let _ = engine.compile(script).unwrap();
         assert_eq!(engine.cache_len(), 1);
         let _ = engine.compile(script).unwrap();
-        assert_eq!(engine.cache_len(), 1); // cache hit
+        assert_eq!(engine.cache_len(), 1);
     }
 
     #[test]
@@ -736,16 +817,14 @@ mod tests {
 
     #[test]
     fn parse_infix_precedence() {
-        // x + y * z  should parse as  x + (y * z)
         let toks = tokenize("x = input([4])\ny = input([4])\nz = input([4])\nw = x + y * z\nreturn w").unwrap();
         let script = parser::parse(toks).unwrap();
-        // The let w = ... should produce BinOp(Add, Var(x), BinOp(Mul, ...))
         if let ast::Stmt::Let { value, .. } = &script.stmts[3] {
-            match value {
+            match &value.node {
                 ast::Expr::BinOp { op, left, right } => {
                     assert_eq!(*op, ast::BinOper::Add);
-                    assert!(matches!(left.as_ref(), ast::Expr::Var(s) if s == "x"));
-                    assert!(matches!(right.as_ref(), ast::Expr::BinOp { op: ast::BinOper::Mul, .. }));
+                    assert!(matches!(&left.node, ast::Expr::Var(s) if s == "x"));
+                    assert!(matches!(&right.node, ast::Expr::BinOp { op: ast::BinOper::Mul, .. }));
                 }
                 other => panic!("expected BinOp, got {:?}", other),
             }
@@ -759,7 +838,7 @@ mod tests {
         let toks = tokenize("x = input([4])\ny = (x + x) * x\nreturn y").unwrap();
         let script = parser::parse(toks).unwrap();
         if let ast::Stmt::Let { value, .. } = &script.stmts[1] {
-            assert!(matches!(value, ast::Expr::BinOp { op: ast::BinOper::Mul, .. }));
+            assert!(matches!(&value.node, ast::Expr::BinOp { op: ast::BinOper::Mul, .. }));
         } else {
             panic!("expected Let statement");
         }
@@ -778,9 +857,9 @@ mod tests {
         )
         .unwrap();
         let script = parser::parse(toks).unwrap();
-        assert_eq!(script.stmts.len(), 3); // let x, tile, return
+        assert_eq!(script.stmts.len(), 3);
         match &script.stmts[1] {
-            ast::Stmt::Tile { output, inputs, body } => {
+            ast::Stmt::Tile { output, inputs, body, .. } => {
                 assert_eq!(output, "y");
                 assert_eq!(inputs, &["x"]);
                 assert_eq!(body.len(), 1);
@@ -815,7 +894,7 @@ mod tests {
         let toks = tokenize("x = input([4])\ny = -x\nreturn y").unwrap();
         let script = parser::parse(toks).unwrap();
         if let ast::Stmt::Let { value, .. } = &script.stmts[1] {
-            assert!(matches!(value, ast::Expr::Neg(..)));
+            assert!(matches!(&value.node, ast::Expr::Neg(..)));
         } else {
             panic!("expected Let statement");
         }
@@ -825,7 +904,7 @@ mod tests {
 
     #[test]
     fn lower_infix_add_mul() {
-        let toks = tokenize(
+        let compiled = execute::compile_script(
             r#"
             x = input([4])
             y = x * 2.0 + 1.0
@@ -833,15 +912,12 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
-        let compiled = program.compile().unwrap();
         assert_eq!(compiled.output_shape(), &[4]);
     }
 
     #[test]
     fn lower_sub_div() {
-        let toks = tokenize(
+        let compiled = execute::compile_script(
             r#"
             x = input([4])
             y = (x - 1.0) / 2.0
@@ -849,15 +925,12 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
-        let compiled = program.compile().unwrap();
         assert_eq!(compiled.output_shape(), &[4]);
     }
 
     #[test]
     fn lower_negation() {
-        let toks = tokenize(
+        let compiled = execute::compile_script(
             r#"
             x = input([4])
             y = -x
@@ -865,16 +938,12 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
-        let compiled = program.compile().unwrap();
         assert_eq!(compiled.output_shape(), &[4]);
     }
 
     #[test]
     fn lower_infix_with_builtin() {
-        // relu(x * 2.0) — expression as arg to builtin
-        let toks = tokenize(
+        let compiled = execute::compile_script(
             r#"
             x = input([4])
             y = relu(x * 2.0)
@@ -882,15 +951,12 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
-        let compiled = program.compile().unwrap();
         assert_eq!(compiled.output_shape(), &[4]);
     }
 
     #[test]
     fn lower_tile_block() {
-        let toks = tokenize(
+        let compiled = execute::compile_script(
             r#"
             x = input([4])
             tile y over (x):
@@ -900,15 +966,12 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
-        let compiled = program.compile().unwrap();
         assert_eq!(compiled.output_shape(), &[4]);
     }
 
     #[test]
     fn lower_tile_multi_input() {
-        let toks = tokenize(
+        let compiled = execute::compile_script(
             r#"
             a = input([4])
             b = input([4])
@@ -919,29 +982,24 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
-        let program = lower::lower(ast).unwrap();
-        let compiled = program.compile().unwrap();
         assert_eq!(compiled.output_shape(), &[4]);
     }
 
     #[test]
     fn error_scalar_scalar_binop() {
-        // Two scalar literals with no tensor — should error
-        let toks = tokenize(
+        let ast = parse::parse_script(
             r#"
             x = 2.0 + 3.0
             return x
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
         assert!(lower::lower(ast).is_err());
     }
 
     #[test]
     fn error_tile_undefined_input() {
-        let toks = tokenize(
+        let ast = parse::parse_script(
             r#"
             tile y over (nonexistent):
                 y = nonexistent * 2.0
@@ -950,13 +1008,12 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
         assert!(lower::lower(ast).is_err());
     }
 
     #[test]
     fn error_tile_no_output() {
-        let toks = tokenize(
+        let ast = parse::parse_script(
             r#"
             x = input([4])
             tile y over (x):
@@ -966,7 +1023,6 @@ mod tests {
         "#,
         )
         .unwrap();
-        let ast = parser::parse(toks).unwrap();
         assert!(lower::lower(ast).is_err());
     }
 
@@ -974,7 +1030,6 @@ mod tests {
 
     #[test]
     fn cache_cold_compile() {
-        // Cold compile: no memory cache, no disk cache.
         let mut engine = JitEngine::new();
         let script = "x = input([2, 4])\ny = relu(x)\nreturn y";
         let compiled = engine.compile(script).unwrap();
@@ -985,18 +1040,16 @@ mod tests {
 
     #[test]
     fn cache_warm_memory_hit() {
-        // Second compile with identical text hits memory cache.
         let mut engine = JitEngine::new();
         let script = "x = input([2, 4])\ny = relu(x)\nreturn y";
         let _ = engine.compile(script).unwrap();
         let _ = engine.compile(script).unwrap();
-        assert_eq!(engine.cache_len(), 1); // still 1 — memory hit
+        assert_eq!(engine.cache_len(), 1);
         assert_eq!(engine.disk_hits(), 0);
     }
 
     #[test]
     fn cache_warm_disk_hit() {
-        // After eviction from memory, disk cache provides the program.
         let dir = std::env::temp_dir().join(format!("ferrite_cache_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -1008,7 +1061,6 @@ mod tests {
         let shape_a = compiled_a.output_shape().to_vec();
         assert_eq!(engine.disk_cache_len(), 1);
 
-        // Clear memory cache, forcing next compile to hit disk.
         engine.clear_cache();
         assert_eq!(engine.cache_len(), 0);
 
@@ -1016,13 +1068,11 @@ mod tests {
         assert_eq!(compiled_b.output_shape(), &shape_a[..]);
         assert_eq!(engine.disk_hits(), 1);
 
-        // Cleanup.
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn cache_stale_disk_rejected() {
-        // Write a hand-crafted envelope with wrong fingerprint.
         let dir = std::env::temp_dir().join(format!("ferrite_stale_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1031,11 +1081,9 @@ mod tests {
         engine.enable_disk_cache(dir.clone()).unwrap();
 
         let script = "x = input([4])\ny = relu(x)\nreturn y";
-        // Compile once to get a valid CompiledProgram.
         let _ = engine.compile(script).unwrap();
         assert_eq!(engine.disk_cache_len(), 1);
 
-        // Tamper with the disk cache file: replace fingerprint.
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
@@ -1047,12 +1095,8 @@ mod tests {
         data["compiler_fingerprint"] = serde_json::json!(999999);
         std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
 
-        // Clear memory and try to load — should miss (stale fingerprint).
         engine.clear_cache();
         let _ = engine.compile(script).unwrap();
-        // disk_hits should still be 1 (the first load before tampering
-        // was a cold compile — never loaded from disk).  The stale file
-        // was rejected, so we got a fresh compile.
         assert_eq!(engine.disk_hits(), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1070,7 +1114,6 @@ mod tests {
         let script = "x = input([4])\ny = tanh(x)\nreturn y";
         let _ = engine.compile(script).unwrap();
 
-        // Tamper: change schema version.
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
@@ -1083,7 +1126,6 @@ mod tests {
 
         engine.clear_cache();
         let _ = engine.compile(script).unwrap();
-        // Should have recompiled from scratch, not loaded from disk.
         assert_eq!(engine.disk_hits(), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1104,9 +1146,7 @@ mod tests {
             d = relu(c)
             return d
         "#;
-        // Without fusion, relu(add(a,b)) stays as separate nodes.
         let compiled = engine.compile(script).unwrap();
-        // The op summary should contain "add" and "relu" as separate ops.
         let summary = compiled.op_summary();
         let has_add = summary.iter().any(|(name, _)| *name == "add");
         let has_relu = summary.iter().any(|(name, _)| *name == "relu");
@@ -1117,7 +1157,7 @@ mod tests {
     #[test]
     fn fusion_enable_knob() {
         let mut engine = JitEngine::new();
-        assert!(engine.fusion_enabled()); // default
+        assert!(engine.fusion_enabled());
 
         let script = r#"
             a = input([1, 4])
@@ -1134,7 +1174,6 @@ mod tests {
 
     #[test]
     fn fusion_shape_preservation() {
-        // Compile with and without fusion — shapes must match.
         let script = r#"
             a = input([2, 8])
             b = input([2, 8])
@@ -1154,7 +1193,6 @@ mod tests {
 
     #[test]
     fn fusion_complex_shape_preservation() {
-        // Multiple fusible patterns in a single graph.
         let script = r#"
             x = input([4, 16])
             y = input([4, 16])
@@ -1174,7 +1212,6 @@ mod tests {
 
     #[test]
     fn fusion_no_fuse_multi_consumer() {
-        // The binary op is consumed by two nodes — fusion must NOT fire.
         let script = r#"
             a = input([4])
             b = input([4])
@@ -1187,7 +1224,6 @@ mod tests {
 
         let compiled = execute::compile_script_with_options(script, true).unwrap();
         let summary = compiled.op_summary();
-        // "add" must still appear because c=add(a,b) has two consumers.
         let add_count = summary
             .iter()
             .find(|(name, _)| *name == "add")
@@ -1207,7 +1243,6 @@ mod tests {
         assert!(report.fusion_enabled);
         assert_eq!(report.output_shape, compiled.output_shape());
         assert!(report.total_time.as_nanos() > 0);
-        // Display impl should not panic.
         let _s = format!("{}", report);
     }
 
@@ -1225,7 +1260,6 @@ mod tests {
 
     #[test]
     fn stress_repeated_compile() {
-        // Compile the same script 1000 times — exercises cache path.
         let mut engine = JitEngine::new();
         let script = "x = input([4])\ny = relu(x)\nreturn y";
         for _ in 0..1000 {
@@ -1236,7 +1270,6 @@ mod tests {
 
     #[test]
     fn stress_many_distinct_scripts() {
-        // Compile 200 distinct scripts — exercises cold compile path.
         let mut engine = JitEngine::new();
         for i in 1..=200 {
             let script = format!(
@@ -1251,7 +1284,6 @@ mod tests {
 
     #[test]
     fn stress_large_script() {
-        // Generate a script with a long chain of operations.
         let mut lines = Vec::new();
         lines.push("x0 = input([4, 32])".to_string());
         for i in 1..=100 {
@@ -1269,7 +1301,7 @@ mod tests {
 
         let compiled = execute::compile_script_with_options(&script, true).unwrap();
         assert_eq!(compiled.output_shape(), &[4, 32]);
-        assert!(compiled.node_count() > 50); // many nodes
+        assert!(compiled.node_count() > 50);
     }
 
     #[test]
@@ -1280,7 +1312,6 @@ mod tests {
         let mut engine = JitEngine::new();
         engine.enable_disk_cache(dir.clone()).unwrap();
 
-        // Write 50 entries.
         for i in 1..=50 {
             let script = format!(
                 "x = input([1, {}])\ny = tanh(x)\nreturn y",
@@ -1290,7 +1321,6 @@ mod tests {
         }
         assert_eq!(engine.disk_cache_len(), 50);
 
-        // Clear memory and reload all from disk.
         engine.clear_cache();
         for i in 1..=50 {
             let script = format!(
@@ -1302,7 +1332,6 @@ mod tests {
         }
         assert_eq!(engine.disk_hits(), 50);
 
-        // Clear all and verify disk is empty.
         engine.clear_all();
         assert_eq!(engine.disk_cache_len(), 0);
 
@@ -1311,9 +1340,6 @@ mod tests {
 
     #[test]
     fn stress_concurrent_compile() {
-        // Spawn threads that each compile independently — JitEngine is
-        // per-thread here (no shared state), but this tests that the
-        // compile pipeline itself is safe to run from multiple threads.
         let scripts: Vec<String> = (1..=20)
             .map(|i| format!("x = input([1, {}])\ny = relu(x)\nreturn y", i))
             .collect();

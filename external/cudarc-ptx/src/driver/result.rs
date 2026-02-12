@@ -581,7 +581,28 @@ pub mod stream {
 /// 1. The stream should be an already created stream.
 /// 2. The memory return by this is unset, which may be invalid for `T`.
 /// 3. All uses of this memory must be on the same stream.
+/// # PTX-OS Integration
+/// When `ptx-alloc` feature is enabled, uses TLSF allocator instead of cuMemAllocAsync
 pub unsafe fn malloc_async(
+    stream: sys::CUstream,
+    num_bytes: usize,
+) -> Result<sys::CUdeviceptr, DriverError> {
+    #[cfg(feature = "ptx-alloc")]
+    {
+        // Route through TLSF — stream parameter is unused since TLSF is synchronous
+        let _ = stream;
+        crate::ptx_alloc::tlsf_malloc(num_bytes)
+    }
+
+    #[cfg(not(feature = "ptx-alloc"))]
+    {
+        malloc_async_original(stream, num_bytes)
+    }
+}
+
+/// Original malloc_async implementation (stock CUDA)
+#[allow(dead_code)]
+pub(crate) unsafe fn malloc_async_original(
     stream: sys::CUstream,
     num_bytes: usize,
 ) -> Result<sys::CUdeviceptr, DriverError> {
@@ -714,7 +735,24 @@ pub unsafe fn mem_prefetch_async(
 /// 1. The stream should be an already created stream.
 /// 2. The memory should have been allocated on this stream.
 /// 3. The memory should not have been freed already (double free)
+/// # PTX-OS Integration
+/// When `ptx-alloc` feature is enabled, frees via TLSF allocator
 pub unsafe fn free_async(dptr: sys::CUdeviceptr, stream: sys::CUstream) -> Result<(), DriverError> {
+    #[cfg(feature = "ptx-alloc")]
+    {
+        let _ = stream;
+        crate::ptx_alloc::tlsf_free(dptr)
+    }
+
+    #[cfg(not(feature = "ptx-alloc"))]
+    {
+        free_async_original(dptr, stream)
+    }
+}
+
+/// Original free_async implementation (stock CUDA)
+#[allow(dead_code)]
+pub(crate) unsafe fn free_async_original(dptr: sys::CUdeviceptr, stream: sys::CUstream) -> Result<(), DriverError> {
     lib().cuMemFreeAsync(dptr, stream).result()
 }
 

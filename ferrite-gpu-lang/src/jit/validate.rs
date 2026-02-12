@@ -6,6 +6,7 @@
 
 use super::ast::*;
 use super::JitError;
+use super::lexer::Span;
 
 /// Validate a parsed script for structural correctness before lowering.
 ///
@@ -17,18 +18,24 @@ pub fn validate(script: &Script) -> Result<(), JitError> {
 
     for stmt in &script.stmts {
         match stmt {
-            Stmt::FnDef { name, params, body } => {
-                validate_fn_def(name, params, body)?;
+            Stmt::FnDef { name, params, body, span } => {
+                validate_fn_def(name, params, body, Some(*span))?;
                 defined_fns.push(name);
             }
-            Stmt::Tile { output, inputs, body } => {
-                validate_tile(output, inputs, body)?;
+            Stmt::Tile { output, inputs, body, span } => {
+                validate_tile(output, inputs, body, Some(*span))?;
             }
             Stmt::Let { value, .. } => {
                 validate_expr(value)?;
             }
-            Stmt::Return(_) => {
+            Stmt::Return { .. } => {
                 top_has_return = true;
+            }
+            Stmt::If { branches, else_body, span } => {
+                validate_if(branches, else_body, Some(*span))?;
+            }
+            Stmt::For { start, end, body, span, .. } => {
+                validate_for(*start, *end, body, Some(*span))?;
             }
         }
     }
@@ -38,18 +45,20 @@ pub fn validate(script: &Script) -> Result<(), JitError> {
             code: "V001",
             message: "script has no return statement".into(),
             hint: "add `return <variable>` as the last statement".into(),
+            span: None,
         });
     }
 
     Ok(())
 }
 
-fn validate_fn_def(name: &str, params: &[String], body: &[Stmt]) -> Result<(), JitError> {
+fn validate_fn_def(name: &str, params: &[String], body: &[Stmt], span: Option<Span>) -> Result<(), JitError> {
     if body.is_empty() {
         return Err(JitError::Validate {
             code: "V002",
             message: format!("function '{}' has an empty body", name),
             hint: "add at least one statement and a return to the function body".into(),
+            span,
         });
     }
 
@@ -61,18 +70,20 @@ fn validate_fn_def(name: &str, params: &[String], body: &[Stmt]) -> Result<(), J
                 code: "V003",
                 message: format!("function '{}' has duplicate parameter '{}'", name, p),
                 hint: "use distinct parameter names".into(),
+                span,
             });
         }
         seen_params.push(p);
     }
 
     // Check that the body ends with a return
-    let has_return = body.iter().any(|s| matches!(s, Stmt::Return(_)));
+    let has_return = body.iter().any(|s| matches!(s, Stmt::Return { .. }));
     if !has_return {
         return Err(JitError::Validate {
             code: "V004",
             message: format!("function '{}' has no return statement", name),
             hint: "add `return <variable>` at the end of the function body".into(),
+            span,
         });
     }
 
@@ -85,6 +96,7 @@ fn validate_fn_def(name: &str, params: &[String], body: &[Stmt]) -> Result<(), J
                     code: "V005",
                     message: "nested function definitions are not supported".into(),
                     hint: "move the inner function to the top level".into(),
+                    span,
                 });
             }
             Stmt::Tile { .. } => {
@@ -92,21 +104,25 @@ fn validate_fn_def(name: &str, params: &[String], body: &[Stmt]) -> Result<(), J
                     code: "V006",
                     message: "tile blocks are not supported inside function definitions".into(),
                     hint: "move the tile block outside the function".into(),
+                    span,
                 });
             }
-            Stmt::Return(_) => {}
+            Stmt::Return { .. } => {}
+            Stmt::If { branches, else_body, .. } => validate_if(branches, else_body, span)?,
+            Stmt::For { start, end, body, .. } => validate_for(*start, *end, body, span)?,
         }
     }
 
     Ok(())
 }
 
-fn validate_tile(output: &str, inputs: &[String], body: &[Stmt]) -> Result<(), JitError> {
+fn validate_tile(output: &str, inputs: &[String], body: &[Stmt], span: Option<Span>) -> Result<(), JitError> {
     if inputs.is_empty() {
         return Err(JitError::Validate {
             code: "V007",
             message: "tile block has no input variables".into(),
             hint: "specify at least one input: `tile y over (x): ... end`".into(),
+            span,
         });
     }
 
@@ -115,6 +131,7 @@ fn validate_tile(output: &str, inputs: &[String], body: &[Stmt]) -> Result<(), J
             code: "V008",
             message: format!("tile block for '{}' has an empty body", output),
             hint: "add statements to compute the output".into(),
+            span,
         });
     }
 
@@ -126,6 +143,7 @@ fn validate_tile(output: &str, inputs: &[String], body: &[Stmt]) -> Result<(), J
                 code: "V009",
                 message: format!("tile block has duplicate input '{}'", inp),
                 hint: "use distinct input names".into(),
+                span,
             });
         }
         seen.push(inp);
@@ -140,6 +158,7 @@ fn validate_tile(output: &str, inputs: &[String], body: &[Stmt]) -> Result<(), J
                 output
             ),
             hint: "use a distinct name for the tile output".into(),
+            span,
         });
     }
 
@@ -152,6 +171,7 @@ fn validate_tile(output: &str, inputs: &[String], body: &[Stmt]) -> Result<(), J
                     code: "V005",
                     message: "function definitions not allowed inside tile block".into(),
                     hint: "move the function to the top level".into(),
+                    span,
                 });
             }
             Stmt::Tile { .. } => {
@@ -159,30 +179,102 @@ fn validate_tile(output: &str, inputs: &[String], body: &[Stmt]) -> Result<(), J
                     code: "V011",
                     message: "nested tile blocks are not supported".into(),
                     hint: "flatten the tile blocks into sequential statements".into(),
+                    span,
                 });
             }
-            Stmt::Return(_) => {
+            Stmt::Return { .. } => {
                 return Err(JitError::Validate {
                     code: "V012",
                     message: "return not allowed inside tile block".into(),
                     hint: "assign the result to the tile output variable instead".into(),
+                    span,
                 });
             }
+            Stmt::If { branches, else_body, .. } => validate_if(branches, else_body, span)?,
+            Stmt::For { start, end, body, .. } => validate_for(*start, *end, body, span)?,
         }
     }
 
     Ok(())
 }
 
+fn validate_if(branches: &[(SExpr, Vec<Stmt>)], else_body: &Option<Vec<Stmt>>, span: Option<Span>) -> Result<(), JitError> {
+    if branches.is_empty() {
+        return Err(JitError::Validate {
+            code: "V015",
+            message: "if statement has no condition branches".into(),
+            hint: "if must have at least one condition: `if cond then ... end`".into(),
+            span,
+        });
+    }
+    for (cond, body) in branches {
+        validate_expr(cond)?;
+        for stmt in body {
+            validate_stmt_inner(stmt, span)?;
+        }
+    }
+    if let Some(eb) = else_body {
+        for stmt in eb {
+            validate_stmt_inner(stmt, span)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_for(start: i64, end: i64, body: &[Stmt], span: Option<Span>) -> Result<(), JitError> {
+    if start >= end {
+        return Err(JitError::Validate {
+            code: "V016",
+            message: format!("for loop range is empty: {}..{}", start, end),
+            hint: "start must be less than end".into(),
+            span,
+        });
+    }
+    if (end - start) > 1024 {
+        return Err(JitError::Validate {
+            code: "V017",
+            message: format!("for loop range too large: {}..{} ({} iterations)", start, end, end - start),
+            hint: "for loops are unrolled at compile time; max 1024 iterations".into(),
+            span,
+        });
+    }
+    for stmt in body {
+        validate_stmt_inner(stmt, span)?;
+    }
+    Ok(())
+}
+
+fn validate_stmt_inner(stmt: &Stmt, parent_span: Option<Span>) -> Result<(), JitError> {
+    match stmt {
+        Stmt::Let { value, .. } => validate_expr(value),
+        Stmt::Return { .. } => Ok(()),
+        Stmt::FnDef { .. } => Err(JitError::Validate {
+            code: "V005",
+            message: "nested function definitions are not supported".into(),
+            hint: "move the function to the top level".into(),
+            span: parent_span,
+        }),
+        Stmt::Tile { .. } => Err(JitError::Validate {
+            code: "V011",
+            message: "nested tile blocks are not supported".into(),
+            hint: "flatten the tile blocks".into(),
+            span: parent_span,
+        }),
+        Stmt::If { branches, else_body, .. } => validate_if(branches, else_body, parent_span),
+        Stmt::For { start, end, body, .. } => validate_for(*start, *end, body, parent_span),
+    }
+}
+
 /// Validate an expression tree for structural correctness.
-fn validate_expr(expr: &Expr) -> Result<(), JitError> {
-    match expr {
+fn validate_expr(expr: &SExpr) -> Result<(), JitError> {
+    match &expr.node {
         Expr::Shape(dims) => {
             if dims.is_empty() {
                 return Err(JitError::Validate {
                     code: "V013",
                     message: "empty shape literal `[]`".into(),
                     hint: "shapes must have at least one dimension, e.g. `[4]`".into(),
+                    span: Some(expr.span),
                 });
             }
             for (i, &d) in dims.iter().enumerate() {
@@ -194,6 +286,7 @@ fn validate_expr(expr: &Expr) -> Result<(), JitError> {
                             i, dims
                         ),
                         hint: "all shape dimensions must be >= 1".into(),
+                        span: Some(expr.span),
                     });
                 }
             }
@@ -211,6 +304,15 @@ fn validate_expr(expr: &Expr) -> Result<(), JitError> {
             validate_expr(right)?;
         }
         Expr::Neg(inner) => validate_expr(inner)?,
+        Expr::Cmp { left, right, .. } => {
+            validate_expr(left)?;
+            validate_expr(right)?;
+        }
+        Expr::Logic { left, right, .. } => {
+            validate_expr(left)?;
+            validate_expr(right)?;
+        }
+        Expr::LogicNot(inner) => validate_expr(inner)?,
         Expr::Var(_) | Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) => {}
     }
     Ok(())

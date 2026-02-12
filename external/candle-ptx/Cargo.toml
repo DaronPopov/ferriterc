@@ -1,0 +1,18 @@
+[package]
+name = "candle-ptx"
+version = "0.1.0"
+edition = "2021"
+authors = ["Daron Popov"]
+description = "Candle integration with PTX-OS TLSF allocator via cudarc-ptx"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+candle-core = { version = "0.8", features = ["cuda"] }
+cudarc = { version = "0.13", features = ["ptx-alloc"] }
+ptx-runtime = { path = "../../ferrite-os/crates/public/ptx-runtime" }
+
+[patch.crates-io]
+cudarc = { path = "../cudarc-ptx" }
+
+[[example]]
+name = "candle_tlsf_test"

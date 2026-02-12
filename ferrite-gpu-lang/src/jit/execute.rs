@@ -1,5 +1,9 @@
 use std::time::Instant;
 
+use super::codegen;
+use super::const_fold;
+use super::cse;
+use super::dce;
 use super::fusion;
 use super::lowering;
 use super::parse;
@@ -10,7 +14,8 @@ use crate::CompiledProgram;
 
 /// Full parse/lower/compile pipeline facade.
 ///
-/// Pipeline: script → parse → AST → validate → lower → Program → fuse → compile → CompiledProgram
+/// Pipeline: script → parse → AST → validate → lower(→HirGraph)
+///   → const_fold → cse → fusion → dce → codegen(→Program) → compile → CompiledProgram
 pub fn compile_script(script: &str) -> Result<CompiledProgram> {
     compile_script_with_options(script, true)
 }
@@ -19,13 +24,21 @@ pub fn compile_script(script: &str) -> Result<CompiledProgram> {
 pub fn compile_script_with_options(script: &str, enable_fusion: bool) -> Result<CompiledProgram> {
     let ast = parse::parse_script(script)?;
     validate::validate(&ast)?;
-    let program = lowering::lower_script(ast)?;
-    let compiled = if enable_fusion {
-        let fused = fusion::fuse(program);
-        fused.compile()?
+    let hir = lowering::lower_script(ast)?;
+
+    // Optimization passes
+    let hir = const_fold::const_fold(hir);
+    let hir = cse::cse(hir);
+    let hir = if enable_fusion {
+        fusion::fuse(hir)
     } else {
-        program.compile()?
+        hir
     };
+    let hir = dce::dce(hir);
+
+    // Codegen: HIR → Program
+    let program = codegen::codegen(&hir)?;
+    let compiled = program.compile()?;
     Ok(compiled)
 }
 
@@ -50,16 +63,32 @@ pub fn compile_script_with_report(
     let validate_time = t0.elapsed();
 
     let t0 = Instant::now();
-    let program = super::lower::lower(ast)?;
+    let hir = super::lower::lower(ast)?;
     let lower_time = t0.elapsed();
 
     let t0 = Instant::now();
-    let program = if enable_fusion {
-        fusion::fuse(program)
+    let hir = const_fold::const_fold(hir);
+    let const_fold_time = t0.elapsed();
+
+    let t0 = Instant::now();
+    let hir = cse::cse(hir);
+    let cse_time = t0.elapsed();
+
+    let t0 = Instant::now();
+    let hir = if enable_fusion {
+        fusion::fuse(hir)
     } else {
-        program
+        hir
     };
     let fuse_time = t0.elapsed();
+
+    let t0 = Instant::now();
+    let hir = dce::dce(hir);
+    let dce_time = t0.elapsed();
+
+    let t0 = Instant::now();
+    let program = codegen::codegen(&hir)?;
+    let codegen_time = t0.elapsed();
 
     let t0 = Instant::now();
     let compiled = program.compile()?;
@@ -72,7 +101,11 @@ pub fn compile_script_with_report(
         parse_time,
         validate_time,
         lower_time,
+        const_fold_time,
+        cse_time,
         fuse_time,
+        dce_time,
+        codegen_time,
         compile_time,
         total_time,
         node_count: compiled.node_count(),

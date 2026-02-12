@@ -33,18 +33,28 @@ run_build() {
   echo "[info] using GPU SM: ${SM}"
 
   if [[ "${CORE_ONLY}" == "true" ]]; then
-    local STEPS=3
+    local STEPS=4
     echo "[info] core-only mode — skipping libtorch and torch-dependent crates"
 
     echo "[1/${STEPS}] Building ferrite-os"
     cd "$ROOT/ferrite-os"
     make all GPU_SM="${SM}" PTX_GPU_SM="sm_${SM}"
 
-    echo "[2/${STEPS}] Building ferrite daemon"
+    local CORE_FEATURES="${CUDARC_CUDA_FEATURE:-cuda-12080}"
+    if [[ "${WITH_CAPTURE}" == "true" ]]; then
+      CORE_FEATURES="${CORE_FEATURES},capture"
+      echo "[2/${STEPS}] Building ferrite-gpu-lang (core + capture: sensor + vision + pipeline)"
+    else
+      echo "[2/${STEPS}] Building ferrite-gpu-lang (core: sensor + vision + pipeline)"
+    fi
+    cd "$ROOT/ferrite-gpu-lang"
+    cargo build --release --no-default-features --features "${CORE_FEATURES}"
+
+    echo "[3/${STEPS}] Building ferrite daemon"
     cd "$ROOT/ferrite-os"
     CUDA_PATH="${CUDA_PATH}" cargo build --release -p ferrite-daemon
 
-    echo "[3/${STEPS}] Installing ferrite command"
+    echo "[4/${STEPS}] Installing ferrite command"
   else
     if [[ -z "${LIBTORCH:-}" ]] || ! is_valid_libtorch "${LIBTORCH}"; then
       echo "[error] LIBTORCH is not set or invalid — cannot build torch-dependent crates"
@@ -53,27 +63,46 @@ run_build() {
       exit 1
     fi
     echo "[info] using libtorch: ${LIBTORCH}"
-    local STEPS=9
+    local STEPS=12
 
     echo "[1/${STEPS}] Building ferrite-os"
     cd "$ROOT/ferrite-os"
     make all GPU_SM="${SM}" PTX_GPU_SM="sm_${SM}"
 
-    echo "[2/${STEPS}] Building ferrite-gpu-lang (torch feature)"
+    echo "[2/${STEPS}] Building external/aten-ptx"
+    cd "$ROOT/external/aten-ptx"
+    LIBTORCH="${LIBTORCH}" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+      cargo build --release
+
+    echo "[3/${STEPS}] Building external/candle-ptx"
+    cd "$ROOT/external/candle-ptx"
+    cargo build --release
+
+    echo "[4/${STEPS}] Building external/onnxruntime-ptx"
+    cd "$ROOT/external/onnxruntime-ptx"
+    cargo build --release
+
+    local GPU_LANG_FEATURES="torch,${CUDARC_CUDA_FEATURE}"
+    if [[ "${WITH_CAPTURE}" == "true" ]]; then
+      GPU_LANG_FEATURES="${GPU_LANG_FEATURES},capture"
+      echo "[5/${STEPS}] Building ferrite-gpu-lang (torch + capture + sensor + vision + pipeline)"
+    else
+      echo "[5/${STEPS}] Building ferrite-gpu-lang (torch + sensor + vision + pipeline)"
+    fi
     cd "$ROOT/ferrite-gpu-lang"
     LIBTORCH="${LIBTORCH}" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
-      cargo build --release --no-default-features --features "torch,${CUDARC_CUDA_FEATURE}"
+      cargo build --release --no-default-features --features "${GPU_LANG_FEATURES}"
 
-    echo "[3/${STEPS}] Building external/ferrite-torch examples"
+    echo "[6/${STEPS}] Building external/ferrite-torch examples"
     cd "$ROOT/external/ferrite-torch"
     LIBTORCH="${LIBTORCH}" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
       cargo build --release --examples --no-default-features --features "${CUDARC_CUDA_FEATURE}"
 
-    echo "[4/${STEPS}] Building external/ferrite-xla example"
+    echo "[7/${STEPS}] Building external/ferrite-xla example"
     cd "$ROOT/external/ferrite-xla"
     cargo build --release --example xla_allocator_test
 
-    echo "[5/${STEPS}] Validating ferrite-gpu-lang torch+xla scripts"
+    echo "[8/${STEPS}] Validating ferrite-gpu-lang torch+xla scripts"
     cd "$ROOT/ferrite-gpu-lang"
     LIBTORCH="${LIBTORCH}" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
       cargo run --release --no-default-features --features "torch,${CUDARC_CUDA_FEATURE}" --example script_cv_detect >/dev/null
@@ -84,18 +113,18 @@ run_build() {
     [[ -d "$FINETUNE_DIR" ]] || FINETUNE_DIR="$ROOT/finetune_engine"
     [[ -d "$MATH_DIR" ]] || MATH_DIR="$ROOT/mathematics_engine"
 
-    echo "[6/${STEPS}] Checking finetune_engine scripts"
+    echo "[9/${STEPS}] Checking finetune_engine scripts"
     cd "$ROOT/ferrite-gpu-lang"
     check_engine_scripts "$FINETUNE_DIR" "finetune_engine"
 
-    echo "[7/${STEPS}] Checking mathematics_engine scripts"
+    echo "[10/${STEPS}] Checking mathematics_engine scripts"
     check_engine_scripts "$MATH_DIR" "mathematics_engine"
 
-    echo "[8/${STEPS}] Building ferrite daemon"
+    echo "[11/${STEPS}] Building ferrite daemon"
     cd "$ROOT/ferrite-os"
     CUDA_PATH="${CUDA_PATH}" cargo build --release -p ferrite-daemon
 
-    echo "[9/${STEPS}] Installing ferrite command"
+    echo "[12/${STEPS}] Installing ferrite command"
   fi
 
   local INSTALL_BIN="${HOME}/.local/bin"
@@ -126,9 +155,14 @@ print_success() {
   local INSTALL_BIN="${HOME}/.local/bin"
   echo "[ok] ferrite runtime build complete (sm_${SM}, ${ARCH})"
   diag_emit "installer.build" "PASS" "INS-BLD-0004" "ferrite runtime build complete (sm_${SM}, ${ARCH})" "none"
+  echo "     modules:            sensor, vision, pipeline (always compiled)"
+  if [[ "${WITH_CAPTURE}" == "true" ]]; then
+    echo "     capture:            enabled (OpenCV camera + vision ops + draw)"
+  fi
   if [[ "${CORE_ONLY}" != "true" ]]; then
     echo "     libtorch:           ${LIBTORCH_VERSION}+${LIBTORCH_CUDA_TAG}"
     echo "     cudarc feature:     ${CUDARC_CUDA_FEATURE}"
+    echo "     external libs:      aten-ptx, candle-ptx, onnxruntime-ptx"
     echo "     finetune_engine:    ready"
     echo "     mathematics_engine: ready"
   else
@@ -137,6 +171,7 @@ print_success() {
   echo ""
   if [[ "${CORE_ONLY}" != "true" ]]; then
     echo "  Run scripts with: ./ferrite-run <script.rs> --torch"
+    echo "  Hybrid pipeline:  cargo run --release --features capture --example script_hybrid_pipeline"
   fi
   echo "  Launch the shell:  ferrite"
   echo "  Launch daemon:     ferrite-daemon"

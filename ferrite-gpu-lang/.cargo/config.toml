@@ -24,3 +24,4 @@ rustflags = [
 
 [env]
 LD_LIBRARY_PATH = { value = "../ferrite-os/lib:../external/libtorch/lib:${LD_LIBRARY_PATH}", force = false, relative = true }
+LIBTORCH = { value = "../external/libtorch", force = false, relative = true }

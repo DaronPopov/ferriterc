@@ -3,7 +3,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 
 use ptx_kernels::{GuardedBuffer, KernelContext, GuardError};
-use ptx_kernels::safe_api::{unary, binary, scan, topk};
+use ptx_kernels::safe_api::{unary, binary, scan, topk, ternary, gather, indexing, sort};
 use ptx_runtime::{GpuPtr, PtxRuntime};
 use thiserror::Error;
 
@@ -63,25 +63,58 @@ impl ValueId {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Op {
     Input { shape: Vec<usize> },
+    // ── unary activations ──
     Relu(ValueId),
     Tanh(ValueId),
     Sigmoid(ValueId),
+    Gelu(ValueId),
+    Silu(ValueId),
+    Abs(ValueId),
+    Sqrt(ValueId),
+    Exp(ValueId),
+    Log(ValueId),
+    // ── binary elementwise ──
     Add { lhs: ValueId, rhs: ValueId },
     Mul { lhs: ValueId, rhs: ValueId },
     Sub { lhs: ValueId, rhs: ValueId },
     Div { lhs: ValueId, rhs: ValueId },
+    // ── fill / broadcast ──
     FillLike { value: f64, like: ValueId },
+    // ── scan / topk ──
     CumSum { input: ValueId, dim: usize },
     TopK { input: ValueId, k: usize, dim: usize, largest: bool },
+    // ── ternary ──
+    Where { cond: ValueId, true_val: ValueId, false_val: ValueId },
+    // ── indexing ──
+    Gather { input: ValueId, indices: ValueId, dim: usize },
+    IndexSelect { input: ValueId, indices: ValueId, dim: usize },
+    ScatterAdd { input: ValueId, indices: ValueId, src: ValueId, dim: usize },
+    Argsort { input: ValueId, dim: usize, ascending: bool },
+    // ── comparison (produce f32 0.0/1.0 masks) ──
+    CmpLt { lhs: ValueId, rhs: ValueId },
+    CmpGt { lhs: ValueId, rhs: ValueId },
+    CmpLe { lhs: ValueId, rhs: ValueId },
+    CmpGe { lhs: ValueId, rhs: ValueId },
+    CmpEq { lhs: ValueId, rhs: ValueId },
+    CmpNe { lhs: ValueId, rhs: ValueId },
+    // ── reductions ──
+    ReduceSum { input: ValueId, dim: usize },
+    ReduceMean { input: ValueId, dim: usize },
+    ReduceMax { input: ValueId, dim: usize },
+    ReduceMin { input: ValueId, dim: usize },
+    Argmax { input: ValueId, dim: usize },
+    Argmin { input: ValueId, dim: usize },
+    Softmax { input: ValueId, dim: usize },
+    // ── matmul ──
+    Matmul { lhs: ValueId, rhs: ValueId },
     // ── fused ops (graph optimizer output) ─────────────────
-    /// relu(add(lhs, rhs)) — one output buffer, two kernel launches.
     FusedReluAdd { lhs: ValueId, rhs: ValueId },
-    /// relu(mul(lhs, rhs))
     FusedReluMul { lhs: ValueId, rhs: ValueId },
-    /// sigmoid(add(lhs, rhs))
     FusedSigmoidAdd { lhs: ValueId, rhs: ValueId },
-    /// tanh(add(lhs, rhs))
     FusedTanhAdd { lhs: ValueId, rhs: ValueId },
+    FusedGeluAdd { lhs: ValueId, rhs: ValueId },
+    FusedSiluAdd { lhs: ValueId, rhs: ValueId },
+    FusedSiluMul { lhs: ValueId, rhs: ValueId },
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -110,33 +143,24 @@ impl Program {
         }))
     }
 
-    pub fn relu(&mut self, x: ValueId) -> ValueId {
-        self.push(Op::Relu(x))
-    }
+    // ── unary ops ──
 
-    pub fn tanh(&mut self, x: ValueId) -> ValueId {
-        self.push(Op::Tanh(x))
-    }
+    pub fn relu(&mut self, x: ValueId) -> ValueId { self.push(Op::Relu(x)) }
+    pub fn tanh(&mut self, x: ValueId) -> ValueId { self.push(Op::Tanh(x)) }
+    pub fn sigmoid(&mut self, x: ValueId) -> ValueId { self.push(Op::Sigmoid(x)) }
+    pub fn gelu(&mut self, x: ValueId) -> ValueId { self.push(Op::Gelu(x)) }
+    pub fn silu(&mut self, x: ValueId) -> ValueId { self.push(Op::Silu(x)) }
+    pub fn abs(&mut self, x: ValueId) -> ValueId { self.push(Op::Abs(x)) }
+    pub fn sqrt(&mut self, x: ValueId) -> ValueId { self.push(Op::Sqrt(x)) }
+    pub fn exp(&mut self, x: ValueId) -> ValueId { self.push(Op::Exp(x)) }
+    pub fn log(&mut self, x: ValueId) -> ValueId { self.push(Op::Log(x)) }
 
-    pub fn sigmoid(&mut self, x: ValueId) -> ValueId {
-        self.push(Op::Sigmoid(x))
-    }
+    // ── binary ops ──
 
-    pub fn add(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId {
-        self.push(Op::Add { lhs, rhs })
-    }
-
-    pub fn mul(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId {
-        self.push(Op::Mul { lhs, rhs })
-    }
-
-    pub fn sub(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId {
-        self.push(Op::Sub { lhs, rhs })
-    }
-
-    pub fn div(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId {
-        self.push(Op::Div { lhs, rhs })
-    }
+    pub fn add(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::Add { lhs, rhs }) }
+    pub fn mul(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::Mul { lhs, rhs }) }
+    pub fn sub(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::Sub { lhs, rhs }) }
+    pub fn div(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::Div { lhs, rhs }) }
 
     pub fn fill_like(&mut self, value: f64, like: ValueId) -> ValueId {
         self.push(Op::FillLike { value, like })
@@ -146,10 +170,66 @@ impl Program {
         self.push(Op::CumSum { input, dim })
     }
 
-    /// TopK — returns the values tensor (dim-th dimension replaced by k).
     pub fn topk(&mut self, input: ValueId, k: usize, dim: usize, largest: bool) -> ValueId {
         self.push(Op::TopK { input, k, dim, largest })
     }
+
+    // ── ternary ──
+
+    pub fn where_cond(&mut self, cond: ValueId, true_val: ValueId, false_val: ValueId) -> ValueId {
+        self.push(Op::Where { cond, true_val, false_val })
+    }
+
+    // ── indexing ──
+
+    pub fn gather(&mut self, input: ValueId, indices: ValueId, dim: usize) -> ValueId {
+        self.push(Op::Gather { input, indices, dim })
+    }
+
+    pub fn index_select(&mut self, input: ValueId, indices: ValueId, dim: usize) -> ValueId {
+        self.push(Op::IndexSelect { input, indices, dim })
+    }
+
+    pub fn scatter_add(&mut self, input: ValueId, indices: ValueId, src: ValueId, dim: usize) -> ValueId {
+        self.push(Op::ScatterAdd { input, indices, src, dim })
+    }
+
+    pub fn argsort(&mut self, input: ValueId, dim: usize, ascending: bool) -> ValueId {
+        self.push(Op::Argsort { input, dim, ascending })
+    }
+
+    // ── comparison ──
+
+    pub fn cmp_lt(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::CmpLt { lhs, rhs }) }
+    pub fn cmp_gt(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::CmpGt { lhs, rhs }) }
+    pub fn cmp_le(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::CmpLe { lhs, rhs }) }
+    pub fn cmp_ge(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::CmpGe { lhs, rhs }) }
+    pub fn cmp_eq(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::CmpEq { lhs, rhs }) }
+    pub fn cmp_ne(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::CmpNe { lhs, rhs }) }
+
+    // ── reductions ──
+
+    pub fn reduce_sum(&mut self, input: ValueId, dim: usize) -> ValueId { self.push(Op::ReduceSum { input, dim }) }
+    pub fn reduce_mean(&mut self, input: ValueId, dim: usize) -> ValueId { self.push(Op::ReduceMean { input, dim }) }
+    pub fn reduce_max(&mut self, input: ValueId, dim: usize) -> ValueId { self.push(Op::ReduceMax { input, dim }) }
+    pub fn reduce_min(&mut self, input: ValueId, dim: usize) -> ValueId { self.push(Op::ReduceMin { input, dim }) }
+    pub fn argmax(&mut self, input: ValueId, dim: usize) -> ValueId { self.push(Op::Argmax { input, dim }) }
+    pub fn argmin(&mut self, input: ValueId, dim: usize) -> ValueId { self.push(Op::Argmin { input, dim }) }
+    pub fn softmax(&mut self, input: ValueId, dim: usize) -> ValueId { self.push(Op::Softmax { input, dim }) }
+
+    // ── matmul ──
+
+    pub fn matmul(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::Matmul { lhs, rhs }) }
+
+    // ── fused ops ──
+
+    pub fn fused_relu_add(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::FusedReluAdd { lhs, rhs }) }
+    pub fn fused_relu_mul(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::FusedReluMul { lhs, rhs }) }
+    pub fn fused_sigmoid_add(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::FusedSigmoidAdd { lhs, rhs }) }
+    pub fn fused_tanh_add(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::FusedTanhAdd { lhs, rhs }) }
+    pub fn fused_gelu_add(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::FusedGeluAdd { lhs, rhs }) }
+    pub fn fused_silu_add(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::FusedSiluAdd { lhs, rhs }) }
+    pub fn fused_silu_mul(&mut self, lhs: ValueId, rhs: ValueId) -> ValueId { self.push(Op::FusedSiluMul { lhs, rhs }) }
 
     pub fn set_output(&mut self, output: ValueId) {
         self.output = Some(output);
@@ -166,13 +246,16 @@ impl Program {
         let mut input_ids = Vec::new();
 
         for (i, node) in self.nodes.iter().enumerate() {
-            let (shape, numel) = match &node.op {
+            let (shape, n) = match &node.op {
                 Op::Input { shape } => {
                     validate_shape(shape)?;
                     input_ids.push(ValueId(i));
                     (shape.clone(), numel(shape))
                 }
-                Op::Relu(x) | Op::Tanh(x) | Op::Sigmoid(x) => {
+                // ── unary ops (same shape as input) ──
+                Op::Relu(x) | Op::Tanh(x) | Op::Sigmoid(x)
+                | Op::Gelu(x) | Op::Silu(x) | Op::Abs(x)
+                | Op::Sqrt(x) | Op::Exp(x) | Op::Log(x) => {
                     let shape = get_shape(&shapes, *x)?;
                     let n = numel(&shape);
                     (shape, n)
@@ -194,21 +277,31 @@ impl Program {
                     let n = numel(&shape);
                     (shape, n)
                 }
-                Op::Add { lhs, rhs }
-                | Op::Mul { lhs, rhs }
-                | Op::Sub { lhs, rhs }
-                | Op::Div { lhs, rhs }
-                | Op::FusedReluAdd { lhs, rhs }
-                | Op::FusedReluMul { lhs, rhs }
-                | Op::FusedSigmoidAdd { lhs, rhs }
-                | Op::FusedTanhAdd { lhs, rhs } => {
+                // ── binary ops (shapes must match) ──
+                Op::Add { lhs, rhs } | Op::Mul { lhs, rhs }
+                | Op::Sub { lhs, rhs } | Op::Div { lhs, rhs }
+                | Op::CmpLt { lhs, rhs } | Op::CmpGt { lhs, rhs }
+                | Op::CmpLe { lhs, rhs } | Op::CmpGe { lhs, rhs }
+                | Op::CmpEq { lhs, rhs } | Op::CmpNe { lhs, rhs }
+                | Op::FusedReluAdd { lhs, rhs } | Op::FusedReluMul { lhs, rhs }
+                | Op::FusedSigmoidAdd { lhs, rhs } | Op::FusedTanhAdd { lhs, rhs }
+                | Op::FusedGeluAdd { lhs, rhs } | Op::FusedSiluAdd { lhs, rhs }
+                | Op::FusedSiluMul { lhs, rhs } => {
                     let lhs_shape = get_shape(&shapes, *lhs)?;
                     let rhs_shape = get_shape(&shapes, *rhs)?;
                     if lhs_shape != rhs_shape {
                         let op_name = match &node.op {
-                            Op::Add { .. } | Op::FusedReluAdd { .. } | Op::FusedSigmoidAdd { .. } | Op::FusedTanhAdd { .. } => "add",
+                            Op::Add { .. } | Op::FusedReluAdd { .. }
+                            | Op::FusedSigmoidAdd { .. } | Op::FusedTanhAdd { .. }
+                            | Op::FusedGeluAdd { .. } | Op::FusedSiluAdd { .. } => "add",
                             Op::Sub { .. } => "sub",
                             Op::Div { .. } => "div",
+                            Op::CmpLt { .. } => "cmp_lt",
+                            Op::CmpGt { .. } => "cmp_gt",
+                            Op::CmpLe { .. } => "cmp_le",
+                            Op::CmpGe { .. } => "cmp_ge",
+                            Op::CmpEq { .. } => "cmp_eq",
+                            Op::CmpNe { .. } => "cmp_ne",
                             _ => "mul",
                         };
                         return Err(LangError::ShapeMismatch {
@@ -225,10 +318,99 @@ impl Program {
                     let n = numel(&shape);
                     (shape, n)
                 }
+                // ── ternary ──
+                Op::Where { cond, true_val, false_val } => {
+                    let cs = get_shape(&shapes, *cond)?;
+                    let ts = get_shape(&shapes, *true_val)?;
+                    let fs = get_shape(&shapes, *false_val)?;
+                    if cs != ts || ts != fs {
+                        return Err(LangError::ShapeMismatch {
+                            op: "where",
+                            left: ts,
+                            right: fs,
+                        });
+                    }
+                    let n = numel(&cs);
+                    (cs, n)
+                }
+                // ── indexing ──
+                Op::Gather { indices, .. } => {
+                    // Output shape = indices shape
+                    let shape = get_shape(&shapes, *indices)?;
+                    let n = numel(&shape);
+                    (shape, n)
+                }
+                Op::IndexSelect { input, indices, dim } => {
+                    let mut shape = get_shape(&shapes, *input)?;
+                    let idx_shape = get_shape(&shapes, *indices)?;
+                    if *dim < shape.len() {
+                        shape[*dim] = idx_shape.iter().product();
+                    }
+                    let n = numel(&shape);
+                    (shape, n)
+                }
+                Op::ScatterAdd { input, .. } => {
+                    // Output shape = input shape
+                    let shape = get_shape(&shapes, *input)?;
+                    let n = numel(&shape);
+                    (shape, n)
+                }
+                Op::Argsort { input, .. } => {
+                    // Output shape = input shape (contains indices)
+                    let shape = get_shape(&shapes, *input)?;
+                    let n = numel(&shape);
+                    (shape, n)
+                }
+                // ── reductions ──
+                Op::ReduceSum { input, dim } | Op::ReduceMean { input, dim }
+                | Op::ReduceMax { input, dim } | Op::ReduceMin { input, dim }
+                | Op::Argmax { input, dim } | Op::Argmin { input, dim } => {
+                    let inp_shape = get_shape(&shapes, *input)?;
+                    if *dim >= inp_shape.len() {
+                        return Err(LangError::InvalidNodeRef(*dim));
+                    }
+                    let mut shape: Vec<usize> = inp_shape.iter().enumerate()
+                        .filter(|(idx, _)| *idx != *dim)
+                        .map(|(_, &d)| d)
+                        .collect();
+                    if shape.is_empty() {
+                        shape.push(1);
+                    }
+                    let n = numel(&shape);
+                    (shape, n)
+                }
+                Op::Softmax { input, .. } => {
+                    // Softmax preserves shape
+                    let shape = get_shape(&shapes, *input)?;
+                    let n = numel(&shape);
+                    (shape, n)
+                }
+                // ── matmul ──
+                Op::Matmul { lhs, rhs } => {
+                    let l = get_shape(&shapes, *lhs)?;
+                    let r = get_shape(&shapes, *rhs)?;
+                    if l.len() != 2 || r.len() != 2 {
+                        return Err(LangError::ShapeMismatch {
+                            op: "matmul",
+                            left: l,
+                            right: r,
+                        });
+                    }
+                    if l[1] != r[0] {
+                        return Err(LangError::ShapeMismatch {
+                            op: "matmul",
+                            left: l,
+                            right: r,
+                        });
+                    }
+                    let shape = vec![l[0], r[1]];
+                    let n = numel(&shape);
+                    (shape, n)
+                }
             };
 
             shapes.push(shape);
-            numels.push(numel);
+            numels.push(n);
         }
 
         Ok(CompiledProgram {
@@ -240,7 +422,7 @@ impl Program {
         })
     }
 
-    fn push(&mut self, op: Op) -> ValueId {
+    pub(crate) fn push(&mut self, op: Op) -> ValueId {
         let id = ValueId(self.nodes.len());
         self.nodes.push(Node { op });
         id
@@ -274,22 +456,18 @@ impl CompiledProgram {
         &self.shapes[self.output.index()]
     }
 
-    /// Number of nodes in the computation graph.
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
-    /// Total elements across all intermediate tensors.
     pub fn total_elements(&self) -> usize {
         self.numels.iter().sum()
     }
 
-    /// Number of input tensors.
     pub fn input_count(&self) -> usize {
         self.input_ids.len()
     }
 
-    /// Summary of operations in the graph: op name → count.
     pub fn op_summary(&self) -> Vec<(&'static str, usize)> {
         let mut counts = std::collections::HashMap::new();
         for node in &self.nodes {
@@ -298,6 +476,12 @@ impl CompiledProgram {
                 Op::Relu(_) => "relu",
                 Op::Tanh(_) => "tanh",
                 Op::Sigmoid(_) => "sigmoid",
+                Op::Gelu(_) => "gelu",
+                Op::Silu(_) => "silu",
+                Op::Abs(_) => "abs",
+                Op::Sqrt(_) => "sqrt",
+                Op::Exp(_) => "exp",
+                Op::Log(_) => "log",
                 Op::Add { .. } => "add",
                 Op::Mul { .. } => "mul",
                 Op::Sub { .. } => "sub",
@@ -305,10 +489,32 @@ impl CompiledProgram {
                 Op::FillLike { .. } => "fill_like",
                 Op::CumSum { .. } => "cumsum",
                 Op::TopK { .. } => "topk",
+                Op::Where { .. } => "where",
+                Op::Gather { .. } => "gather",
+                Op::IndexSelect { .. } => "index_select",
+                Op::ScatterAdd { .. } => "scatter_add",
+                Op::Argsort { .. } => "argsort",
+                Op::CmpLt { .. } => "cmp_lt",
+                Op::CmpGt { .. } => "cmp_gt",
+                Op::CmpLe { .. } => "cmp_le",
+                Op::CmpGe { .. } => "cmp_ge",
+                Op::CmpEq { .. } => "cmp_eq",
+                Op::CmpNe { .. } => "cmp_ne",
+                Op::ReduceSum { .. } => "reduce_sum",
+                Op::ReduceMean { .. } => "reduce_mean",
+                Op::ReduceMax { .. } => "reduce_max",
+                Op::ReduceMin { .. } => "reduce_min",
+                Op::Argmax { .. } => "argmax",
+                Op::Argmin { .. } => "argmin",
+                Op::Softmax { .. } => "softmax",
+                Op::Matmul { .. } => "matmul",
                 Op::FusedReluAdd { .. } => "fused_relu_add",
                 Op::FusedReluMul { .. } => "fused_relu_mul",
                 Op::FusedSigmoidAdd { .. } => "fused_sigmoid_add",
                 Op::FusedTanhAdd { .. } => "fused_tanh_add",
+                Op::FusedGeluAdd { .. } => "fused_gelu_add",
+                Op::FusedSiluAdd { .. } => "fused_silu_add",
+                Op::FusedSiluMul { .. } => "fused_silu_mul",
             };
             *counts.entry(name).or_insert(0usize) += 1;
         }
@@ -358,7 +564,6 @@ impl GpuLangRuntime {
             abi_version: ptx_runtime::PTX_STABLE_ABI_VERSION,
             flags: 0,
             device_id,
-            // Use a conservative default so runtime init succeeds even when VRAM is contested.
             pool_fraction: 0.70,
             fixed_pool_size: 0,
             reserve_vram: 256 * 1024 * 1024,
@@ -439,7 +644,6 @@ impl GpuLangRuntime {
         let ctx = KernelContext::new(runtime_ptr, stream.raw())?;
 
         let mut slots: Vec<Option<GpuPtr>> = (0..program.nodes.len()).map(|_| None).collect();
-        // Scratch buffers that must survive until stream.synchronize().
         let mut scratch: Vec<GpuPtr> = Vec::new();
         let mut input_data_map: HashMap<usize, &HostTensor> = HashMap::new();
         for (i, id) in program.input_ids.iter().enumerate() {
@@ -461,10 +665,10 @@ impl GpuLangRuntime {
                     }
                     gpu
                 }
+
+                // ── unary activations ──
                 Op::Relu(x) => {
-                    let inp = slots[x.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(x.index()))?;
+                    let inp = get_slot(&slots, *x)?;
                     let out = self.runtime.alloc(bytes)?;
                     let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
                     let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
@@ -472,9 +676,7 @@ impl GpuLangRuntime {
                     out
                 }
                 Op::Tanh(x) => {
-                    let inp = slots[x.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(x.index()))?;
+                    let inp = get_slot(&slots, *x)?;
                     let out = self.runtime.alloc(bytes)?;
                     let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
                     let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
@@ -482,71 +684,84 @@ impl GpuLangRuntime {
                     out
                 }
                 Op::Sigmoid(x) => {
-                    let inp = slots[x.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(x.index()))?;
+                    let inp = get_slot(&slots, *x)?;
                     let out = self.runtime.alloc(bytes)?;
                     let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
                     let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
                     unary::sigmoid(&ig, &og, numel, &ctx)?;
                     out
                 }
-                Op::Add { lhs, rhs } => {
-                    let l = slots[lhs.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(lhs.index()))?;
-                    let r = slots[rhs.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(rhs.index()))?;
+                Op::Gelu(x) => {
+                    let inp = get_slot(&slots, *x)?;
                     let out = self.runtime.alloc(bytes)?;
-                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
-                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
                     let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
-                    binary::add(&lg, &rg, &og, numel, &ctx)?;
+                    unary::gelu(&ig, &og, numel, &ctx)?;
+                    out
+                }
+                Op::Silu(x) => {
+                    let inp = get_slot(&slots, *x)?;
+                    let out = self.runtime.alloc(bytes)?;
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    unary::silu(&ig, &og, numel, &ctx)?;
+                    out
+                }
+                Op::Abs(x) => {
+                    let inp = get_slot(&slots, *x)?;
+                    let out = self.runtime.alloc(bytes)?;
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    unary::abs(&ig, &og, numel, &ctx)?;
+                    out
+                }
+                Op::Sqrt(x) => {
+                    let inp = get_slot(&slots, *x)?;
+                    let out = self.runtime.alloc(bytes)?;
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    unary::sqrt(&ig, &og, numel, &ctx)?;
+                    out
+                }
+                Op::Exp(x) => {
+                    let inp = get_slot(&slots, *x)?;
+                    let out = self.runtime.alloc(bytes)?;
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    unary::exp(&ig, &og, numel, &ctx)?;
+                    out
+                }
+                Op::Log(x) => {
+                    let inp = get_slot(&slots, *x)?;
+                    let out = self.runtime.alloc(bytes)?;
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    unary::log(&ig, &og, numel, &ctx)?;
+                    out
+                }
+
+                // ── binary elementwise ──
+                Op::Add { lhs, rhs } => {
+                    let (l, r, og, out) = alloc_binary(&self.runtime, &slots, *lhs, *rhs, bytes, runtime_ptr)?;
+                    binary::add(&l, &r, &og, numel, &ctx)?;
                     out
                 }
                 Op::Mul { lhs, rhs } => {
-                    let l = slots[lhs.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(lhs.index()))?;
-                    let r = slots[rhs.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(rhs.index()))?;
-                    let out = self.runtime.alloc(bytes)?;
-                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
-                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
-                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
-                    binary::mul(&lg, &rg, &og, numel, &ctx)?;
+                    let (l, r, og, out) = alloc_binary(&self.runtime, &slots, *lhs, *rhs, bytes, runtime_ptr)?;
+                    binary::mul(&l, &r, &og, numel, &ctx)?;
                     out
                 }
                 Op::Sub { lhs, rhs } => {
-                    let l = slots[lhs.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(lhs.index()))?;
-                    let r = slots[rhs.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(rhs.index()))?;
-                    let out = self.runtime.alloc(bytes)?;
-                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
-                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
-                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
-                    binary::sub(&lg, &rg, &og, numel, &ctx)?;
+                    let (l, r, og, out) = alloc_binary(&self.runtime, &slots, *lhs, *rhs, bytes, runtime_ptr)?;
+                    binary::sub(&l, &r, &og, numel, &ctx)?;
                     out
                 }
                 Op::Div { lhs, rhs } => {
-                    let l = slots[lhs.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(lhs.index()))?;
-                    let r = slots[rhs.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(rhs.index()))?;
-                    let out = self.runtime.alloc(bytes)?;
-                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
-                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
-                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
-                    binary::div(&lg, &rg, &og, numel, &ctx)?;
+                    let (l, r, og, out) = alloc_binary(&self.runtime, &slots, *lhs, *rhs, bytes, runtime_ptr)?;
+                    binary::div(&l, &r, &og, numel, &ctx)?;
                     out
                 }
+
                 Op::FillLike { value, .. } => {
                     let out = self.runtime.alloc(bytes)?;
                     let host = vec![*value as f32; numel];
@@ -555,10 +770,9 @@ impl GpuLangRuntime {
                     }
                     out
                 }
+
                 Op::CumSum { input, dim } => {
-                    let inp = slots[input.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(input.index()))?;
+                    let inp = get_slot(&slots, *input)?;
                     let shape = &program.shapes[i];
                     let outer: usize = shape[..*dim].iter().product();
                     let dim_size = shape[*dim];
@@ -570,72 +784,276 @@ impl GpuLangRuntime {
                     out
                 }
                 Op::TopK { input, k, dim, largest } => {
-                    let inp = slots[input.index()]
-                        .as_ref()
-                        .ok_or(LangError::InvalidNodeRef(input.index()))?;
-                    // Input shape is needed to compute outer/dim_size/inner.
-                    // The compile step stored the output shape (with dim replaced by k),
-                    // so we need to recover the original dim_size from the input.
+                    let inp = get_slot(&slots, *input)?;
                     let inp_shape = &program.shapes[input.index()];
                     let outer: usize = inp_shape[..*dim].iter().product();
                     let dim_size = inp_shape[*dim];
                     let inner: usize = inp_shape[*dim + 1..].iter().product();
                     let out = self.runtime.alloc(bytes)?;
-                    // Safe API requires a real indices buffer; allocate scratch.
                     let idx_bytes = numel * std::mem::size_of::<i32>();
                     let idx_buf = self.runtime.alloc(idx_bytes)?;
                     let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
                     let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
                     let idxg = unsafe { GuardedBuffer::new(idx_buf.as_ptr(), idx_buf.size(), runtime_ptr)? };
                     topk::topk(&ig, &og, &idxg, outer, dim_size, inner, *k, *largest, &ctx)?;
-                    // Keep idx_buf alive until stream sync.
                     scratch.push(idx_buf);
                     out
                 }
 
-                // ── fused ops: binary + unary in one buffer ──
-                Op::FusedReluAdd { lhs, rhs } => {
-                    let l = slots[lhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(lhs.index()))?;
-                    let r = slots[rhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(rhs.index()))?;
+                // ── ternary: where ──
+                Op::Where { cond, true_val, false_val } => {
+                    let cond_ptr = get_slot(&slots, *cond)?;
+                    let true_ptr = get_slot(&slots, *true_val)?;
+                    let false_ptr = get_slot(&slots, *false_val)?;
                     let out = self.runtime.alloc(bytes)?;
-                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
-                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
+
+                    // Convert f32 cond to u8: non-zero -> 255, zero -> 0
+                    let cond_u8_bytes = numel;
+                    let cond_u8 = self.runtime.alloc(cond_u8_bytes)?;
+                    {
+                        let mut host_f32 = vec![0.0f32; numel];
+                        unsafe {
+                            cond_ptr.copy_to_host(host_f32.as_mut_ptr() as *mut c_void, bytes)?;
+                        }
+                        let host_u8: Vec<u8> = host_f32.iter().map(|&v| if v != 0.0 { 255u8 } else { 0u8 }).collect();
+                        unsafe {
+                            cond_u8.copy_from_host(host_u8.as_ptr() as *const c_void, cond_u8_bytes)?;
+                        }
+                    }
+
+                    let cg = unsafe { GuardedBuffer::new(cond_u8.as_ptr(), cond_u8.size(), runtime_ptr)? };
+                    let tg = unsafe { GuardedBuffer::new(true_ptr.as_ptr(), true_ptr.size(), runtime_ptr)? };
+                    let fg = unsafe { GuardedBuffer::new(false_ptr.as_ptr(), false_ptr.size(), runtime_ptr)? };
                     let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
-                    binary::add(&lg, &rg, &og, numel, &ctx)?;
+                    ternary::where_cond(&cg, &tg, &fg, &og, numel, &ctx)?;
+                    scratch.push(cond_u8);
+                    out
+                }
+
+                // ── indexing ──
+                Op::Gather { input, indices, dim } => {
+                    let inp = get_slot(&slots, *input)?;
+                    let idx = get_slot(&slots, *indices)?;
+                    let inp_shape = &program.shapes[input.index()];
+                    let idx_shape = &program.shapes[indices.index()];
+                    let outer: usize = inp_shape[..*dim].iter().product();
+                    let input_dim_size = inp_shape[*dim];
+                    let idx_dim_size = idx_shape[*dim];
+                    let inner: usize = inp_shape[*dim + 1..].iter().product();
+                    let out = self.runtime.alloc(bytes)?;
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let idxg = unsafe { GuardedBuffer::new(idx.as_ptr(), idx.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    gather::gather(&ig, &idxg, &og, outer, input_dim_size, idx_dim_size, inner, &ctx)?;
+                    out
+                }
+                Op::IndexSelect { input, indices, dim } => {
+                    let inp = get_slot(&slots, *input)?;
+                    let idx = get_slot(&slots, *indices)?;
+                    let inp_shape = &program.shapes[input.index()];
+                    let idx_numel: usize = program.shapes[indices.index()].iter().product();
+                    let left_size: usize = inp_shape[..*dim].iter().product();
+                    let src_dim_size = inp_shape[*dim];
+                    let right_size: usize = inp_shape[*dim + 1..].iter().product();
+                    let out = self.runtime.alloc(bytes)?;
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let idxg = unsafe { GuardedBuffer::new(idx.as_ptr(), idx.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    indexing::index_select(&ig, &idxg, &og, left_size, src_dim_size, idx_numel, right_size, &ctx)?;
+                    out
+                }
+                Op::ScatterAdd { input, indices, src, dim } => {
+                    let inp = get_slot(&slots, *input)?;
+                    let idx = get_slot(&slots, *indices)?;
+                    let src_ptr = get_slot(&slots, *src)?;
+                    let inp_shape = &program.shapes[input.index()];
+                    let src_shape = &program.shapes[src.index()];
+                    let left_size: usize = src_shape[..*dim].iter().product();
+                    let src_dim_size = src_shape[*dim];
+                    let dst_dim_size = inp_shape[*dim];
+                    let right_size: usize = src_shape[*dim + 1..].iter().product();
+
+                    // Copy input to output first (scatter_add accumulates into output)
+                    let out = self.runtime.alloc(bytes)?;
+                    out.copy_from_device(inp)?;
+                    let idxg = unsafe { GuardedBuffer::new(idx.as_ptr(), idx.size(), runtime_ptr)? };
+                    let sg = unsafe { GuardedBuffer::new(src_ptr.as_ptr(), src_ptr.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    indexing::scatter_add(&idxg, &sg, &og, left_size, src_dim_size, dst_dim_size, right_size, &ctx)?;
+                    out
+                }
+                Op::Argsort { input, dim, ascending } => {
+                    let inp = get_slot(&slots, *input)?;
+                    let inp_shape = &program.shapes[input.index()];
+                    let nrows: usize = inp_shape[..*dim].iter().product();
+                    let ncols = inp_shape[*dim];
+                    let out = self.runtime.alloc(bytes)?;
+                    let ig = unsafe { GuardedBuffer::new(inp.as_ptr(), inp.size(), runtime_ptr)? };
+                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+                    sort::argsort(&ig, &og, nrows, ncols, *ascending, &ctx)?;
+                    out
+                }
+
+                // ── comparison ops: TLSF staging → cpu_kernels ──
+                Op::CmpLt { lhs, rhs } => {
+                    let l = download_to_tlsf(get_slot(&slots, *lhs)?, numel)?;
+                    let r = download_to_tlsf(get_slot(&slots, *rhs)?, numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::cmp_lt(l.as_f32_slice(numel), r.as_f32_slice(numel), out_buf.as_f32_mut_slice(numel));
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+                Op::CmpGt { lhs, rhs } => {
+                    let l = download_to_tlsf(get_slot(&slots, *lhs)?, numel)?;
+                    let r = download_to_tlsf(get_slot(&slots, *rhs)?, numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::cmp_gt(l.as_f32_slice(numel), r.as_f32_slice(numel), out_buf.as_f32_mut_slice(numel));
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+                Op::CmpLe { lhs, rhs } => {
+                    let l = download_to_tlsf(get_slot(&slots, *lhs)?, numel)?;
+                    let r = download_to_tlsf(get_slot(&slots, *rhs)?, numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::cmp_le(l.as_f32_slice(numel), r.as_f32_slice(numel), out_buf.as_f32_mut_slice(numel));
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+                Op::CmpGe { lhs, rhs } => {
+                    let l = download_to_tlsf(get_slot(&slots, *lhs)?, numel)?;
+                    let r = download_to_tlsf(get_slot(&slots, *rhs)?, numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::cmp_ge(l.as_f32_slice(numel), r.as_f32_slice(numel), out_buf.as_f32_mut_slice(numel));
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+                Op::CmpEq { lhs, rhs } => {
+                    let l = download_to_tlsf(get_slot(&slots, *lhs)?, numel)?;
+                    let r = download_to_tlsf(get_slot(&slots, *rhs)?, numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::cmp_eq(l.as_f32_slice(numel), r.as_f32_slice(numel), out_buf.as_f32_mut_slice(numel));
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+                Op::CmpNe { lhs, rhs } => {
+                    let l = download_to_tlsf(get_slot(&slots, *lhs)?, numel)?;
+                    let r = download_to_tlsf(get_slot(&slots, *rhs)?, numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::cmp_ne(l.as_f32_slice(numel), r.as_f32_slice(numel), out_buf.as_f32_mut_slice(numel));
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+
+                // ── reductions: TLSF staging → cpu_kernels ──
+                // With `torch` feature: libtorch MKL/OpenBLAS vectorized ops.
+                // Without: simple Rust loops. Either way, all staging via TLSF.
+                Op::ReduceSum { input, dim } => {
+                    let inp_shape = &program.shapes[input.index()];
+                    let inp_numel = program.numels[input.index()];
+                    let inp_buf = download_to_tlsf(get_slot(&slots, *input)?, inp_numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::reduce_sum(inp_buf.as_f32_slice(inp_numel), out_buf.as_f32_mut_slice(numel), inp_shape, *dim);
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+                Op::ReduceMean { input, dim } => {
+                    let inp_shape = &program.shapes[input.index()];
+                    let inp_numel = program.numels[input.index()];
+                    let inp_buf = download_to_tlsf(get_slot(&slots, *input)?, inp_numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::reduce_mean(inp_buf.as_f32_slice(inp_numel), out_buf.as_f32_mut_slice(numel), inp_shape, *dim);
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+                Op::ReduceMax { input, dim } => {
+                    let inp_shape = &program.shapes[input.index()];
+                    let inp_numel = program.numels[input.index()];
+                    let inp_buf = download_to_tlsf(get_slot(&slots, *input)?, inp_numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::reduce_max(inp_buf.as_f32_slice(inp_numel), out_buf.as_f32_mut_slice(numel), inp_shape, *dim);
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+                Op::ReduceMin { input, dim } => {
+                    let inp_shape = &program.shapes[input.index()];
+                    let inp_numel = program.numels[input.index()];
+                    let inp_buf = download_to_tlsf(get_slot(&slots, *input)?, inp_numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::reduce_min(inp_buf.as_f32_slice(inp_numel), out_buf.as_f32_mut_slice(numel), inp_shape, *dim);
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+                Op::Argmax { input, dim } => {
+                    let inp_shape = &program.shapes[input.index()];
+                    let inp_numel = program.numels[input.index()];
+                    let inp_buf = download_to_tlsf(get_slot(&slots, *input)?, inp_numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::argmax(inp_buf.as_f32_slice(inp_numel), out_buf.as_f32_mut_slice(numel), inp_shape, *dim);
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+                Op::Argmin { input, dim } => {
+                    let inp_shape = &program.shapes[input.index()];
+                    let inp_numel = program.numels[input.index()];
+                    let inp_buf = download_to_tlsf(get_slot(&slots, *input)?, inp_numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::argmin(inp_buf.as_f32_slice(inp_numel), out_buf.as_f32_mut_slice(numel), inp_shape, *dim);
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+                Op::Softmax { input, dim } => {
+                    let inp_shape = &program.shapes[input.index()];
+                    let inp_numel = program.numels[input.index()];
+                    let inp_buf = download_to_tlsf(get_slot(&slots, *input)?, inp_numel)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::softmax(inp_buf.as_f32_slice(inp_numel), out_buf.as_f32_mut_slice(numel), inp_shape, *dim);
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(numel))?
+                }
+
+                // ── matmul: TLSF staging → cpu_kernels ──
+                Op::Matmul { lhs, rhs } => {
+                    let l_shape = &program.shapes[lhs.index()];
+                    let r_shape = &program.shapes[rhs.index()];
+                    let m = l_shape[0];
+                    let k = l_shape[1];
+                    let n = r_shape[1];
+
+                    let l_buf = download_to_tlsf(get_slot(&slots, *lhs)?, m * k)?;
+                    let r_buf = download_to_tlsf(get_slot(&slots, *rhs)?, k * n)?;
+                    let mut out_buf = TlsfBuf::new(bytes)?;
+                    cpu_kernels::matmul(l_buf.as_f32_slice(m * k), r_buf.as_f32_slice(k * n), out_buf.as_f32_mut_slice(m * n), m, k, n);
+                    upload_from_slice(&self.runtime, out_buf.as_f32_slice(m * n))?
+                }
+
+                // ── fused ops ──
+                Op::FusedReluAdd { lhs, rhs } => {
+                    let (l, r, og, out) = alloc_binary(&self.runtime, &slots, *lhs, *rhs, bytes, runtime_ptr)?;
+                    binary::add(&l, &r, &og, numel, &ctx)?;
                     unary::relu(&og, &og, numel, &ctx)?;
                     out
                 }
                 Op::FusedReluMul { lhs, rhs } => {
-                    let l = slots[lhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(lhs.index()))?;
-                    let r = slots[rhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(rhs.index()))?;
-                    let out = self.runtime.alloc(bytes)?;
-                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
-                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
-                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
-                    binary::mul(&lg, &rg, &og, numel, &ctx)?;
+                    let (l, r, og, out) = alloc_binary(&self.runtime, &slots, *lhs, *rhs, bytes, runtime_ptr)?;
+                    binary::mul(&l, &r, &og, numel, &ctx)?;
                     unary::relu(&og, &og, numel, &ctx)?;
                     out
                 }
                 Op::FusedSigmoidAdd { lhs, rhs } => {
-                    let l = slots[lhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(lhs.index()))?;
-                    let r = slots[rhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(rhs.index()))?;
-                    let out = self.runtime.alloc(bytes)?;
-                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
-                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
-                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
-                    binary::add(&lg, &rg, &og, numel, &ctx)?;
+                    let (l, r, og, out) = alloc_binary(&self.runtime, &slots, *lhs, *rhs, bytes, runtime_ptr)?;
+                    binary::add(&l, &r, &og, numel, &ctx)?;
                     unary::sigmoid(&og, &og, numel, &ctx)?;
                     out
                 }
                 Op::FusedTanhAdd { lhs, rhs } => {
-                    let l = slots[lhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(lhs.index()))?;
-                    let r = slots[rhs.index()].as_ref().ok_or(LangError::InvalidNodeRef(rhs.index()))?;
-                    let out = self.runtime.alloc(bytes)?;
-                    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
-                    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
-                    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
-                    binary::add(&lg, &rg, &og, numel, &ctx)?;
+                    let (l, r, og, out) = alloc_binary(&self.runtime, &slots, *lhs, *rhs, bytes, runtime_ptr)?;
+                    binary::add(&l, &r, &og, numel, &ctx)?;
                     unary::tanh(&og, &og, numel, &ctx)?;
+                    out
+                }
+                Op::FusedGeluAdd { lhs, rhs } => {
+                    let (l, r, og, out) = alloc_binary(&self.runtime, &slots, *lhs, *rhs, bytes, runtime_ptr)?;
+                    binary::add(&l, &r, &og, numel, &ctx)?;
+                    unary::gelu(&og, &og, numel, &ctx)?;
+                    out
+                }
+                Op::FusedSiluAdd { lhs, rhs } => {
+                    let (l, r, og, out) = alloc_binary(&self.runtime, &slots, *lhs, *rhs, bytes, runtime_ptr)?;
+                    binary::add(&l, &r, &og, numel, &ctx)?;
+                    unary::silu(&og, &og, numel, &ctx)?;
+                    out
+                }
+                Op::FusedSiluMul { lhs, rhs } => {
+                    let (l, r, og, out) = alloc_binary(&self.runtime, &slots, *lhs, *rhs, bytes, runtime_ptr)?;
+                    binary::mul(&l, &r, &og, numel, &ctx)?;
+                    unary::silu(&og, &og, numel, &ctx)?;
                     out
                 }
             };
@@ -666,6 +1084,85 @@ impl GpuLangRuntime {
     }
 }
 
+// ── Execution helpers ──────────────────────────────────────────
+
+fn get_slot(slots: &[Option<GpuPtr>], id: ValueId) -> Result<&GpuPtr> {
+    slots[id.index()].as_ref().ok_or(LangError::InvalidNodeRef(id.index()))
+}
+
+fn alloc_binary(
+    runtime: &PtxRuntime,
+    slots: &[Option<GpuPtr>],
+    lhs: ValueId,
+    rhs: ValueId,
+    bytes: usize,
+    runtime_ptr: *mut ptx_sys::GPUHotRuntime,
+) -> Result<(GuardedBuffer, GuardedBuffer, GuardedBuffer, GpuPtr)> {
+    let l = get_slot(slots, lhs)?;
+    let r = get_slot(slots, rhs)?;
+    let out = runtime.alloc(bytes)?;
+    let lg = unsafe { GuardedBuffer::new(l.as_ptr(), l.size(), runtime_ptr)? };
+    let rg = unsafe { GuardedBuffer::new(r.as_ptr(), r.size(), runtime_ptr)? };
+    let og = unsafe { GuardedBuffer::new(out.as_ptr(), out.size(), runtime_ptr)? };
+    Ok((lg, rg, og, out))
+}
+
+// ── TLSF scratch buffer (RAII) ────────────────────────────────
+
+/// A CPU scratch buffer backed by the global TLSF pool.
+/// Automatically returns memory to the pool on drop.
+struct TlsfBuf {
+    ptr: std::ptr::NonNull<u8>,
+    bytes: usize,
+    align: usize,
+}
+
+impl TlsfBuf {
+    fn new(bytes: usize) -> Result<Self> {
+        let align = std::mem::align_of::<f32>();
+        let ptr = runtime::cpu_tlsf::global_cpu_tlsf()
+            .allocate(bytes.max(4), align)?;
+        Ok(Self { ptr, bytes, align })
+    }
+
+    fn as_f32_slice(&self, numel: usize) -> &[f32] {
+        unsafe { std::slice::from_raw_parts(self.ptr.cast::<f32>().as_ptr(), numel) }
+    }
+
+    fn as_f32_mut_slice(&mut self, numel: usize) -> &mut [f32] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.cast::<f32>().as_ptr(), numel) }
+    }
+
+    fn as_void_ptr(&self) -> *mut c_void {
+        self.ptr.as_ptr() as *mut c_void
+    }
+}
+
+impl Drop for TlsfBuf {
+    fn drop(&mut self) {
+        let _ = unsafe {
+            runtime::cpu_tlsf::global_cpu_tlsf()
+                .deallocate(self.ptr, self.bytes, self.align)
+        };
+    }
+}
+
+/// Download GPU slot to a TLSF-backed host buffer.
+fn download_to_tlsf(gpu: &GpuPtr, numel: usize) -> Result<TlsfBuf> {
+    let bytes = numel * std::mem::size_of::<f32>();
+    let buf = TlsfBuf::new(bytes)?;
+    unsafe { gpu.copy_to_host(buf.as_void_ptr(), bytes)?; }
+    Ok(buf)
+}
+
+/// Upload a host f32 slice to a new GPU allocation.
+fn upload_from_slice(runtime: &PtxRuntime, data: &[f32]) -> Result<GpuPtr> {
+    let bytes = data.len() * std::mem::size_of::<f32>();
+    let out = runtime.alloc(bytes)?;
+    unsafe { out.copy_from_host(data.as_ptr() as *const c_void, bytes)?; }
+    Ok(out)
+}
+
 fn get_shape(shapes: &[Vec<usize>], id: ValueId) -> Result<Vec<usize>> {
     shapes
         .get(id.index())
@@ -690,6 +1187,12 @@ pub use ferrite_apps as apps;
 
 pub mod runtime;
 pub mod jit;
+mod cpu_kernels;
+
+// Always available (no feature gate for traits/types):
+pub mod sensor;
+pub mod vision;
+pub mod pipeline;
 
 #[cfg(feature = "torch")]
 pub mod torch;
@@ -698,9 +1201,6 @@ pub mod torch;
 pub mod capture;
 
 // ── Backwards-compatible module re-exports ───────────────────────
-//
-// Existing code using `ferrite_gpu_lang::context::*`,
-// `ferrite_gpu_lang::tensor::*`, etc. continues to work.
 
 pub use runtime::context;
 pub use runtime::cpu_tlsf;
@@ -720,6 +1220,26 @@ pub use runtime::context::{cpu, gpu, fer, CpuCtx, FerCtx, FerStats, GpuCtx, HasA
 pub use runtime::context::{gpu_anyhow, fer_anyhow};
 pub use runtime::cpu_tlsf::CpuTlsfStats;
 pub use runtime::tensor::{CpuTensor, GpuTensor, ToCpu, ToGpu};
+
+// ── Sensor re-exports ────────────────────────────────────────────
+
+pub use sensor::{SensorStream, Stamped, SensorInfo, SensorClock, CaptureThread};
+#[cfg(feature = "capture")]
+pub use sensor::CameraAdapter;
+
+// ── Vision re-exports ────────────────────────────────────────────
+
+pub use vision::{BoundingBox, Detection, Track, Tracker, TrackerConfig, nms};
+#[cfg(feature = "capture")]
+pub use vision::ops::{resize, crop, letterbox, convert_format};
+#[cfg(feature = "capture")]
+pub use vision::draw::{draw_bbox, draw_detections, draw_tracks};
+
+// ── Pipeline re-exports ──────────────────────────────────────────
+
+pub use pipeline::{RingBuffer, SharedRing, Stage, StageMetrics, PipelineStats};
+
+// ── Capture re-exports ───────────────────────────────────────────
 
 #[cfg(feature = "capture")]
 pub use capture::camera::{Camera, CameraConfig, CameraSource};
