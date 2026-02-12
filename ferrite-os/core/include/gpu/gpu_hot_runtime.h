@@ -25,7 +25,9 @@ extern "C" {
 #define GPU_HOT_MAX_NAMED_SEGMENTS  256
 #define GPU_HOT_MAX_NAME_LEN        64
 #define GPU_HOT_DEFAULT_VRAM_PERCENT 70.0f
-#define GPU_HOT_IPC_KEY             "/ptx_os_global_v1"
+#define GPU_HOT_IPC_KEY_PREFIX      "/ptx_os_"
+#define GPU_HOT_IPC_KEY_SUFFIX      "_v1"
+#define GPU_HOT_IPC_KEY_MAX_LEN     64
 
 // TLSF Allocator Configuration
 // FL_INDEX_MAX = 34 supports up to 2^34 = 16GB single allocations

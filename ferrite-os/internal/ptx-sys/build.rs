@@ -49,17 +49,20 @@ fn main() {
 
     // Always emit PTX-OS runtime linkage so stale Cargo build-script cache never
     // drops -lptx_os from downstream links. Missing files should fail loudly.
-    println!("cargo:rustc-link-lib=dylib=ptx_os");
-    if verbose {
-        if lib_dir.join("libptx_os.so").exists() {
-            println!("cargo:warning=Found libptx_os.so");
-        } else {
-            println!(
-                "cargo:warning=libptx_os.so not found at {} - run 'make all' in ferrite-os",
-                lib_dir.display()
-            );
-        }
+    if !lib_dir.join("libptx_os.so").exists() {
+        panic!(
+            "\n\n\
+             ============================================================\n\
+             ERROR: libptx_os.so not found at {}\n\n\
+             The Ferrite-OS C/CUDA runtime must be built before Rust crates.\n\
+             Run one of:\n\
+               ./install.sh              (full automated install)\n\
+               cd ferrite-os && make all (manual C/CUDA build)\n\
+             ============================================================\n",
+            lib_dir.display()
+        );
     }
+    println!("cargo:rustc-link-lib=dylib=ptx_os");
     println!("cargo:rustc-link-lib=dylib=cudart");
     println!("cargo:rustc-link-lib=dylib=cublas");
 

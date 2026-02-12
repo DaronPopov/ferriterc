@@ -17,13 +17,13 @@ pid_file = "/var/run/ferrite-os/daemon.pid"
 # Maximum concurrent client connections (default: 32)
 max_clients = 32
 
-# Maximum CUDA streams (default: 16)
-# Increase for higher parallelism (e.g., 64, 128, 1024)
-max_streams = 16
+# Maximum CUDA streams (default: 128)
+# Increase for higher parallelism (e.g., 256, 512, 1024)
+max_streams = 128
 
-# VRAM pool fraction (0.0 to 1.0, default: 0.6)
+# VRAM pool fraction (0.0 to 1.0, default: 0.25)
 # Fraction of available VRAM to use for memory pool
-pool_fraction = 0.6
+pool_fraction = 0.25
 
 # Keepalive interval in milliseconds (default: 5000)
 # How often to send keepalive signal to GPU kernel
@@ -64,3 +64,19 @@ headless = false
 # GPU device name for TUI header display (default: "GPU {id}")
 # Set via FERRITE_GPU_NAME env var or nvidia-smi
 # gpu_name = "RTX 3070"
+
+# ─── Scheduler ───
+[scheduler]
+# policy = "fair-share"
+# max_queued_jobs = 4096
+
+# ─── Control Plane ───
+[control_plane]
+# audit_max_entries = 10000
+# default_policy = "permissive"
+# enable_scheduler_tui = true
+
+# ─── Jobs ───
+[jobs]
+# default_restart_policy = "never"
+# max_retries = 3

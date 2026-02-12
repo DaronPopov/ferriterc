@@ -26,7 +26,9 @@ main() {
   run_preflight_checks
 
   # deterministic compat/pin policy boundary
-  resolve_install_policy
+  if [[ "${CORE_ONLY}" != "true" ]]; then
+    resolve_install_policy
+  fi
 
   # CUDA environment + SM resolution
   setup_cuda_env
@@ -34,8 +36,12 @@ main() {
   export_build_env
 
   # provisioning boundary
-  ensure_libtorch
-  export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LIBTORCH}/lib:${LD_LIBRARY_PATH:-}"
+  if [[ "${CORE_ONLY}" != "true" ]]; then
+    ensure_libtorch
+    export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LIBTORCH}/lib:${LD_LIBRARY_PATH:-}"
+  else
+    export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LD_LIBRARY_PATH:-}"
+  fi
 
   # build/install boundary
   run_build

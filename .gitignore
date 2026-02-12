@@ -2,6 +2,7 @@
 **/target/
 **/build/
 **/lib/
+!scripts/install/lib/
 *.o
 *.a
 *.so

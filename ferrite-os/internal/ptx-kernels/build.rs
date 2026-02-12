@@ -1,5 +1,6 @@
 use std::env;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=kernels/");
@@ -7,7 +8,7 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     // Detect CUDA compute capability from environment or default to sm_80
-    let cuda_arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_80".to_string());
+    let cuda_arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_75".to_string());
 
     println!("cargo:rerun-if-env-changed=CUDA_ARCH");
 
@@ -63,19 +64,49 @@ fn main() {
     println!("cargo:rustc-link-lib=cuda");
 
     // Add CUDA library search paths
-    if let Ok(cuda_path) = env::var("CUDA_PATH") {
-        println!("cargo:rustc-link-search=native={}/lib64", cuda_path);
+    if let Some(cuda_path) = env::var("CUDA_PATH")
+        .ok()
+        .or_else(|| env::var("CUDA_HOME").ok())
+        .map(PathBuf::from)
+        .or_else(find_cuda_kernels)
+    {
+        let cuda_lib = if cuda_path.join("lib64").exists() {
+            cuda_path.join("lib64")
+        } else {
+            cuda_path.join("lib")
+        };
+        println!("cargo:rustc-link-search=native={}", cuda_lib.display());
     } else {
-        // Common CUDA installation paths
         println!("cargo:rustc-link-search=native=/usr/local/cuda/lib64");
-
-        // Architecture-specific system library paths
         #[cfg(target_arch = "x86_64")]
         println!("cargo:rustc-link-search=native=/usr/lib/x86_64-linux-gnu");
-
         #[cfg(target_arch = "aarch64")]
         println!("cargo:rustc-link-search=native=/usr/lib/aarch64-linux-gnu");
     }
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rerun-if-env-changed=CUDA_HOME");
+}
+
+fn find_cuda_kernels() -> Option<PathBuf> {
+    let common = [
+        "/usr/local/cuda", "/usr/local/cuda-12.9", "/usr/local/cuda-12.8",
+        "/usr/local/cuda-12.6", "/usr/local/cuda-12",
+        "/opt/cuda", "/usr/lib/cuda",
+    ];
+    for p in &common {
+        let p = PathBuf::from(p);
+        if p.join("include/cuda_runtime.h").exists() { return Some(p); }
+    }
+    if let Ok(out) = Command::new("which").arg("nvcc").output() {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Some(cuda) = PathBuf::from(&s).parent().and_then(|p| p.parent()) {
+                if cuda.join("include/cuda_runtime.h").exists() {
+                    return Some(cuda.to_path_buf());
+                }
+            }
+        }
+    }
+    None
 }

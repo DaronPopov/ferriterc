@@ -89,21 +89,26 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
     size_t system_state_size = sizeof(PTXSystemState);
     size_t total_shm_size = registry_size + system_state_size;
 
+    // Construct per-UID IPC key to avoid collisions on multi-user systems
+    char ipc_key[GPU_HOT_IPC_KEY_MAX_LEN];
+    snprintf(ipc_key, sizeof(ipc_key), "%s%u%s",
+             GPU_HOT_IPC_KEY_PREFIX, (unsigned)getuid(), GPU_HOT_IPC_KEY_SUFFIX);
+
 #ifdef _WIN32
-    runtime->shm_handle = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, (DWORD)total_shm_size, GPU_HOT_IPC_KEY);
+    runtime->shm_handle = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, (DWORD)total_shm_size, ipc_key);
     bool is_daemon = (GetLastError() != ERROR_ALREADY_EXISTS);
     void* shm_base = MapViewOfFile(runtime->shm_handle, FILE_MAP_ALL_ACCESS, 0, 0, total_shm_size);
 #else
     void* shm_base = NULL;
     // Linux POSIX shared memory
     // Try O_EXCL to detect if we are the creator (daemon)
-    int shm_fd = shm_open(GPU_HOT_IPC_KEY, O_CREAT | O_EXCL | O_RDWR, 0666);
+    int shm_fd = shm_open(ipc_key, O_CREAT | O_EXCL | O_RDWR, 0666);
     bool is_daemon = true;
-    
+
     if (shm_fd == -1 && errno == EEXIST) {
         // Segment already exists, we are a client
         is_daemon = false;
-        shm_fd = shm_open(GPU_HOT_IPC_KEY, O_RDWR, 0666);
+        shm_fd = shm_open(ipc_key, O_RDWR, 0666);
     }
 
     if (shm_fd == -1) {
