@@ -9,10 +9,10 @@ description = "Rust GPU language layer on top of Ferrite PTX-OS runtime"
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-ptx-runtime = { path = "../ferrite-os/ptx-runtime" }
-ptx-kernels = { path = "../ferrite-os/internal/ptx-kernels", features = ["candle-kernels"] }
-ptx-tensor = { path = "../ferrite-os/internal/ptx-tensor" }
-ferrite-apps = { path = "../ferrite-os/ferrite-apps" }
+ptx-runtime = { path = "../ferrite-os/crates/public/ptx-runtime" }
+ptx-kernels = { path = "../ferrite-os/crates/internal/ptx-kernels", features = ["candle-kernels"] }
+ptx-tensor = { path = "../ferrite-os/crates/internal/ptx-tensor" }
+ferrite-apps = { path = "../ferrite-os/crates/public/ferrite-apps" }
 libc = "0.2"
 anyhow = "1.0"
 tch = { version = "0.22", optional = true }

@@ -4,8 +4,8 @@
 Provide stable daemon lifecycle for interactive and service-managed operation.
 
 ## Owned Paths
-- `ferrite-os/internal/ptx-daemon/src/**`
-- `ferrite-os/internal/ptx-daemon/*.toml`
+- `ferrite-os/crates/internal/ptx-daemon/src/**`
+- `ferrite-os/crates/internal/ptx-daemon/*.toml`
 - `ferrite-daemon`
 - `ferrite-os/ferrite-daemon.sh` (local wrapper, non-canonical)
 - `scripts/install/lib/service.sh`

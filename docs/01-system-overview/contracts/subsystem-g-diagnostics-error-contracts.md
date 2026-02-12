@@ -4,7 +4,7 @@
 Define deterministic diagnostics and actionable error categories across install/runtime.
 
 ## Owned Paths
-- `ferrite-os/scripts/ptx_doctor.sh`
+- `ferrite-os/tooling/scripts/ptx_doctor.sh`
 - Error/diagnostic paths in daemon/runtime/install docs and scripts
 
 ## Public Interfaces

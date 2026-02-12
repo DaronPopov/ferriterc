@@ -176,7 +176,7 @@ resolve_cupti_lib_dir() {
 
 detect_sm_with_nvcc() {
   local cuda_root="$1"
-  local src="$ROOT/ferrite-os/scripts/detect_sm.cu"
+  local src="$ROOT/ferrite-os/tooling/scripts/detect_sm.cu"
   local tmp
   tmp="$(mktemp -t ferrite_detect_sm.XXXXXX)"
   if "$cuda_root/bin/nvcc" -O2 -std=c++11 "$src" -o "$tmp" >/dev/null 2>&1; then

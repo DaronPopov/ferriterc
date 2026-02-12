@@ -15,7 +15,7 @@
 ## Playbook B: Runtime Build/Link Failure
 
 1. Confirm native artifacts in `ferrite-os/lib/`.
-2. Inspect `ferrite-os/internal/ptx-sys/build.rs`.
+2. Inspect `ferrite-os/crates/internal/ptx-sys/build.rs`.
 3. Confirm `LD_LIBRARY_PATH` construction in `install.sh` and `ferrite-run`.
 4. Validate with a minimal example build.
 
@@ -29,19 +29,19 @@
 
 ## Playbook D: Daemon Startup Change
 
-1. Update daemon crate under `ferrite-os/internal/ptx-daemon/`.
+1. Update daemon crate under `ferrite-os/crates/internal/ptx-daemon/`.
 2. Update service installation logic in `install.sh` if needed.
 3. Re-check generated unit environment and paths.
 4. Validate with `systemctl status ferrite-daemon`.
 
 ## Playbook E: Rust Entry Runner Command Change
 
-1. Update runner logic in `ferrite-os/internal/ptx-runner/src/main.rs`.
+1. Update runner logic in `ferrite-os/crates/internal/ptx-runner/src/main.rs`.
 2. Wire daemon handlers/routing in:
-   - `ferrite-os/internal/ptx-daemon/src/commands.rs`
-   - `ferrite-os/internal/ptx-daemon/src/server/command_pipeline.rs`
-   - `ferrite-os/internal/ptx-daemon/src/lifecycle.rs`
-3. Keep policy classification current in `ferrite-os/internal/ptx-daemon/src/policy/engine.rs`.
+   - `ferrite-os/crates/internal/ptx-daemon/src/commands.rs`
+   - `ferrite-os/crates/internal/ptx-daemon/src/server/command_pipeline.rs`
+   - `ferrite-os/crates/internal/ptx-daemon/src/lifecycle.rs`
+3. Keep policy classification current in `ferrite-os/crates/internal/ptx-daemon/src/policy/engine.rs`.
 4. Validate:
    - `cd ferrite-os`
    - `cargo check -p ptx-runner -p ferrite-daemon`

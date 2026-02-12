@@ -3,13 +3,13 @@
 ## Layers
 
 1. CUDA/C++ layer
-   - `ferrite-os/core/` (`.cu`, `.c`, headers)
+   - `ferrite-os/native/core/` (`.cu`, `.c`, headers)
    - Produces runtime shared objects in `ferrite-os/lib/`
 2. Rust FFI/system layer
-   - `ferrite-os/internal/ptx-sys`
+   - `ferrite-os/crates/internal/ptx-sys`
    - Raw bindings and link configuration
 3. Runtime services layer
-   - `ferrite-os/ptx-runtime`
+   - `ferrite-os/crates/public/ptx-runtime`
    - Memory/stream/device/runtime abstractions
 4. Language/script layer
    - `ferrite-gpu-lang`
@@ -25,7 +25,7 @@
 
 - Shared memory key is per-UID (`/ptx_os_{uid}_v1`), preventing collisions between users on shared machines.
 - Key is constructed at runtime using `GPU_HOT_IPC_KEY_PREFIX` + `getuid()` + `GPU_HOT_IPC_KEY_SUFFIX` (see `hot_runtime_init.inl`).
-- Constants defined in `ferrite-os/core/include/gpu/gpu_hot_runtime.h`.
+- Constants defined in `ferrite-os/native/core/include/gpu/gpu_hot_runtime.h`.
 
 ## Execution Model
 
@@ -35,7 +35,7 @@
 
 ## Daemon Model
 
-- Daemon crate: `ferrite-os/internal/ptx-daemon`
+- Daemon crate: `ferrite-os/crates/internal/ptx-daemon`
 - Primary CLI entrypoint: `ferrite-daemon` (root wrapper / installed command)
 - Binary artifacts: `ferrite-os/target/release/ferrite-daemon` and `ferrite-os/target/release/ferrite`
 - Optional systemd installation via `install.sh --enable-service`

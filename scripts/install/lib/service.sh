@@ -3,7 +3,7 @@
 
 install_systemd_service() {
   local daemon_bin="$ROOT/ferrite-os/target/release/ferrite-daemon"
-  local cfg_src="$ROOT/ferrite-os/internal/ptx-daemon/ferrite-daemon.toml"
+  local cfg_src="$ROOT/ferrite-os/crates/internal/ptx-daemon/ferrite-daemon.toml"
   local cfg_dst="/etc/ferrite-os/daemon.toml"
   local unit_dst="/etc/systemd/system/ferrite-daemon.service"
 

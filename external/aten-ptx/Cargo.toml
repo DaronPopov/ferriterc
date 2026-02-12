@@ -11,8 +11,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # PTX-OS Runtime
-ptx-runtime = { path = "../../ferrite-os/ptx-runtime" }
-ptx-sys = { path = "../../ferrite-os/internal/ptx-sys" }
+ptx-runtime = { path = "../../ferrite-os/crates/public/ptx-runtime" }
+ptx-sys = { path = "../../ferrite-os/crates/internal/ptx-sys" }
 
 # PyTorch
 tch = "0.22"

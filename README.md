@@ -76,7 +76,7 @@ CUDA compatibility is selected from `compat.toml` based on detected toolkit vers
 
 `ferrite-run` auto-detects the `--torch` feature from import statements.
 
-Legacy top-level paths (`finetune_engine/`, `mathematics_engine/`) are kept as compatibility symlinks.
+Workload scripts live under `ferrite-os/workloads/`.
 
 ## Running Daemon
 
@@ -92,33 +92,42 @@ Legacy top-level paths (`finetune_engine/`, `mathematics_engine/`) are kept as c
 
 ```
 ferriterc/
-  ferrite-daemon         Root daemon launcher wrapper
-  ferrite-os/            GPU runtime core (TLSF allocator, stream/runtime plumbing, IPC)
-  ferrite-gpu-lang/      Rust GPU scripting layer
+  ferrite-daemon           Root daemon launcher wrapper
+  ferrite-run              Root script runner wrapper
+  install.sh               One-line installer
+  ferrite-os/              GPU runtime core
+    crates/
+      public/              User-facing Rust crates
+        ptx-runtime/       Safe runtime API (memory, streams, graphs)
+        ptx-os/            OS features (VFS, VMM, IPC)
+        ptx-app/           App helpers
+        ferrite-apps/      Standalone GPU apps and demos
+      internal/            Implementation crates
+        ptx-sys/           FFI bindings to C/CUDA core
+        ptx-compute/       High-level compute (GEMM, neural, reduction)
+        ptx-tensor/        Tensor operations
+        ptx-autograd/      Automatic differentiation
+        ptx-compiler/      PTX compilation
+        ptx-kernels/       Kernel wrappers (candle bridge)
+        ptx-runner/        Execution runner
+        ptx-daemon/        Multi-process daemon + TUI
+        ptx-renderd/       Render daemon
+    native/core/           C/CUDA runtime (TLSF allocator, streams, IPC, hooks)
+    tooling/
+      scripts/             Build/env/doctor/bench scripts
+      benchmarks/          Benchmark outputs
+    lib/                   Compiled .so (libptx_os, libptx_hook)
+    workloads/
+      finetune_engine/     ML fine-tuning control plane
+      mathematics_engine/  Quantitative finance compute modules
+  ferrite-gpu-lang/        Rust GPU scripting layer
   external/
-    aten-ptx/            PyTorch ATen TLSF allocator bridge
-    cudarc-ptx/          CUDA driver abstraction
-    ferrite-torch/       Torch integration examples
-    ferrite-xla/         XLA backend integration
-  ferrite-os/workloads/finetune_engine/  ML fine-tuning control plane
-    scripting_finetune   LoRA fine-tuning script entrypoint
-    checkpoint/          Adapter checkpoint save/load
-    loader/              Safetensors shard loader
-    eval/                Validation loop
-    scheduler/           LR schedules
-    merge/               LoRA adapter merge
-    quantize/            Streaming quantization (f16/bf16/int8/nf4)
-    dataset/             Packed sequence batching
-    telemetry/           Training metrics + divergence detection
-    distributed/         Multi-GPU wave scheduling
-    architectures/       Model architecture experiments
-  ferrite-os/workloads/mathematics_engine/  Quantitative finance compute modules
-    monte_carlo/         Monte Carlo pricing
-    portfolio/           Covariance and portfolio analytics
-    risk/                VaR/CVaR workflows
-    pde/                 Finite difference PDE solver (Black-Scholes)
-    matrix/              Matrix decomposition/linear algebra routines
-    greeks/              Greeks computation workflows
+    aten-ptx/              PyTorch ATen TLSF allocator bridge
+    cudarc-ptx/            CUDA driver abstraction
+    ferrite-torch/         Torch integration examples
+    ferrite-xla/           XLA backend integration
+  docs/                    Architecture and programming guides
+  testkit/                 Systemic test scenarios
 ```
 
 ## LibTorch Provisioning

@@ -20,12 +20,12 @@ final system state. Do NOT guess — derive all facts from code.
 | `scripts/install/lib/preflight.sh` | Preflight calls `ensure_cuda_toolkit` not `need_cmd nvcc` |
 | `scripts/install/lib/build.sh` | `run_build()` — 3-step core-only vs 9-step full, `print_success()` |
 | `scripts/install/lib/service.sh` | Systemd unit generation, LIBTORCH guard for core-only |
-| `ferrite-os/internal/ptx-sys/build.rs` | Hard panic on missing `libptx_os.so` |
-| `ferrite-os/internal/ptx-kernels/build.rs` | `find_cuda_kernels()`, default `sm_75`, `CUDA_HOME` support |
-| `ferrite-os/internal/ptx-daemon/ferrite-daemon.toml` | Defaults: `pool_fraction=0.25`, `max_streams=128`, new sections |
+| `ferrite-os/crates/internal/ptx-sys/build.rs` | Hard panic on missing `libptx_os.so` |
+| `ferrite-os/crates/internal/ptx-kernels/build.rs` | `find_cuda_kernels()`, default `sm_75`, `CUDA_HOME` support |
+| `ferrite-os/crates/internal/ptx-daemon/ferrite-daemon.toml` | Defaults: `pool_fraction=0.25`, `max_streams=128`, new sections |
 | `ferrite-os/Cargo.toml` | `rust-version = "1.75"` |
-| `ferrite-os/core/include/gpu/gpu_hot_runtime.h` | `GPU_HOT_IPC_KEY_PREFIX/SUFFIX/MAX_LEN` (per-UID) |
-| `ferrite-os/core/runtime/modules/hot_runtime_init.inl` | `ipc_key` constructed with `getuid()` |
+| `ferrite-os/native/core/include/gpu/gpu_hot_runtime.h` | `GPU_HOT_IPC_KEY_PREFIX/SUFFIX/MAX_LEN` (per-UID) |
+| `ferrite-os/native/core/runtime/modules/hot_runtime_init.inl` | `ipc_key` constructed with `getuid()` |
 | `INSTALL.md` | Canonical install instructions (already updated) |
 
 ---
@@ -35,15 +35,15 @@ final system state. Do NOT guess — derive all facts from code.
 All of these paths are real and should be referenced accurately:
 
 ```
-ferrite-os/scripts/ptx_doctor.sh          # exists
+ferrite-os/tooling/scripts/ptx_doctor.sh   # exists
 ferrite-daemon                            # exists (root wrapper; canonical daemon entrypoint)
 ferrite-os/ferrite-daemon.sh              # exists (local wrapper)
-ferrite-os/scripts/ferrite-run            # exists (local wrapper)
+ferrite-os/tooling/scripts/ferrite-run     # exists (local wrapper)
 ferrite-run                               # exists (root wrapper)
 install.sh                                # exists (root symlink/entrypoint)
 uninstall.sh                              # exists
 
-ferrite-os/internal/ptx-daemon/src/
+ferrite-os/crates/internal/ptx-daemon/src/
   tui/                                    # extensive: app.rs, commands/, editor/, etc.
   commands.rs
   lifecycle.rs
@@ -54,7 +54,7 @@ ferrite-os/internal/ptx-daemon/src/
   job_store.rs
   event_stream.rs
 
-ferrite-os/core/
+ferrite-os/native/core/
   hooks/    kernels/    memory/    os/    runtime/    include/
 
 scripts/install/lib/
@@ -93,7 +93,7 @@ Fix:
 - Remove `plans/` from structure
 - Remove entire "CUDA Hardening Plans" section
 - Add `scripts/install/lib/` to "Source-of-Truth Files" list
-- Add `ferrite-os/internal/ptx-daemon/ferrite-daemon.toml` to source-of-truth list
+- Add `ferrite-os/crates/internal/ptx-daemon/ferrite-daemon.toml` to source-of-truth list
 
 ---
 
@@ -273,12 +273,12 @@ Problems:
 - "Layer Map" → installer layer only lists `install.sh`, `compat.toml`,
   `scripts/resolve_cuda_compat.sh` — missing `scripts/install/lib/*.sh`
 - Missing daemon config in any layer
-- Missing mention of `ferrite-os/internal/ptx-daemon/ferrite-daemon.toml`
+- Missing mention of `ferrite-os/crates/internal/ptx-daemon/ferrite-daemon.toml`
 
 Fix:
 - Update layer 1 (Installer) to include `scripts/install/lib/*.sh` and
   `scripts/install/install.sh`
-- Add daemon config `ferrite-os/internal/ptx-daemon/ferrite-daemon.toml`
+- Add daemon config `ferrite-os/crates/internal/ptx-daemon/ferrite-daemon.toml`
   to the daemon layer (or create a note alongside layer 5)
 - Add to "Change Routing Rules": "If issue mentions --core-only or installer
   flags, start in `scripts/install/lib/args.sh` and `build.sh`"

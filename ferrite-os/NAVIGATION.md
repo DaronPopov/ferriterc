@@ -6,18 +6,18 @@ This repository is organized into clear spatial layers:
 
 User-facing components and validation:
 
-- **[ptx-runtime/](ptx-runtime/)** - Safe Rust runtime API for GPU operations
+- **[crates/public/ptx-runtime/](crates/public/ptx-runtime/)** - Safe Rust runtime API for GPU operations
   - Memory allocation and management
   - Stream operations and parallelism
   - CUDA graphs and execution
-  - Examples in `ptx-runtime/examples/`
+  - Examples in `crates/public/ptx-runtime/examples/`
 
-- **[ptx-os/](ptx-os/)** - Operating system features
+- **[crates/public/ptx-os/](crates/public/ptx-os/)** - Operating system features
   - Virtual filesystem
   - Virtual memory management
   - Inter-process communication
 
-- **[benchmarks/](benchmarks/)** - Benchmark outputs and run artifacts
+- **[tooling/benchmarks/](tooling/benchmarks/)** - Benchmark outputs and run artifacts
   - Generated reports from benchmark runs
   - Historical perf snapshots
 
@@ -25,7 +25,7 @@ User-facing components and validation:
 
 Internal Rust crates (implementation details):
 
-- **[internal/](internal/)** - All implementation crates
+- **[crates/internal/](crates/internal/)** - All implementation crates
   - `ptx-sys/` - FFI bindings to C/CUDA core
   - `ptx-compute/` - High-level compute operations
   - `ptx-daemon/` - Multi-process daemon
@@ -39,13 +39,13 @@ Internal Rust crates (implementation details):
 
 C/CUDA implementation:
 
-- **[core/](core/)** - Low-level GPU runtime
-  - `core/memory/` - TLSF allocator implementation
-  - `core/runtime/` - Hot runtime and execution
-  - `core/os/` - OS services (VFS, VMM, IPC)
-  - `core/kernels/` - CUDA kernel implementations
-  - `core/hooks/` - Memory and lifecycle hooks
-  - `core/include/` - C/C++ headers
+- **[native/core/](native/core/)** - Low-level GPU runtime
+  - `native/core/memory/` - TLSF allocator implementation
+  - `native/core/runtime/` - Hot runtime and execution
+  - `native/core/os/` - OS services (VFS, VMM, IPC)
+  - `native/core/kernels/` - CUDA kernel implementations
+  - `native/core/hooks/` - Memory and lifecycle hooks
+  - `native/core/include/` - C/C++ headers
 
 ## Documentation
 
@@ -57,7 +57,7 @@ C/CUDA implementation:
 
 ## Utilities
 
-- **[scripts/](scripts/)** - Build and utility scripts
+- **[tooling/scripts/](tooling/scripts/)** - Build and utility scripts
 - **[lib/](lib/)** - Compiled shared libraries
 - **[build/](build/)** - Build artifacts
 
@@ -71,10 +71,10 @@ C/CUDA implementation:
 cargo run --release --example telemetry_demo -p ptx-runtime
 
 # Run benchmarks
-scripts/ptx_bench_all.sh --no-build
+tooling/scripts/ptx_bench_all.sh --no-build
 
 # Start daemon
-cargo run --release -p ferrite-daemon -- serve --config internal/ptx-daemon/dev-config.toml
+cargo run --release -p ferrite-daemon -- serve --config crates/internal/ptx-daemon/dev-config.toml
 ```
 
 ## Documentation Guide

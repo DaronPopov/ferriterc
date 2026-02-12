@@ -3,12 +3,12 @@
 ## Doctor Check
 ```bash
 cd ferrite-os
-scripts/ptx_doctor.sh
+tooling/scripts/ptx_doctor.sh
 ```
 
 ## If `libptx_os.so` Is Missing
 
-The `ptx-sys` build script (`ferrite-os/internal/ptx-sys/build.rs`) panics with an actionable error message when `libptx_os.so` is not found. This enforces build order: the C/CUDA runtime must be built before Rust crates.
+The `ptx-sys` build script (`ferrite-os/crates/internal/ptx-sys/build.rs`) panics with an actionable error message when `libptx_os.so` is not found. This enforces build order: the C/CUDA runtime must be built before Rust crates.
 
 ```bash
 cd ferrite-os

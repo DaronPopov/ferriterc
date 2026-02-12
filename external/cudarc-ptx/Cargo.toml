@@ -26,8 +26,8 @@ no-std-compat = { version = "0.4.1", features = ["alloc"], optional = true }
 spin = { version = "0.9.8", features = ["rwlock"], optional = true, default-features = false }
 
 # PTX-OS Integration
-ptx-runtime = { path = "../../ferrite-os/ptx-runtime", optional = true }
-ptx-sys = { path = "../../ferrite-os/internal/ptx-sys", optional = true }
+ptx-runtime = { path = "../../ferrite-os/crates/public/ptx-runtime", optional = true }
+ptx-sys = { path = "../../ferrite-os/crates/internal/ptx-sys", optional = true }
 
 [features]
 default = ["std", "cublas", "cublaslt", "curand", "driver", "runtime", "nvrtc"]

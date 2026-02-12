@@ -41,7 +41,7 @@ It is written for engineers and LLM coding agents.
 - Runtime workspace: `ferrite-os/`
 - Language/runtime APIs: `ferrite-gpu-lang/`
 - Installer libraries: `scripts/install/lib/*.sh`
-- Daemon config: `ferrite-os/internal/ptx-daemon/ferrite-daemon.toml`
+- Daemon config: `ferrite-os/crates/internal/ptx-daemon/ferrite-daemon.toml`
 
 ## Architecture Contracts and Runbooks
 

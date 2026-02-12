@@ -145,7 +145,7 @@ cargo build --release
 cargo test --package ptx-runtime --test integration_tests -- --ignored
 
 # Run benchmarks
-scripts/ptx_bench_all.sh --no-build
+tooling/scripts/ptx_bench_all.sh --no-build
 ```
 
 ## Usage
@@ -200,13 +200,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - [System Overview](../docs/01-system-overview/README.md) - Repository and subsystem map
 
 ### Integration Guides
-- [PyTorch Integration](ptx-runtime/PYTORCH_INTEGRATION.md) - Using PyTorch kernels with Ferrite-OS
+- [PyTorch Integration](crates/public/ptx-runtime/PYTORCH_INTEGRATION.md) - Using PyTorch kernels with Ferrite-OS
 - [Runtime Operations Runbook](../docs/02-runtime-architecture/runbooks/runtime-operations.md) - Daemon and script execution workflow
 
 ### API Reference
-- [ptx-runtime](ptx-runtime/README.md) - Core runtime and memory management
-- [ptx-compute](internal/ptx-compute/README.md) - High-level compute operations
-- [ptx-kernels](internal/ptx-kernels/README.md) - Kernel library and guards
+- [ptx-runtime](crates/public/ptx-runtime/README.md) - Core runtime and memory management
+- [ptx-compute](crates/internal/ptx-compute/README.md) - High-level compute operations
+- [ptx-kernels](crates/internal/ptx-kernels/README.md) - Kernel library and guards
 
 ## Use Cases
 
@@ -290,16 +290,16 @@ System V shared memory enables multiple processes to share a single GPU context:
 
 ## Benchmarks
 
-Benchmark and stress runs are driven through `scripts/ptx_bench_all.sh`:
+Benchmark and stress runs are driven through `tooling/scripts/ptx_bench_all.sh`:
 
-- **jitter_benchmark** (`ptx-runtime/examples`) - runtime jitter and latency stability
-- **fused_kernel_benchmark** (`ptx-runtime/examples`) - fused-kernel execution path
-- **candle_performance_benchmark** (`ptx-runtime/examples`) - candle op throughput
-- **bench_dynamic_shapes** (`internal/ptx-tensor/examples`) - shape variability impact
-- **bench_ops** (`internal/ptx-tensor/examples`) - elementwise op throughput
-- **bench_matmul** (`internal/ptx-tensor/examples`) - matrix multiply baseline
+- **jitter_benchmark** (`crates/public/ptx-runtime/examples`) - runtime jitter and latency stability
+- **fused_kernel_benchmark** (`crates/public/ptx-runtime/examples`) - fused-kernel execution path
+- **candle_performance_benchmark** (`crates/public/ptx-runtime/examples`) - candle op throughput
+- **bench_dynamic_shapes** (`crates/internal/ptx-tensor/examples`) - shape variability impact
+- **bench_ops** (`crates/internal/ptx-tensor/examples`) - elementwise op throughput
+- **bench_matmul** (`crates/internal/ptx-tensor/examples`) - matrix multiply baseline
 
-Outputs are written under `benchmarks/`.
+Outputs are written under `tooling/benchmarks/`.
 
 ## Development Roadmap
 

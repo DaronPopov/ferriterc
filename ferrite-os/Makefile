@@ -2,29 +2,29 @@
 # Auto-detects CUDA and GPU compute capability
 
 # Directories
-SRC_DIR := core
-INC_DIR := core/include
+SRC_DIR := native/core
+INC_DIR := native/core/include
 LIB_DIR := lib
 BUILD_DIR := build
 
 # Centralized env discovery (scripts/ptx_env.sh)
-PTX_ENV_SH := ./scripts/ptx_env.sh
+PTX_ENV_SH := ./tooling/scripts/ptx_env.sh
 PTX_ENV_MK := $(BUILD_DIR)/ptx_env.mk
 ifeq ($(wildcard $(PTX_ENV_SH)),)
-    $(error Missing scripts/ptx_env.sh)
+    $(error Missing tooling/scripts/ptx_env.sh)
 endif
 $(shell mkdir -p $(BUILD_DIR) && rm -f $(PTX_ENV_MK) && $(PTX_ENV_SH) --format make --quiet > $(PTX_ENV_MK) || rm -f $(PTX_ENV_MK))
 -include $(PTX_ENV_MK)
 
 # Require CUDA_PATH from the env script or user override
 ifeq ($(strip $(CUDA_PATH)),)
-    $(error CUDA_PATH not set. Run scripts/ptx_env.sh or set CUDA_PATH/CUDA_HOME)
+    $(error CUDA_PATH not set. Run tooling/scripts/ptx_env.sh or set CUDA_PATH/CUDA_HOME)
 endif
 
 NVCC := $(CUDA_PATH)/bin/nvcc
 CC := gcc
 
-# Detect GPU compute capability (provided by scripts/ptx_env.sh)
+# Detect GPU compute capability (provided by tooling/scripts/ptx_env.sh)
 # Always build fat binary with all common architectures.
 # For CUDA 12.8+ add: compute_100/sm_100, compute_120/sm_120
 GENCODE_FLAGS := -gencode arch=compute_75,code=sm_75 \
@@ -142,7 +142,7 @@ $(TEST_HOOK_BIN): $(TEST_HOOK_SRC) $(TARGET) $(HOOK_TARGET)
 
 test-hook: $(TEST_HOOK_BIN)
 	@echo "Running PTX-OS hook interception test..."
-	PTX_HOOK_VERBOSE=1 ./scripts/ferrite-run $(TEST_HOOK_BIN)
+	PTX_HOOK_VERBOSE=1 ./tooling/scripts/ferrite-run $(TEST_HOOK_BIN)
 
 $(TEST_STABLE_BIN): $(TEST_STABLE_SRC) $(TARGET)
 	$(NVCC) -o $@ $(TEST_STABLE_SRC) -I$(INC_DIR) -I$(CUDA_PATH)/include -L$(LIB_DIR) -lptx_os -L$(CUDA_LIB) -lcuda -lcudart

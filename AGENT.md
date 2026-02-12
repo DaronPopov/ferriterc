@@ -37,7 +37,7 @@ cargo check --offline -p ptx-runner -p ferrite-daemon
 
 ## Daemon Integration Tests (Canonical Harness)
 
-File: `ferrite-os/internal/ptx-daemon/tests/daemon_integration.rs`
+File: `ferrite-os/crates/internal/ptx-daemon/tests/daemon_integration.rs`
 
 List tests:
 
@@ -89,19 +89,19 @@ cargo run --manifest-path testkit/rust/ferrite-testkit-cli/Cargo.toml -- matrix 
 
 Daemon-discoverable entry:
 
-`ferrite-os/ferrite-apps/src/bin/ascii_tensor_orbit.rs#main`
+`ferrite-os/crates/public/ferrite-apps/src/bin/ascii_tensor_orbit.rs#main`
 
 Run directly:
 
 ```bash
 cd ferrite-os
-DURATION=1 cargo run -p ptx-runner -- run-entry ferrite-apps/src/bin/ascii_tensor_orbit.rs#main
+DURATION=1 cargo run -p ptx-runner -- run-entry crates/public/ferrite-apps/src/bin/ascii_tensor_orbit.rs#main
 ```
 
 Run through daemon wrapper:
 
 ```bash
-./ferrite-daemon run-entry ferrite-apps/src/bin/ascii_tensor_orbit.rs#main
+./ferrite-daemon run-entry crates/public/ferrite-apps/src/bin/ascii_tensor_orbit.rs#main
 ```
 
 ## Environment / Runtime Notes

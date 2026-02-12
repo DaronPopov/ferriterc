@@ -11,8 +11,8 @@ license = "MIT OR Apache-2.0"
 tch = "0.22"  # Matches LibTorch 2.9
 
 # PTX-OS Runtime
-ptx-runtime = { path = "../../ferrite-os/ptx-runtime" }
-ptx-sys = { path = "../../ferrite-os/internal/ptx-sys" }
+ptx-runtime = { path = "../../ferrite-os/crates/public/ptx-runtime" }
+ptx-sys = { path = "../../ferrite-os/crates/internal/ptx-sys" }
 aten-ptx = { path = "../aten-ptx" }
 cudarc = { path = "../cudarc-ptx", features = ["ptx-alloc"] }
 

@@ -1,21 +1,21 @@
 [workspace]
 resolver = "2"
 members = [
-    "ptx-runtime",
-    "ptx-os",
-    "ptx-app",
-    "ferrite-apps",
-    "internal/ptx-sys",
-    "internal/ptx-compute",
-    "internal/ptx-tensor",
-    "internal/ptx-autograd",
-    "internal/ptx-compiler",
-    "internal/ptx-daemon",
-    "internal/ptx-renderd",
-    "internal/ptx-runner",
-    "internal/ptx-kernels",
+    "crates/public/ptx-runtime",
+    "crates/public/ptx-os",
+    "crates/public/ptx-app",
+    "crates/public/ferrite-apps",
+    "crates/internal/ptx-sys",
+    "crates/internal/ptx-compute",
+    "crates/internal/ptx-tensor",
+    "crates/internal/ptx-autograd",
+    "crates/internal/ptx-compiler",
+    "crates/internal/ptx-kernels",
+    "crates/internal/ptx-runner",
+    "crates/internal/ptx-daemon",
+    "crates/internal/ptx-renderd",
 ]
-default-members = ["internal/ptx-runner"]
+default-members = ["crates/internal/ptx-runner"]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,14 +27,14 @@ repository = "https://github.com/ptx-os/ptx-os"
 
 [workspace.dependencies]
 # Internal crates
-ptx-sys = { path = "internal/ptx-sys" }
-ptx-runtime = { path = "ptx-runtime" }
-ptx-compute = { path = "internal/ptx-compute" }
-ptx-tensor = { path = "internal/ptx-tensor" }
-ptx-autograd = { path = "internal/ptx-autograd" }
-ptx-compiler = { path = "internal/ptx-compiler" }
-ptx-kernels = { path = "internal/ptx-kernels" }
-ptx-app = { path = "ptx-app" }
+ptx-sys = { path = "crates/internal/ptx-sys" }
+ptx-runtime = { path = "crates/public/ptx-runtime" }
+ptx-compute = { path = "crates/internal/ptx-compute" }
+ptx-tensor = { path = "crates/internal/ptx-tensor" }
+ptx-autograd = { path = "crates/internal/ptx-autograd" }
+ptx-compiler = { path = "crates/internal/ptx-compiler" }
+ptx-kernels = { path = "crates/internal/ptx-kernels" }
+ptx-app = { path = "crates/public/ptx-app" }
 
 # External dependencies
 libc = "0.2"

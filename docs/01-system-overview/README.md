@@ -8,16 +8,21 @@
 
 - `ferrite-os/`
   Core runtime workspace with low-level CUDA integration and daemon binaries.
+  - `crates/public/` — User-facing Rust crates (`ptx-runtime`, `ptx-os`, `ptx-app`, `ferrite-apps`)
+  - `crates/internal/` — Implementation crates (`ptx-sys`, `ptx-compute`, `ptx-tensor`, `ptx-autograd`, `ptx-compiler`, `ptx-kernels`, `ptx-runner`, `ptx-daemon`, `ptx-renderd`)
+  - `native/core/` — C/CUDA source (TLSF allocator, streams, hooks, IPC, kernels)
+  - `tooling/scripts/` — Build, env, doctor, and benchmark scripts
+  - `tooling/benchmarks/` — Benchmark outputs
+  - `lib/` — Compiled shared objects (`libptx_os.so`, `libptx_hook.so`)
+  - `workloads/` — ML fine-tuning and quantitative compute scripts
 - `ferrite-gpu-lang/`
   Script/runtime layer on top of `ferrite-os`.
 - `external/`
   Integrations and forks used by the runtime (`aten-ptx`, `cudarc-ptx`, `ferrite-torch`, `ferrite-xla`).
-- `ferrite-os/workloads/finetune_engine/`
-  Training/fine-tuning scripts and orchestration examples.
-- `ferrite-os/workloads/mathematics_engine/`
-  Quantitative compute scripts and examples.
 - `docs/`
   This documentation set.
+- `testkit/`
+  Systemic test scenarios and CLI.
 
 ## Primary Runtime Path
 

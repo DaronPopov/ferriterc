@@ -4,10 +4,10 @@
 Provide safe runtime/compiler/tensor/autograd boundaries over native ABI.
 
 ## Owned Paths
-- `ferrite-os/ptx-runtime/src/**`
-- `ferrite-os/internal/ptx-compiler/src/**`
-- `ferrite-os/internal/ptx-tensor/src/**`
-- `ferrite-os/internal/ptx-autograd/src/**`
+- `ferrite-os/crates/public/ptx-runtime/src/**`
+- `ferrite-os/crates/internal/ptx-compiler/src/**`
+- `ferrite-os/crates/internal/ptx-tensor/src/**`
+- `ferrite-os/crates/internal/ptx-autograd/src/**`
 - `ferrite-gpu-lang/src/runtime/**`
 
 ## Public Interfaces

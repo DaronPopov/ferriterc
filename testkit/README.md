@@ -32,5 +32,5 @@ cargo run --manifest-path testkit/rust/ferrite-testkit-cli/Cargo.toml -- \
 ## Notes
 
 - Requires a built daemon binary and runtime libs available in environment.
-- Intended to complement (not replace) `ferrite-os/internal/ptx-daemon/tests/daemon_integration.rs`.
+- Intended to complement (not replace) `ferrite-os/crates/internal/ptx-daemon/tests/daemon_integration.rs`.
 - Use `DURATION=1` style env in scenario daemon profile for short bounded runs.

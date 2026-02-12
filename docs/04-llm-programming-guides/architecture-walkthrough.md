@@ -13,11 +13,11 @@ Given a requested change, identify the correct layer first, then edit only neces
    - `compat.toml`
    - `scripts/resolve_cuda_compat.sh`
 2. Native runtime
-   - `ferrite-os/core/`
+   - `ferrite-os/native/core/`
    - `ferrite-os/Makefile`
 3. Rust runtime bridge
-   - `ferrite-os/internal/ptx-sys/`
-   - `ferrite-os/ptx-runtime/`
+   - `ferrite-os/crates/internal/ptx-sys/`
+   - `ferrite-os/crates/public/ptx-runtime/`
 4. Script/language layer
    - `ferrite-gpu-lang/`
    - `ferrite-run`
@@ -27,7 +27,7 @@ Given a requested change, identify the correct layer first, then edit only neces
    - `external/ferrite-torch/`
    - `external/ferrite-xla/`
 6. Daemon configuration
-   - `ferrite-os/internal/ptx-daemon/ferrite-daemon.toml`
+   - `ferrite-os/crates/internal/ptx-daemon/ferrite-daemon.toml`
 7. App-manifest contract (exploratory)
    - `docs/04-llm-programming-guides/contracts/ferrite-app-manifest-v0-loose.md`
 
