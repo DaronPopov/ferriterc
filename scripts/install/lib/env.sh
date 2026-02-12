@@ -12,6 +12,7 @@ Ferrite Runtime Source Installer
 Usage:
   ./install.sh [--sm <SM>] [--verbose] [--enable-service]
                [--libtorch-url <URL>] [--libtorch-tag <TAG>] [--cudarc-feature <FEATURE>]
+               [--onnxruntime-version <VERSION>] [--onnxruntime-url <URL>]
                [--auto-install-cuda]
                [--pins "<k=v,k=v,...>"]
 
@@ -33,9 +34,14 @@ Options:
                 Pin libtorch CUDA tag directly (e.g. cu126, cu128)
   --cudarc-feature <FEATURE>
                 Pin cudarc CUDA feature directly (e.g. cuda-12060)
+  --onnxruntime-version <VERSION>
+                Pin ONNX Runtime version for auto-download (default: 1.20.1)
+  --onnxruntime-url <URL>
+                Pin exact ONNX Runtime archive URL
   --pins "<k=v,...>"
                 Pin multiple values in one quoted string. Keys:
-                sm, libtorch_url, libtorch_tag, cudarc_feature
+                sm, libtorch_url, libtorch_tag, cudarc_feature,
+                onnxruntime_version, onnxruntime_url
   -h, --help    Show this help
 
 Environment variable fallback:
@@ -47,6 +53,9 @@ Torch provisioning env (optional):
   LIBTORCH_CUDA_TAG          Auto-selected from compat.toml (or set explicitly)
   CUDARC_CUDA_FEATURE        Auto-selected from compat.toml (or set explicitly)
   LIBTORCH_URL               Override download URL entirely
+  ONNXRUNTIME_ROOT           Existing ONNX Runtime root
+  ONNXRUNTIME_VERSION        Default: 1.20.1
+  ONNXRUNTIME_URL            Override ONNX Runtime archive URL entirely
   TORCH_CPYTHON_TAG          Default: cp311 (only matters for aarch64 wheel)
   AUTO_INSTALL_CUDA          true/false (default: false)
 EOF
@@ -430,10 +439,12 @@ apply_pins() {
       libtorch_url) LIBTORCH_URL="$val" ;;
       libtorch_tag) LIBTORCH_CUDA_TAG="$val" ;;
       cudarc_feature) CUDARC_CUDA_FEATURE="$val" ;;
+      onnxruntime_version) ONNXRUNTIME_VERSION="$val" ;;
+      onnxruntime_url) ONNXRUNTIME_URL="$val" ;;
       *)
         echo "[error] unknown --pins key '$key'"
-        echo "[hint] supported keys: sm, libtorch_url, libtorch_tag, cudarc_feature"
-        diag_emit "installer.args" "FAIL" "INS-ARGS-0002" "unknown --pins key '$key'" "use one of: sm, libtorch_url, libtorch_tag, cudarc_feature"
+        echo "[hint] supported keys: sm, libtorch_url, libtorch_tag, cudarc_feature, onnxruntime_version, onnxruntime_url"
+        diag_emit "installer.args" "FAIL" "INS-ARGS-0002" "unknown --pins key '$key'" "use one of: sm, libtorch_url, libtorch_tag, cudarc_feature, onnxruntime_version, onnxruntime_url"
         exit 1
         ;;
     esac

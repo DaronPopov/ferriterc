@@ -12,6 +12,7 @@ source "$SCRIPT_DIR/lib/policy.sh"
 source "$SCRIPT_DIR/lib/cuda.sh"
 source "$SCRIPT_DIR/lib/rust.sh"
 source "$SCRIPT_DIR/lib/libtorch.sh"
+source "$SCRIPT_DIR/lib/onnxruntime.sh"
 source "$SCRIPT_DIR/lib/build.sh"
 source "$SCRIPT_DIR/lib/service.sh"
 
@@ -38,8 +39,13 @@ main() {
   # provisioning boundary
   if [[ "${CORE_ONLY}" != "true" ]]; then
     ensure_libtorch
+    ensure_onnxruntime
+    local ort_lib_path=""
+    if [[ -n "${ONNXRUNTIME_ROOT:-}" && -d "${ONNXRUNTIME_ROOT}/lib" ]]; then
+      ort_lib_path="${ONNXRUNTIME_ROOT}/lib:"
+    fi
     # Include ferrite-os runtime, libtorch, and external integration libs
-    export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LIBTORCH}/lib:${ROOT}/external/aten-ptx/target/release:${ROOT}/external/candle-ptx/target/release:${ROOT}/external/onnxruntime-ptx/target/release:${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LIBTORCH}/lib:${ort_lib_path}${ROOT}/external/aten-ptx/target/release:${ROOT}/external/candle-ptx/target/release:${ROOT}/external/onnxruntime-ptx/target/release:${LD_LIBRARY_PATH:-}"
   else
     export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LD_LIBRARY_PATH:-}"
   fi

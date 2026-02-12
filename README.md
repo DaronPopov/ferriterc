@@ -22,6 +22,7 @@ cd ferriterc
 - Rust toolchain bootstrap (when missing)
 - CUPTI installation attempt (Linux package managers)
 - libtorch provisioning and extraction
+- onnxruntime provisioning and extraction
 - source builds only (no precompiled ferrite binaries)
 
 No Python torch install is required.
