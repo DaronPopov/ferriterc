@@ -6,8 +6,9 @@ Repository:
 ## Prerequisites
 
 - Linux (`x86_64` / `aarch64`)
-- **Only the NVIDIA driver** needs to be pre-installed
-- The installer automatically handles everything else: CUDA toolkit, host build tools, Rust toolchain, CUPTI, and libtorch
+- NVIDIA driver installed
+- CUDA toolkit pre-installed (`nvcc` available in `PATH`, or set `CUDA_PATH`)
+- Installer auto-provisions the rest: host build tools, Rust toolchain, CUPTI, and libtorch
 
 ## 1) Clone
 
@@ -74,7 +75,8 @@ Equivalent explicit flags:
 
 ## Notes
 
-- Only the NVIDIA driver is required; the CUDA toolkit is auto-installed if `nvcc` is not found
+- CUDA toolkit is user-managed by default (installer expects `nvcc` to exist)
+- If you want legacy behavior, use `./install.sh --auto-install-cuda`
 - Installer auto-handles host build tooling, Rust toolchain, CUPTI, and libtorch provisioning
 - No precompiled Ferrite binaries are fetched; installer builds this repository from source
 - No Python torch install is required (aarch64 path extracts C++ libtorch artifacts only)

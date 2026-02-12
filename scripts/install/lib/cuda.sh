@@ -27,6 +27,15 @@ ensure_cuda_toolkit() {
     return 0
   fi
 
+  if [[ "${AUTO_INSTALL_CUDA:-false}" != "true" ]]; then
+    echo "[error] nvcc not found (CUDA toolkit is required and auto-install is disabled)"
+    echo "[hint] install CUDA manually, then re-run installer:"
+    echo "       https://developer.nvidia.com/cuda-downloads"
+    echo "[hint] or opt in to legacy behavior: ./install.sh --auto-install-cuda"
+    diag_emit "installer.cuda" "FAIL" "INS-CUDA-0013" "nvcc missing and CUDA auto-install disabled" "install CUDA toolkit manually or pass --auto-install-cuda"
+    exit 1
+  fi
+
   echo "[info] nvcc not found; attempting CUDA toolkit install"
 
   if cmd_exists apt-get; then

@@ -3,7 +3,7 @@
 ## Preconditions
 - Linux (`x86_64` or `aarch64`)
 - NVIDIA driver installed
-- CUDA toolkit is auto-installed if absent (only driver required)
+- CUDA toolkit installed (`nvcc` available in `PATH`, or set `CUDA_PATH`)
 
 ## Standard Install
 ```bash

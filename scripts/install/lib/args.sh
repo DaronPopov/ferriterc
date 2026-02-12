@@ -12,6 +12,8 @@ init_install_defaults() {
   LIBTORCH_URL="${LIBTORCH_URL:-}"
   TORCH_CPYTHON_TAG="${TORCH_CPYTHON_TAG:-cp311}"
   CORE_ONLY=false
+  WITH_CAPTURE=false
+  AUTO_INSTALL_CUDA="${AUTO_INSTALL_CUDA:-false}"
 }
 
 parse_install_args() {
@@ -24,6 +26,8 @@ parse_install_args() {
       --libtorch-tag)   LIBTORCH_CUDA_TAG="${2:-}";   shift 2 ;;
       --cudarc-feature) CUDARC_CUDA_FEATURE="${2:-}"; shift 2 ;;
       --core-only)      CORE_ONLY=true;                 shift ;;
+      --with-capture)   WITH_CAPTURE=true;             shift ;;
+      --auto-install-cuda) AUTO_INSTALL_CUDA=true;     shift ;;
       --pins)           apply_pins "${2:-}";          shift 2 ;;
       -h|--help)        usage; exit 0 ;;
       *)

@@ -34,6 +34,12 @@ Set SM explicitly:
 ./install.sh --sm 86
 ```
 
+Optional legacy behavior (auto-install CUDA toolkit if `nvcc` is missing):
+
+```bash
+./install.sh --auto-install-cuda
+```
+
 Enable boot-time daemon service:
 
 ```bash
