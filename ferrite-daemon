@@ -12,11 +12,12 @@ ROOT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 DAEMON_RELEASE="$ROOT/ferrite-os/target/release/ferrite-daemon"
 DAEMON_DEBUG="$ROOT/ferrite-os/target/debug/ferrite-daemon"
 RUNTIME_LIB="$ROOT/ferrite-os/lib"
+EXT_LIBS="$ROOT/external/aten-ptx/target/release:$ROOT/external/candle-ptx/target/release:$ROOT/external/onnxruntime-ptx/target/release:$ROOT/external/ferrite-xla/target/release"
 
 if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
-  export LD_LIBRARY_PATH="$RUNTIME_LIB:$LD_LIBRARY_PATH"
+  export LD_LIBRARY_PATH="$RUNTIME_LIB:$EXT_LIBS:$LD_LIBRARY_PATH"
 else
-  export LD_LIBRARY_PATH="$RUNTIME_LIB"
+  export LD_LIBRARY_PATH="$RUNTIME_LIB:$EXT_LIBS"
 fi
 
 if [[ -z "${LIBTORCH:-}" && -d "$ROOT/external/libtorch" ]]; then
@@ -26,6 +27,13 @@ export LIBTORCH_BYPASS_VERSION_CHECK="${LIBTORCH_BYPASS_VERSION_CHECK:-1}"
 
 if [[ -n "${LIBTORCH:-}" && -d "${LIBTORCH}/lib" ]]; then
   export LD_LIBRARY_PATH="${LIBTORCH}/lib:$LD_LIBRARY_PATH"
+fi
+
+if [[ -z "${ONNXRUNTIME_ROOT:-}" && -d "$ROOT/external/onnxruntime" ]]; then
+  export ONNXRUNTIME_ROOT="$ROOT/external/onnxruntime"
+fi
+if [[ -n "${ONNXRUNTIME_ROOT:-}" && -d "${ONNXRUNTIME_ROOT}/lib" ]]; then
+  export LD_LIBRARY_PATH="${ONNXRUNTIME_ROOT}/lib:$LD_LIBRARY_PATH"
 fi
 
 if [[ -z "${FERRITE_GPU_NAME:-}" ]] && command -v nvidia-smi >/dev/null 2>&1; then

@@ -30,13 +30,24 @@ install_systemd_service() {
   sudo_cmd cp "$cfg_src" "$cfg_dst"
 
   local libtorch_env=""
+  local onnxruntime_env=""
+  local onnxruntime_lib_path=""
+  local ext_lib_path="${ROOT}/external/aten-ptx/target/release:${ROOT}/external/candle-ptx/target/release:${ROOT}/external/onnxruntime-ptx/target/release:${ROOT}/external/ferrite-xla/target/release"
   local ld_path
+  if [[ -n "${ONNXRUNTIME_ROOT:-}" && -d "${ONNXRUNTIME_ROOT}/lib" ]]; then
+    onnxruntime_env="Environment=ONNXRUNTIME_ROOT=${ONNXRUNTIME_ROOT}"
+    onnxruntime_lib_path="${ONNXRUNTIME_ROOT}/lib:"
+  elif [[ -d "${ROOT}/external/onnxruntime/lib" ]]; then
+    onnxruntime_env="Environment=ONNXRUNTIME_ROOT=${ROOT}/external/onnxruntime"
+    onnxruntime_lib_path="${ROOT}/external/onnxruntime/lib:"
+  fi
+
   if [[ "${CORE_ONLY}" != "true" && -n "${LIBTORCH:-}" ]]; then
     libtorch_env="Environment=LIBTORCH=${LIBTORCH}
 Environment=LIBTORCH_BYPASS_VERSION_CHECK=1"
-    ld_path="${ROOT}/ferrite-os/lib:${LIBTORCH}/lib"
+    ld_path="${ROOT}/ferrite-os/lib:${LIBTORCH}/lib:${onnxruntime_lib_path}${ext_lib_path}"
   else
-    ld_path="${ROOT}/ferrite-os/lib"
+    ld_path="${ROOT}/ferrite-os/lib:${onnxruntime_lib_path}${ext_lib_path}"
   fi
 
   local unit_tmp
@@ -58,6 +69,7 @@ Environment=PTX_GPU_SM=sm_${SM}
 Environment=CUDA_ARCH=sm_${SM}
 Environment=CUDARC_CUDA_FEATURE=${CUDARC_CUDA_FEATURE:-}
 ${libtorch_env}
+${onnxruntime_env}
 Environment=LD_LIBRARY_PATH=${ld_path}
 ExecStart=${daemon_bin} serve --config ${cfg_dst}
 Restart=on-failure

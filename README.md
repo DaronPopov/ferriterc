@@ -23,6 +23,7 @@ cd ferriterc
 - CUPTI installation attempt (Linux package managers)
 - libtorch provisioning and extraction
 - onnxruntime provisioning and extraction
+- external integration dependency prefetch (aten/candle/xla/torch bridges)
 - source builds only (no precompiled ferrite binaries)
 
 No Python torch install is required.

@@ -77,7 +77,7 @@ Equivalent explicit flags:
 
 - CUDA toolkit is user-managed by default (installer expects `nvcc` to exist)
 - If you want legacy behavior, use `./install.sh --auto-install-cuda`
-- Installer auto-handles host build tooling, Rust toolchain, CUPTI, libtorch, and onnxruntime provisioning
+- Installer auto-handles host build tooling, Rust toolchain, CUPTI, libtorch, onnxruntime, and external integration dependency provisioning (aten/candle/xla)
 - No precompiled Ferrite binaries are fetched; installer builds this repository from source
 - No Python torch install is required (aarch64 path extracts C++ libtorch artifacts only)
 - Use `--core-only` to skip the ~2GB libtorch download when you only need the core runtime

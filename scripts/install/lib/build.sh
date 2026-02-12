@@ -162,7 +162,7 @@ print_success() {
   if [[ "${CORE_ONLY}" != "true" ]]; then
     echo "     libtorch:           ${LIBTORCH_VERSION}+${LIBTORCH_CUDA_TAG}"
     echo "     cudarc feature:     ${CUDARC_CUDA_FEATURE}"
-    echo "     external libs:      aten-ptx, candle-ptx, onnxruntime-ptx"
+    echo "     external libs:      aten-ptx, candle-ptx, onnxruntime-ptx, ferrite-xla"
     echo "     finetune_engine:    ready"
     echo "     mathematics_engine: ready"
   else

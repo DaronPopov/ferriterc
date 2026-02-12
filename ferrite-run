@@ -156,10 +156,18 @@ export LIBTORCH_BYPASS_VERSION_CHECK="${LIBTORCH_BYPASS_VERSION_CHECK:-1}"
 
 # Set up library path so the runtime .so files are found.
 export LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${ROOT}/external/aten-ptx/target/release:${ROOT}/external/candle-ptx/target/release:${ROOT}/external/onnxruntime-ptx/target/release:${ROOT}/external/ferrite-xla/target/release:${LD_LIBRARY_PATH}"
 
 # Add libtorch libs.
 if [[ -n "${LIBTORCH:-}" && -d "${LIBTORCH}/lib" ]]; then
   export LD_LIBRARY_PATH="${LIBTORCH}/lib:$LD_LIBRARY_PATH"
+fi
+
+if [[ -z "${ONNXRUNTIME_ROOT:-}" && -d "$ROOT/external/onnxruntime" ]]; then
+  export ONNXRUNTIME_ROOT="$ROOT/external/onnxruntime"
+fi
+if [[ -n "${ONNXRUNTIME_ROOT:-}" && -d "${ONNXRUNTIME_ROOT}/lib" ]]; then
+  export LD_LIBRARY_PATH="${ONNXRUNTIME_ROOT}/lib:$LD_LIBRARY_PATH"
 fi
 
 # Build cargo command.
