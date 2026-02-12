@@ -339,7 +339,7 @@ pub fn sync_stream(stream_id: usize) {
 /// Synchronize all PTX-OS streams
 pub fn sync_all_streams() {
     if let Some(rt) = GLOBAL_RUNTIME.get() {
-        rt.sync_all();
+        let _ = rt.sync_all();
     }
 }
 

@@ -217,7 +217,7 @@ All operations return `GuardResult<T>` with detailed errors:
 
 ```rust
 pub enum GuardError {
-    InvalidPointer { ptr: *const c_void },
+    InvalidPointer { ptr: usize },
     BufferTooSmall { required: usize, available: usize },
     NullPointer { operation: &'static str },
     KernelLaunchFailed { kernel: &'static str, error_code: i32 },
@@ -233,7 +233,7 @@ match unary::gelu(&input, &output, N, &ctx) {
         eprintln!("Buffer too small: need {} bytes, have {}", required, available);
     }
     Err(GuardError::InvalidPointer { ptr }) => {
-        eprintln!("Pointer {:?} not owned by TLSF allocator", ptr);
+        eprintln!("Pointer 0x{:x} not owned by TLSF allocator", ptr);
     }
     Err(e) => eprintln!("Error: {}", e),
 }

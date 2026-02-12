@@ -20,7 +20,7 @@ pub type GuardResult<T> = Result<T, GuardError>;
 #[derive(Debug, Clone)]
 pub enum GuardError {
     /// Pointer is not owned by the TLSF allocator.
-    InvalidPointer { ptr: *const c_void },
+    InvalidPointer { ptr: usize },
 
     /// Buffer size is too small for the operation.
     BufferTooSmall {
@@ -104,7 +104,7 @@ impl std::fmt::Display for GuardError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GuardError::InvalidPointer { ptr } => {
-                write!(f, "[{}] pointer {:?} not owned by TLSF allocator", self.diagnostic_code(), ptr)
+                write!(f, "[{}] pointer 0x{:x} not owned by TLSF allocator", self.diagnostic_code(), ptr)
             }
             GuardError::BufferTooSmall { required, available } => {
                 write!(f, "[{}] buffer too small: need {} bytes, have {}", self.diagnostic_code(), required, available)
@@ -162,7 +162,7 @@ impl GuardedBuffer {
 
         // Validate TLSF ownership
         if !ptx_sys::gpu_hot_owns_ptr(runtime, ptr) {
-            return Err(GuardError::InvalidPointer { ptr });
+            return Err(GuardError::InvalidPointer { ptr: ptr as usize });
         }
 
         Ok(Self {
@@ -216,7 +216,7 @@ impl GuardedBuffer {
     /// Re-validate TLSF ownership (useful after long operations)
     pub fn revalidate(&self) -> GuardResult<()> {
         if !unsafe { ptx_sys::gpu_hot_owns_ptr(self.runtime, self.ptr) } {
-            return Err(GuardError::InvalidPointer { ptr: self.ptr });
+            return Err(GuardError::InvalidPointer { ptr: self.ptr as usize });
         }
         Ok(())
     }
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn test_diagnostic_codes_are_unique() {
         let errors: Vec<GuardError> = vec![
-            GuardError::InvalidPointer { ptr: std::ptr::null() },
+            GuardError::InvalidPointer { ptr: 0 },
             GuardError::BufferTooSmall { required: 1, available: 0 },
             GuardError::NullPointer { operation: "test" },
             GuardError::ZeroElements { kernel: "test" },
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn test_diagnostic_codes_in_display() {
-        let err = GuardError::InvalidPointer { ptr: std::ptr::null() };
+        let err = GuardError::InvalidPointer { ptr: 0 };
         assert!(err.to_string().contains("KERN-GUARD-0001"));
 
         let err = GuardError::BufferTooSmall { required: 100, available: 50 };
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn test_remediation_hints_non_empty() {
         let errors: Vec<GuardError> = vec![
-            GuardError::InvalidPointer { ptr: std::ptr::null() },
+            GuardError::InvalidPointer { ptr: 0 },
             GuardError::BufferTooSmall { required: 1, available: 0 },
             GuardError::NullPointer { operation: "test" },
             GuardError::ZeroElements { kernel: "test" },
