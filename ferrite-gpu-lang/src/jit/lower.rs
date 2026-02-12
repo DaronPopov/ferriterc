@@ -9,7 +9,7 @@
 /// tracked as `Scalar(f64)` values until they meet a tensor operand,
 /// at which point a `FillLike` op broadcasts them to the tensor's shape.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::ast::*;
 use super::hir::*;
@@ -60,9 +60,8 @@ impl Ctx {
     fn lower_stmt(&mut self, stmt: &Stmt) -> Result<(), JitError> {
         match stmt {
             Stmt::FnDef { .. } => {} // already collected
-            Stmt::Let { name, value, .. } => {
-                let hid = self.lower_expr_to_tensor(value)?;
-                self.names.insert(name.clone(), hid);
+            Stmt::Let { name, value, where_clauses, .. } => {
+                self.lower_let_stmt(name, value, where_clauses)?;
             }
             Stmt::Return { name, .. } => {
                 let hid = self.resolve(name)?;
@@ -102,9 +101,8 @@ impl Ctx {
         // Process body statements
         for stmt in body {
             match stmt {
-                Stmt::Let { name, value, .. } => {
-                    let hid = self.lower_expr_to_tensor(value)?;
-                    self.names.insert(name.clone(), hid);
+                Stmt::Let { name, value, where_clauses, .. } => {
+                    self.lower_let_stmt(name, value, where_clauses)?;
                 }
                 Stmt::FnDef { .. } => {
                     return Err(JitError::Lower(
@@ -116,10 +114,8 @@ impl Ctx {
                         "return not allowed inside tile block".into(),
                     ));
                 }
-                Stmt::Tile { .. } => {
-                    return Err(JitError::Lower(
-                        "nested tile blocks are not supported".into(),
-                    ));
+                Stmt::Tile { output, inputs, body, .. } => {
+                    self.lower_tile(output, inputs, body)?;
                 }
                 Stmt::If { branches, else_body, span } => {
                     self.lower_if(branches, else_body, Some(*span))?;
@@ -205,6 +201,168 @@ impl Ctx {
             }
         }
         Ok(())
+    }
+
+    fn lower_let_stmt(&mut self, name: &str, value: &SExpr, where_clauses: &[SExpr]) -> Result<(), JitError> {
+        if !where_clauses.is_empty() {
+            let Expr::Call { func, args } = &value.node else {
+                return Err(JitError::Lower(
+                    "`where` clauses are only supported on input(...) bindings".into(),
+                ));
+            };
+            if func != "input" {
+                return Err(JitError::Lower(
+                    "`where` clauses are only supported on input(...) bindings".into(),
+                ));
+            }
+            let (_, bindings) = self.input_shape_with_bindings(args)?;
+            for clause in where_clauses {
+                let passed = self.eval_shape_constraint(clause, &bindings)?;
+                if !passed {
+                    return Err(JitError::Lower(format!(
+                        "input shape contract failed: {:?}",
+                        clause.node
+                    )));
+                }
+            }
+        }
+
+        let hid = self.lower_expr_to_tensor(value)?;
+        self.names.insert(name.to_string(), hid);
+        Ok(())
+    }
+
+    fn eval_shape_constraint(&self, expr: &SExpr, bindings: &HashMap<String, i64>) -> Result<bool, JitError> {
+        enum CV {
+            Int(i64),
+            Bool(bool),
+        }
+        fn eval(expr: &SExpr, bindings: &HashMap<String, i64>) -> Result<CV, JitError> {
+            match &expr.node {
+                Expr::Var(name) => {
+                    let Some(v) = bindings.get(name) else {
+                        return Err(JitError::Lower(format!(
+                            "shape constraint references unknown symbol '{}'",
+                            name
+                        )));
+                    };
+                    Ok(CV::Int(*v))
+                }
+                Expr::Int(v) => Ok(CV::Int(*v)),
+                Expr::Bool(v) => Ok(CV::Bool(*v)),
+                Expr::Float(_) => Err(JitError::Lower(
+                    "shape constraints only support integer and boolean literals".into(),
+                )),
+                Expr::Neg(inner) => match eval(inner, bindings)? {
+                    CV::Int(v) => Ok(CV::Int(-v)),
+                    CV::Bool(_) => Err(JitError::Lower(
+                        "shape constraint negation expects integer expression".into(),
+                    )),
+                },
+                Expr::BinOp { op, left, right } => {
+                    let l = match eval(left, bindings)? {
+                        CV::Int(v) => v,
+                        CV::Bool(_) => {
+                            return Err(JitError::Lower(
+                                "shape constraint arithmetic expects integer operands".into(),
+                            ))
+                        }
+                    };
+                    let r = match eval(right, bindings)? {
+                        CV::Int(v) => v,
+                        CV::Bool(_) => {
+                            return Err(JitError::Lower(
+                                "shape constraint arithmetic expects integer operands".into(),
+                            ))
+                        }
+                    };
+                    let out = match op {
+                        BinOper::Add => l.saturating_add(r),
+                        BinOper::Sub => l.saturating_sub(r),
+                        BinOper::Mul => l.saturating_mul(r),
+                        BinOper::Div => {
+                            if r == 0 {
+                                return Err(JitError::Lower(
+                                    "shape constraint division by zero".into(),
+                                ));
+                            }
+                            l / r
+                        }
+                    };
+                    Ok(CV::Int(out))
+                }
+                Expr::Cmp { op, left, right } => {
+                    let l = match eval(left, bindings)? {
+                        CV::Int(v) => v,
+                        CV::Bool(_) => {
+                            return Err(JitError::Lower(
+                                "shape constraint comparisons expect integer operands".into(),
+                            ))
+                        }
+                    };
+                    let r = match eval(right, bindings)? {
+                        CV::Int(v) => v,
+                        CV::Bool(_) => {
+                            return Err(JitError::Lower(
+                                "shape constraint comparisons expect integer operands".into(),
+                            ))
+                        }
+                    };
+                    let out = match op {
+                        CmpOp::Lt => l < r,
+                        CmpOp::Gt => l > r,
+                        CmpOp::Le => l <= r,
+                        CmpOp::Ge => l >= r,
+                        CmpOp::Eq => l == r,
+                        CmpOp::Ne => l != r,
+                    };
+                    Ok(CV::Bool(out))
+                }
+                Expr::Logic { op, left, right } => {
+                    let l = match eval(left, bindings)? {
+                        CV::Bool(v) => v,
+                        CV::Int(_) => {
+                            return Err(JitError::Lower(
+                                "shape constraint logical operators expect boolean operands".into(),
+                            ))
+                        }
+                    };
+                    let r = match eval(right, bindings)? {
+                        CV::Bool(v) => v,
+                        CV::Int(_) => {
+                            return Err(JitError::Lower(
+                                "shape constraint logical operators expect boolean operands".into(),
+                            ))
+                        }
+                    };
+                    Ok(CV::Bool(match op {
+                        LogicOp::And => l && r,
+                        LogicOp::Or => l || r,
+                    }))
+                }
+                Expr::LogicNot(inner) => {
+                    let v = match eval(inner, bindings)? {
+                        CV::Bool(v) => v,
+                        CV::Int(_) => {
+                            return Err(JitError::Lower(
+                                "shape constraint 'not' expects boolean operand".into(),
+                            ))
+                        }
+                    };
+                    Ok(CV::Bool(!v))
+                }
+                Expr::Call { .. } | Expr::Shape(_) => Err(JitError::Lower(
+                    "shape constraints do not support function calls or shape literals".into(),
+                )),
+            }
+        }
+
+        match eval(expr, bindings)? {
+            CV::Bool(v) => Ok(v),
+            CV::Int(_) => Err(JitError::Lower(
+                "shape constraint must evaluate to boolean".into(),
+            )),
+        }
     }
 
     // ── expressions ──────────────────────────────────────────────
@@ -351,7 +509,7 @@ impl Ctx {
         match func {
             // ── builtins ─────────────────────────────────────────
             "input" => {
-                let shape = self.positional_shape(args, 0)?;
+                let (shape, _) = self.input_shape_with_bindings(args)?;
                 let ty = HirType::f32_tensor(shape.clone());
                 let hid = self.graph.push(HirOp::Input { shape: shape.clone() }, ty, span);
                 self.graph.inputs.push(hid);
@@ -611,9 +769,8 @@ impl Ctx {
         let mut return_hid = None;
         for stmt in body {
             match stmt {
-                Stmt::Let { name, value, .. } => {
-                    let hid = self.lower_expr_to_tensor(value)?;
-                    self.names.insert(name.clone(), hid);
+                Stmt::Let { name, value, where_clauses, .. } => {
+                    self.lower_let_stmt(name, value, where_clauses)?;
                 }
                 Stmt::Return { name, .. } => {
                     return_hid = Some(self.resolve(name)?);
@@ -667,7 +824,7 @@ impl Ctx {
         }
     }
 
-    fn positional_shape(&self, args: &[Arg], index: usize) -> Result<Vec<usize>, JitError> {
+    fn positional_shape(&self, args: &[Arg], index: usize) -> Result<Vec<ShapeDim>, JitError> {
         match args.get(index) {
             Some(Arg::Positional(sexpr)) => match &sexpr.node {
                 Expr::Shape(dims) => Ok(dims.clone()),
@@ -685,6 +842,76 @@ impl Ctx {
                 index
             ))),
         }
+    }
+
+    fn input_shape_with_bindings(&self, args: &[Arg]) -> Result<(Vec<usize>, HashMap<String, i64>), JitError> {
+        let dims = self.positional_shape(args, 0)?;
+        let mut named_bindings: HashMap<String, i64> = HashMap::new();
+        for arg in args.iter().skip(1) {
+            if let Arg::Named { name, value } = arg {
+                let v = match &value.node {
+                    Expr::Int(i) if *i > 0 => *i,
+                    Expr::Int(i) => {
+                        return Err(JitError::Lower(format!(
+                            "shape symbol '{}' must be > 0, got {}",
+                            name, i
+                        )))
+                    }
+                    other => {
+                        return Err(JitError::Lower(format!(
+                            "shape symbol '{}' requires integer value, got {:?}",
+                            name, other
+                        )))
+                    }
+                };
+                if named_bindings.insert(name.clone(), v).is_some() {
+                    return Err(JitError::Lower(format!(
+                        "duplicate shape symbol binding: {}",
+                        name
+                    )));
+                }
+            } else {
+                return Err(JitError::Lower(
+                    "input shape contract only supports one positional shape followed by named symbol bindings".into(),
+                ));
+            }
+        }
+
+        let mut used_symbols: HashSet<String> = HashSet::new();
+        let mut out = Vec::with_capacity(dims.len());
+        for dim in dims {
+            match dim {
+                ShapeDim::Const(v) => {
+                    if v == 0 {
+                        return Err(JitError::Lower(
+                            "input shape dimensions must be >= 1".into(),
+                        ));
+                    }
+                    out.push(v);
+                }
+                ShapeDim::Symbol(name) => {
+                    used_symbols.insert(name.clone());
+                    let Some(v) = named_bindings.get(&name) else {
+                        return Err(JitError::Lower(format!(
+                            "missing shape symbol binding '{}' for input shape",
+                            name
+                        )));
+                    };
+                    out.push(*v as usize);
+                }
+            }
+        }
+
+        for key in named_bindings.keys() {
+            if !used_symbols.contains(key) {
+                return Err(JitError::Lower(format!(
+                    "shape symbol binding '{}' is not used by input shape",
+                    key
+                )));
+            }
+        }
+
+        Ok((out, named_bindings))
     }
 
     fn named_int(&self, args: &[Arg], name: &str) -> Result<i64, JitError> {

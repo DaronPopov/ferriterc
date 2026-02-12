@@ -15,11 +15,41 @@ const DEFAULT_HIDDEN: i64 = 2048;
 const DEFAULT_LORA_RANK: i64 = 16;
 const DEFAULT_LORA_ALPHA: f64 = 32.0;
 const DEFAULT_TEXT_KEY: &str = "text";
+const DEFAULT_MODEL_GB: usize = 100;
+const MAGIC: &[u8; 8] = b"FRTA_CKP";
+const VERSION: u32 = 2;
+const MIN_SUPPORTED_VERSION: u32 = 1;
+const CHECKPOINT_HEADER_BYTES: usize = 80;
+
+#[derive(Clone, Copy)]
+enum WeightsSource {
+    Synthetic,
+    Directory,
+}
+
+impl WeightsSource {
+    fn parse(s: &str) -> Result<Self> {
+        match s {
+            "synthetic" => Ok(Self::Synthetic),
+            "directory" => Ok(Self::Directory),
+            _ => Err(anyhow::anyhow!("invalid --weights-source: {s} (expected synthetic|directory)")),
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Synthetic => "synthetic",
+            Self::Directory => "directory",
+        }
+    }
+}
 
 #[derive(Clone)]
 struct Config {
+    weights_source: WeightsSource,
     weights_dir: Option<PathBuf>,
     adapter_path: Option<PathBuf>,
+    model_gb: usize,
     dataset: PathBuf,
     dataset_format: DatasetFormat,
     text_key: String,
@@ -115,6 +145,199 @@ fn load_samples(path: &PathBuf, fmt: DatasetFormat, key: &str) -> Result<Vec<Str
     Ok(samples)
 }
 
+fn discover_files(dir: &PathBuf) -> Result<Vec<(PathBuf, usize)>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let meta = fs::metadata(&path)?;
+        let len = meta.len() as usize;
+        if len > 0 {
+            files.push((path, len));
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    if files.is_empty() {
+        return Err(anyhow::anyhow!("no non-empty files found in weights dir"));
+    }
+    Ok(files)
+}
+
+fn chunk_file_sizes(files: &[(PathBuf, usize)], chunk_bytes: usize) -> Vec<usize> {
+    let mut shards = Vec::new();
+    for (_, mut len) in files {
+        while len > 0 {
+            let take = len.min(chunk_bytes);
+            shards.push(take);
+            len -= take;
+        }
+    }
+    shards
+}
+
+#[derive(Debug)]
+struct AdapterCheckpoint {
+    version: u32,
+    step: usize,
+    loss: f64,
+    lora_rank: i64,
+    lora_alpha: f64,
+    lr: f64,
+    hidden: i64,
+    shard_count: usize,
+    adapters_a: Vec<Tensor>,
+    adapters_b: Vec<Tensor>,
+}
+
+#[derive(Clone, Debug)]
+struct CheckpointHeader {
+    version: u32,
+    step: u64,
+    loss_bits: u64,
+    lora_rank: u32,
+    hidden: u32,
+    shard_count: u32,
+    lora_alpha_bits: u64,
+    lr_bits: u64,
+    _timestamp: u64,
+    tensor_count: u32,
+}
+
+impl CheckpointHeader {
+    fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < CHECKPOINT_HEADER_BYTES {
+            return Err(anyhow::anyhow!("header too short: {} bytes", data.len()));
+        }
+        if &data[0..8] != MAGIC {
+            return Err(anyhow::anyhow!("invalid checkpoint magic"));
+        }
+        Ok(Self {
+            version: u32::from_le_bytes(data[8..12].try_into()?),
+            step: u64::from_le_bytes(data[12..20].try_into()?),
+            loss_bits: u64::from_le_bytes(data[20..28].try_into()?),
+            lora_rank: u32::from_le_bytes(data[28..32].try_into()?),
+            hidden: u32::from_le_bytes(data[32..36].try_into()?),
+            shard_count: u32::from_le_bytes(data[36..40].try_into()?),
+            lora_alpha_bits: u64::from_le_bytes(data[40..48].try_into()?),
+            lr_bits: u64::from_le_bytes(data[48..56].try_into()?),
+            _timestamp: u64::from_le_bytes(data[56..64].try_into()?),
+            tensor_count: u32::from_le_bytes(data[64..68].try_into()?),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TensorMeta {
+    name: String,
+    dims: Vec<i64>,
+    data_bytes: u64,
+}
+
+impl TensorMeta {
+    fn from_reader(data: &[u8], offset: &mut usize) -> Result<Self> {
+        let name_len = u16::from_le_bytes(read_chunk(data, offset, 2)?.try_into()?);
+        let name = String::from_utf8(read_chunk(data, offset, name_len as usize)?.to_vec())?;
+        let ndim = read_chunk(data, offset, 1)?[0];
+        let mut dims = Vec::with_capacity(ndim as usize);
+        for _ in 0..ndim {
+            dims.push(i64::from_le_bytes(read_chunk(data, offset, 8)?.try_into()?));
+        }
+        let _dtype = read_chunk(data, offset, 1)?[0];
+        let data_bytes = u64::from_le_bytes(read_chunk(data, offset, 8)?.try_into()?);
+        Ok(Self {
+            name,
+            dims,
+            data_bytes,
+        })
+    }
+}
+
+fn read_chunk<'a>(data: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8]> {
+    let end = (*offset).saturating_add(len);
+    if end > data.len() {
+        return Err(anyhow::anyhow!(
+            "checkpoint truncated: need {} bytes at offset {}, total {}",
+            len,
+            *offset,
+            data.len()
+        ));
+    }
+    let chunk = &data[*offset..end];
+    *offset = end;
+    Ok(chunk)
+}
+
+fn decode_f32_bytes(raw: &[u8]) -> Result<Vec<f32>> {
+    if !raw.len().is_multiple_of(std::mem::size_of::<f32>()) {
+        return Err(anyhow::anyhow!(
+            "invalid f32 blob size: {} bytes",
+            raw.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(raw.len() / std::mem::size_of::<f32>());
+    for bytes in raw.chunks_exact(4) {
+        out.push(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+    }
+    Ok(out)
+}
+
+fn load_checkpoint(path: &PathBuf, device: Device) -> Result<AdapterCheckpoint> {
+    let data = fs::read(path)?;
+    let header = CheckpointHeader::from_bytes(&data)?;
+    if header.version < MIN_SUPPORTED_VERSION || header.version > VERSION {
+        return Err(anyhow::anyhow!(
+            "checkpoint version mismatch: file={} supported={}..={}",
+            header.version,
+            MIN_SUPPORTED_VERSION,
+            VERSION
+        ));
+    }
+
+    let mut offset = CHECKPOINT_HEADER_BYTES;
+    let mut adapters_a = Vec::new();
+    let mut adapters_b = Vec::new();
+    for _ in 0..header.tensor_count {
+        let meta = TensorMeta::from_reader(&data, &mut offset)?;
+        let byte_count = meta.data_bytes as usize;
+        let raw = read_chunk(&data, &mut offset, byte_count)?;
+        let floats = decode_f32_bytes(raw)?;
+
+        let tensor = Tensor::from_slice(&floats)
+            .reshape(&meta.dims)
+            .to_device(device)
+            .set_requires_grad(true);
+        if meta.name.ends_with("_lora_a") {
+            adapters_a.push(tensor);
+        } else if meta.name.ends_with("_lora_b") {
+            adapters_b.push(tensor);
+        }
+    }
+
+    Ok(AdapterCheckpoint {
+        version: header.version,
+        step: header.step as usize,
+        loss: f64::from_bits(header.loss_bits),
+        lora_rank: header.lora_rank as i64,
+        lora_alpha: f64::from_bits(header.lora_alpha_bits),
+        lr: f64::from_bits(header.lr_bits),
+        hidden: header.hidden as i64,
+        shard_count: header.shard_count as usize,
+        adapters_a,
+        adapters_b,
+    })
+}
+
+fn synthetic_base_weight(rows: i64, hidden: i64, shard_idx: usize, device: Device, inv_sqrt_d: f64) -> Tensor {
+    let used = rows * hidden;
+    let idx = Tensor::arange(used, (Kind::Float, device));
+    let phase = (shard_idx as f64 + 1.0) * 0.0137;
+    let wave = (&idx * 0.011 + phase).sin() + (&idx * 0.017 + phase * 1.7).cos();
+    (wave * (0.5 * inv_sqrt_d)).view([rows, hidden])
+}
+
 fn encode_text(text: &str, len: i64, seed: u64) -> Tensor {
     let mut out = vec![0f32; len as usize];
     let bytes = text.as_bytes();
@@ -175,8 +398,10 @@ impl EvalMetrics {
 
 fn parse_args() -> Result<Config> {
     let mut cfg = Config {
+        weights_source: WeightsSource::Synthetic,
         weights_dir: None,
         adapter_path: None,
+        model_gb: DEFAULT_MODEL_GB,
         dataset: PathBuf::new(),
         dataset_format: DatasetFormat::Auto,
         text_key: DEFAULT_TEXT_KEY.to_string(),
@@ -195,10 +420,12 @@ fn parse_args() -> Result<Config> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--dataset" => cfg.dataset = PathBuf::from(args.next().ok_or_else(|| anyhow::anyhow!("missing --dataset"))?),
+            "--weights-source" => cfg.weights_source = WeightsSource::parse(&args.next().ok_or_else(|| anyhow::anyhow!("missing val"))?)?,
             "--dataset-format" => cfg.dataset_format = DatasetFormat::parse(&args.next().ok_or_else(|| anyhow::anyhow!("missing val"))?)?,
             "--text-key" => cfg.text_key = args.next().ok_or_else(|| anyhow::anyhow!("missing val"))?,
             "--weights-dir" => cfg.weights_dir = Some(PathBuf::from(args.next().ok_or_else(|| anyhow::anyhow!("missing val"))?)),
             "--adapter-path" => cfg.adapter_path = Some(PathBuf::from(args.next().ok_or_else(|| anyhow::anyhow!("missing val"))?)),
+            "--model-gb" => cfg.model_gb = args.next().ok_or_else(|| anyhow::anyhow!("missing val"))?.parse()?,
             "--shard-mb" => cfg.shard_mb = args.next().ok_or_else(|| anyhow::anyhow!("missing val"))?.parse()?,
             "--streams" => cfg.streams = args.next().ok_or_else(|| anyhow::anyhow!("missing val"))?.parse()?,
             "--wave-streams" => cfg.wave_streams = args.next().ok_or_else(|| anyhow::anyhow!("missing val"))?.parse()?,
@@ -210,6 +437,7 @@ fn parse_args() -> Result<Config> {
             "--split-ratio" => cfg.split_ratio = args.next().ok_or_else(|| anyhow::anyhow!("missing val"))?.parse()?,
             "-h" | "--help" => {
                 println!("Usage: validation_loop.rs --dataset PATH [options]");
+                println!("  --weights-source synthetic|directory --weights-dir PATH --model-gb N");
                 println!("  Runs a forward-only eval pass over a held-out dataset split.");
                 std::process::exit(0);
             }
@@ -219,6 +447,17 @@ fn parse_args() -> Result<Config> {
 
     if cfg.dataset.as_os_str().is_empty() {
         return Err(anyhow::anyhow!("--dataset is required"));
+    }
+    if cfg.model_gb == 0 || cfg.shard_mb == 0 || cfg.streams == 0 || cfg.wave_streams == 0 || cfg.micro_batch <= 0 {
+        return Err(anyhow::anyhow!("invalid numeric configuration"));
+    }
+    if let WeightsSource::Directory = cfg.weights_source {
+        let Some(dir) = &cfg.weights_dir else {
+            return Err(anyhow::anyhow!("--weights-dir is required with --weights-source directory"));
+        };
+        if !dir.exists() {
+            return Err(anyhow::anyhow!("weights directory does not exist: {}", dir.display()));
+        }
     }
     Ok(cfg)
 }
@@ -258,7 +497,11 @@ fn main() -> Result<()> {
     let inv_sqrt_d = 1.0 / (cfg.hidden as f64).sqrt();
 
     // Load and split dataset
-    let all_samples = load_samples(&cfg.dataset, cfg.dataset_format, &cfg.text_key)?;
+    let dataset_format_used = match cfg.dataset_format {
+        DatasetFormat::Auto => detect_format(&cfg.dataset),
+        x => x,
+    };
+    let all_samples = load_samples(&cfg.dataset, dataset_format_used, &cfg.text_key)?;
     let split_at = ((all_samples.len() as f64) * cfg.split_ratio) as usize;
     let eval_samples = if cfg.split_ratio < 1.0 {
         all_samples[split_at..].to_vec()
@@ -272,22 +515,62 @@ fn main() -> Result<()> {
         eval_samples.len()
     };
 
-    let shard_bytes = cfg.shard_mb * 1024 * 1024;
-    let model_bytes = 100 * 1024 * 1024 * 1024usize; // placeholder
-    let shards_per_pass = model_bytes.div_ceil(shard_bytes);
+    let default_shard_bytes = cfg.shard_mb * 1024 * 1024;
+    let shard_bytes_vec: Vec<usize> = match cfg.weights_source {
+        WeightsSource::Synthetic => {
+            let model_bytes = cfg.model_gb * 1024 * 1024 * 1024usize;
+            let shard_count = model_bytes.div_ceil(default_shard_bytes);
+            vec![default_shard_bytes; shard_count]
+        }
+        WeightsSource::Directory => {
+            let files = discover_files(cfg.weights_dir.as_ref().expect("validated in parse_args"))?;
+            chunk_file_sizes(&files, default_shard_bytes)
+        }
+    };
+    let shards_per_pass = shard_bytes_vec.len();
+
+    let mut checkpoint = None;
+    if let Some(path) = &cfg.adapter_path {
+        let loaded = load_checkpoint(path, Device::Cpu)?;
+        if loaded.hidden != cfg.hidden || loaded.lora_rank != cfg.lora_rank {
+            return Err(anyhow::anyhow!(
+                "checkpoint hidden/rank mismatch: ckpt ({}/{}) cfg ({}/{})",
+                loaded.hidden,
+                loaded.lora_rank,
+                cfg.hidden,
+                cfg.lora_rank
+            ));
+        }
+        checkpoint = Some(loaded);
+    }
 
     println!("=== Ferrite Validation Loop ===\n");
+    println!("  weights source:  {}", cfg.weights_source.as_str());
+    println!("  model gb:        {}", cfg.model_gb);
+    if let Some(wd) = &cfg.weights_dir {
+        println!("  weights dir:     {}", wd.display());
+    }
     println!("  dataset:         {}", cfg.dataset.display());
+    println!("  dataset format:  {}", dataset_format_used.as_str());
     println!("  eval samples:    {}", eval_count);
     println!("  shards/pass:     {}", shards_per_pass);
     println!("  wave streams:    {}", cfg.wave_streams);
     println!("  micro batch:     {}", cfg.micro_batch);
     println!("  hidden:          {}", cfg.hidden);
     println!("  lora rank:       {}", cfg.lora_rank);
+    println!(
+        "  checkpoint:      {}",
+        cfg.adapter_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
 
     let t_eval = Instant::now();
     let mut metrics = EvalMetrics::new(shards_per_pass);
     let mut sample_cursor = 0usize;
+    let mut checkpoint_hits = 0usize;
+    let mut checkpoint_misses = 0usize;
 
     tch::no_grad(|| -> Result<()> {
         let mut shard_base = 0usize;
@@ -299,16 +582,36 @@ fn main() -> Result<()> {
                 let stream_id = shard_idx % active_streams;
                 set_torch_stream(stream_id);
 
+                let shard_bytes = shard_bytes_vec[shard_idx];
                 let elems = (shard_bytes / std::mem::size_of::<f32>()) as i64;
                 let rows = (elems / cfg.hidden).max(1);
-                let used = rows * cfg.hidden;
+                let base_w = synthetic_base_weight(rows, cfg.hidden, shard_idx, device, inv_sqrt_d);
 
-                let base_w = (Tensor::randn([used], (Kind::Float, device)) * inv_sqrt_d)
-                    .view([rows, cfg.hidden]);
-
-                // In production, these would be loaded from adapter checkpoint
-                let lora_a = Tensor::randn([rows, cfg.lora_rank], (Kind::Float, device));
-                let lora_b = Tensor::randn([cfg.lora_rank, cfg.hidden], (Kind::Float, device));
+                let (lora_a, lora_b) = if let Some(cp) = &checkpoint {
+                    if let (Some(a), Some(b)) = (cp.adapters_a.get(shard_idx), cp.adapters_b.get(shard_idx)) {
+                        if a.size() == [rows, cfg.lora_rank] && b.size() == [cfg.lora_rank, cfg.hidden] {
+                            checkpoint_hits += 1;
+                            (a.to_device(device), b.to_device(device))
+                        } else {
+                            checkpoint_misses += 1;
+                            (
+                                Tensor::randn([rows, cfg.lora_rank], (Kind::Float, device)),
+                                Tensor::randn([cfg.lora_rank, cfg.hidden], (Kind::Float, device)),
+                            )
+                        }
+                    } else {
+                        checkpoint_misses += 1;
+                        (
+                            Tensor::randn([rows, cfg.lora_rank], (Kind::Float, device)),
+                            Tensor::randn([cfg.lora_rank, cfg.hidden], (Kind::Float, device)),
+                        )
+                    }
+                } else {
+                    (
+                        Tensor::randn([rows, cfg.lora_rank], (Kind::Float, device)),
+                        Tensor::randn([cfg.lora_rank, cfg.hidden], (Kind::Float, device)),
+                    )
+                };
 
                 let delta = lora_a.matmul(&lora_b) * lora_scale;
                 let effective_w = &base_w + &delta;
@@ -354,11 +657,31 @@ fn main() -> Result<()> {
     println!("    Perplexity:     {:.4}", metrics.perplexity());
     println!("    Samples:        {}", metrics.sample_count);
     println!("    Non-finite:     {}", metrics.non_finite);
+    println!("    Ckpt hits:      {}", checkpoint_hits);
+    println!("    Ckpt misses:    {}", checkpoint_misses);
     println!("    Wall time:      {:.2}s", wall);
     println!("    Peak VRAM:      {:.1} MB", s.peak_allocated as f64 / 1e6);
     println!("    Fragmentation:  {:.6}", s.fragmentation_ratio);
 
     println!("\nRESULT mode=validation");
+    println!("RESULT weights_source={}", cfg.weights_source.as_str());
+    println!(
+        "RESULT checkpoint_path={}",
+        cfg.adapter_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    if let Some(cp) = &checkpoint {
+        println!("RESULT checkpoint_step={}", cp.step);
+        println!("RESULT checkpoint_version={}", cp.version);
+        println!("RESULT checkpoint_loss={:.9}", cp.loss);
+        println!("RESULT checkpoint_shards={}", cp.shard_count);
+        println!("RESULT checkpoint_lr={:.9}", cp.lr);
+        println!("RESULT checkpoint_lora_alpha={:.6}", cp.lora_alpha);
+    }
+    println!("RESULT checkpoint_hits={}", checkpoint_hits);
+    println!("RESULT checkpoint_misses={}", checkpoint_misses);
     println!("RESULT avg_loss={:.9}", metrics.avg_loss());
     println!("RESULT perplexity={:.9}", metrics.perplexity());
     println!("RESULT eval_samples={}", metrics.sample_count);

@@ -806,11 +806,12 @@ mod tests {
 
     #[test]
     fn lex_tile_over_keywords() {
-        let toks = tokenize("tile over end").unwrap();
+        let toks = tokenize("tile over with end").unwrap();
         let kinds: Vec<_> = toks.iter().map(|t| &t.token).collect();
         assert_eq!(*kinds[0], Token::Tile);
         assert_eq!(*kinds[1], Token::Over);
-        assert_eq!(*kinds[2], Token::End);
+        assert_eq!(*kinds[2], Token::With);
+        assert_eq!(*kinds[3], Token::End);
     }
 
     // ── parser: infix & tile ─────────────────────────────────────
@@ -890,6 +891,61 @@ mod tests {
     }
 
     #[test]
+    fn parse_nested_tile_block() {
+        let toks = tokenize(
+            r#"
+            x = input([4])
+            tile y over (x):
+                t = x * 2.0
+                tile z over (t):
+                    z = t + 1.0
+                end
+                y = z * 3.0
+            end
+            return y
+        "#,
+        )
+        .unwrap();
+        let script = parser::parse(toks).unwrap();
+        match &script.stmts[1] {
+            ast::Stmt::Tile { body, .. } => {
+                assert_eq!(body.len(), 3);
+                assert!(matches!(body[1], ast::Stmt::Tile { .. }));
+            }
+            other => panic!("expected outer Tile, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_tile_with_annotations() {
+        let toks = tokenize(
+            r#"
+            x = input([4])
+            tile y over (x) with (tile_m=64, tile_n=32, precision=bf16, quant=nf4, dist=shard, replicas=2, layout=blocked_64x4, accum=bf16, collective=all_reduce):
+                y = x * 2.0
+            end
+            return y
+        "#,
+        )
+        .unwrap();
+        let script = parser::parse(toks).unwrap();
+        match &script.stmts[1] {
+            ast::Stmt::Tile { annotations, .. } => {
+                assert_eq!(annotations.tile_m, Some(64));
+                assert_eq!(annotations.tile_n, Some(32));
+                assert_eq!(annotations.precision, Some(ast::TilePrecision::Bf16));
+                assert_eq!(annotations.quant, Some(ast::TileQuant::Nf4));
+                assert_eq!(annotations.distribution, Some(ast::TileDistribution::Shard));
+                assert_eq!(annotations.replicas, Some(2));
+                assert_eq!(annotations.layout, Some(ast::TileLayout::Blocked64x4));
+                assert_eq!(annotations.accum, Some(ast::TileAccum::Bf16));
+                assert_eq!(annotations.collective, Some(ast::TileCollective::AllReduce));
+            }
+            other => panic!("expected Tile, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn parse_negation() {
         let toks = tokenize("x = input([4])\ny = -x\nreturn y").unwrap();
         let script = parser::parse(toks).unwrap();
@@ -897,6 +953,46 @@ mod tests {
             assert!(matches!(&value.node, ast::Expr::Neg(..)));
         } else {
             panic!("expected Let statement");
+        }
+    }
+
+    #[test]
+    fn parse_symbolic_shape_input() {
+        let toks = tokenize("x = input([B, T, H], B=2, T=8, H=64)\nreturn x").unwrap();
+        let script = parser::parse(toks).unwrap();
+        if let ast::Stmt::Let { value, .. } = &script.stmts[0] {
+            match &value.node {
+                ast::Expr::Call { func, args } => {
+                    assert_eq!(func, "input");
+                    assert_eq!(args.len(), 4);
+                    match &args[0] {
+                        ast::Arg::Positional(sexpr) => match &sexpr.node {
+                            ast::Expr::Shape(dims) => {
+                                assert!(matches!(dims[0], ast::ShapeDim::Symbol(ref s) if s == "B"));
+                                assert!(matches!(dims[1], ast::ShapeDim::Symbol(ref s) if s == "T"));
+                                assert!(matches!(dims[2], ast::ShapeDim::Symbol(ref s) if s == "H"));
+                            }
+                            other => panic!("expected shape, got {:?}", other),
+                        },
+                        other => panic!("expected positional shape, got {:?}", other),
+                    }
+                }
+                other => panic!("expected call, got {:?}", other),
+            }
+        } else {
+            panic!("expected Let statement");
+        }
+    }
+
+    #[test]
+    fn parse_input_where_clause() {
+        let toks = tokenize("x = input([B, H], B=2, H=64) where B > 0, H >= 64\nreturn x").unwrap();
+        let script = parser::parse(toks).unwrap();
+        match &script.stmts[0] {
+            ast::Stmt::Let { where_clauses, .. } => {
+                assert_eq!(where_clauses.len(), 2);
+            }
+            other => panic!("expected Let with where clause, got {:?}", other),
         }
     }
 
@@ -986,6 +1082,66 @@ mod tests {
     }
 
     #[test]
+    fn lower_nested_tile_block() {
+        let compiled = execute::compile_script(
+            r#"
+            x = input([4])
+            tile y over (x):
+                t = x * 2.0
+                tile z over (t):
+                    z = t + 1.0
+                end
+                y = z * 3.0
+            end
+            return y
+        "#,
+        )
+        .unwrap();
+        assert_eq!(compiled.output_shape(), &[4]);
+    }
+
+    #[test]
+    fn lower_annotated_tile_block() {
+        let compiled = execute::compile_script(
+            r#"
+            x = input([4])
+            tile y over (x) with (tile_m=128, tile_n=64, tile_k=32, precision=f16, quant=int8, dist=replicate, replicas=2, mesh_axis=0, layout=row_major, accum=f32, collective=all_reduce):
+                y = x * 2.0 + 1.0
+            end
+            return y
+        "#,
+        )
+        .unwrap();
+        assert_eq!(compiled.output_shape(), &[4]);
+    }
+
+    #[test]
+    fn lower_symbolic_shape_input() {
+        let compiled = execute::compile_script(
+            r#"
+            x = input([B, T, H], B=2, T=8, H=64)
+            y = relu(x)
+            return y
+        "#,
+        )
+        .unwrap();
+        assert_eq!(compiled.output_shape(), &[2, 8, 64]);
+    }
+
+    #[test]
+    fn lower_input_where_clause() {
+        let compiled = execute::compile_script(
+            r#"
+            x = input([B, H], B=2, H=64) where B > 0, H >= 64
+            y = relu(x)
+            return y
+        "#,
+        )
+        .unwrap();
+        assert_eq!(compiled.output_shape(), &[2, 64]);
+    }
+
+    #[test]
     fn error_scalar_scalar_binop() {
         let ast = parse::parse_script(
             r#"
@@ -1020,6 +1176,30 @@ mod tests {
                 z = x * 2.0
             end
             return y
+        "#,
+        )
+        .unwrap();
+        assert!(lower::lower(ast).is_err());
+    }
+
+    #[test]
+    fn error_symbolic_shape_missing_binding() {
+        let ast = parse::parse_script(
+            r#"
+            x = input([B, H], B=2)
+            return x
+        "#,
+        )
+        .unwrap();
+        assert!(lower::lower(ast).is_err());
+    }
+
+    #[test]
+    fn error_input_where_clause_fails() {
+        let ast = parse::parse_script(
+            r#"
+            x = input([B, H], B=2, H=63) where H >= 64
+            return x
         "#,
         )
         .unwrap();

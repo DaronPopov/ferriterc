@@ -61,3 +61,4 @@
 ## Runbook
 
 - `02.01`: Runtime operations: `runbooks/runtime-operations.md`
+- `02.02`: GPU manycore execution roadmap: `gpu-manycore-roadmap.md`

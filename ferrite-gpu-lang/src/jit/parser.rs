@@ -7,9 +7,12 @@
 /// fn_def     := 'fn' IDENT '(' params ')' ':' stmt* 'end'
 /// params     := (IDENT (',' IDENT)*)?
 /// return_stmt:= 'return' IDENT
-/// let_stmt   := IDENT '=' expr
-/// tile_stmt  := 'tile' IDENT 'over' input_list ':' stmt* 'end'
+/// let_stmt   := IDENT '=' expr (where_clause)?
+/// where_clause := 'where' expr (',' expr)*
+/// tile_stmt  := 'tile' IDENT 'over' input_list ('with' tile_ann_list)? ':' stmt* 'end'
 /// input_list := IDENT | '(' IDENT (',' IDENT)* ')'
+/// tile_ann_list := '(' tile_ann (',' tile_ann)* ')' | tile_ann
+/// tile_ann := IDENT '=' (IDENT | INT)
 /// if_stmt    := 'if' expr 'then' stmt* ('elif' expr 'then' stmt*)* ('else' stmt*)? 'end'
 /// for_stmt   := 'for' IDENT 'in' INT '..' INT ':' stmt* 'end'
 ///
@@ -26,7 +29,8 @@
 /// args       := (arg (',' arg)*)?
 /// arg        := IDENT '=' expr   (named)
 ///             | expr              (positional)
-/// shape      := '[' INT (',' INT)* ']'
+/// shape      := '[' shape_dim (',' shape_dim)* ']'
+/// shape_dim  := INT | IDENT
 /// ```
 
 use super::ast::*;
@@ -112,6 +116,12 @@ impl Parser {
             vec![self.ident()?]
         };
 
+        let annotations = if self.check(&Token::With) {
+            self.tile_annotations()?
+        } else {
+            TileAnnotations::default()
+        };
+
         self.eat(&Token::Colon)?;
 
         let mut body = Vec::new();
@@ -121,7 +131,138 @@ impl Parser {
         let end_span = self.span();
         self.eat(&Token::End)?;
 
-        Ok(Stmt::Tile { output, inputs, body, span: start_span.merge(end_span) })
+        Ok(Stmt::Tile { output, inputs, annotations, body, span: start_span.merge(end_span) })
+    }
+
+    fn tile_annotations(&mut self) -> Result<TileAnnotations, JitError> {
+        self.eat(&Token::With)?;
+
+        let mut ann = TileAnnotations::default();
+        if self.check(&Token::LParen) {
+            self.advance();
+            if !self.check(&Token::RParen) {
+                self.tile_annotation_pair(&mut ann)?;
+                while self.check(&Token::Comma) {
+                    self.advance();
+                    if self.check(&Token::RParen) {
+                        break;
+                    }
+                    self.tile_annotation_pair(&mut ann)?;
+                }
+            }
+            self.eat(&Token::RParen)?;
+        } else {
+            self.tile_annotation_pair(&mut ann)?;
+        }
+
+        Ok(ann)
+    }
+
+    fn tile_annotation_pair(&mut self, ann: &mut TileAnnotations) -> Result<(), JitError> {
+        let key = self.ident()?;
+        self.eat(&Token::Eq)?;
+        match key.as_str() {
+            "tile_m" => ann.tile_m = Some(self.expect_usize()?),
+            "tile_n" => ann.tile_n = Some(self.expect_usize()?),
+            "tile_k" => ann.tile_k = Some(self.expect_usize()?),
+            "unroll" => ann.unroll = Some(self.expect_usize()?),
+            "pipeline_stages" => ann.pipeline_stages = Some(self.expect_usize()?),
+            "replicas" => ann.replicas = Some(self.expect_usize()?),
+            "mesh_axis" => ann.mesh_axis = Some(self.expect_usize()?),
+            "precision" => {
+                let raw = self.ident()?;
+                ann.precision = Some(match raw.as_str() {
+                    "f32" => TilePrecision::F32,
+                    "f16" => TilePrecision::F16,
+                    "bf16" => TilePrecision::Bf16,
+                    _ => {
+                        return Err(self.err(format!(
+                            "invalid tile precision '{}' (expected f32|f16|bf16)",
+                            raw
+                        )))
+                    }
+                });
+            }
+            "quant" => {
+                let raw = self.ident()?;
+                ann.quant = Some(match raw.as_str() {
+                    "none" => TileQuant::None,
+                    "int8" => TileQuant::Int8,
+                    "nf4" => TileQuant::Nf4,
+                    _ => {
+                        return Err(self.err(format!(
+                            "invalid tile quant '{}' (expected none|int8|nf4)",
+                            raw
+                        )))
+                    }
+                });
+            }
+            "dist" => {
+                let raw = self.ident()?;
+                ann.distribution = Some(match raw.as_str() {
+                    "none" => TileDistribution::None,
+                    "replicate" => TileDistribution::Replicate,
+                    "shard" => TileDistribution::Shard,
+                    "reduce_scatter" => TileDistribution::ReduceScatter,
+                    _ => {
+                        return Err(self.err(format!(
+                            "invalid tile dist '{}' (expected none|replicate|shard|reduce_scatter)",
+                            raw
+                        )))
+                    }
+                });
+            }
+            "layout" => {
+                let raw = self.ident()?;
+                ann.layout = Some(match raw.as_str() {
+                    "row_major" => TileLayout::RowMajor,
+                    "col_major" => TileLayout::ColMajor,
+                    "blocked_32x8" => TileLayout::Blocked32x8,
+                    "blocked_64x4" => TileLayout::Blocked64x4,
+                    _ => {
+                        return Err(self.err(format!(
+                            "invalid tile layout '{}' (expected row_major|col_major|blocked_32x8|blocked_64x4)",
+                            raw
+                        )))
+                    }
+                });
+            }
+            "accum" => {
+                let raw = self.ident()?;
+                ann.accum = Some(match raw.as_str() {
+                    "f32" => TileAccum::F32,
+                    "bf16" => TileAccum::Bf16,
+                    _ => {
+                        return Err(self.err(format!(
+                            "invalid tile accum '{}' (expected f32|bf16)",
+                            raw
+                        )))
+                    }
+                });
+            }
+            "collective" => {
+                let raw = self.ident()?;
+                ann.collective = Some(match raw.as_str() {
+                    "none" => TileCollective::None,
+                    "all_reduce" => TileCollective::AllReduce,
+                    "reduce_scatter" => TileCollective::ReduceScatter,
+                    "all_gather" => TileCollective::AllGather,
+                    _ => {
+                        return Err(self.err(format!(
+                            "invalid tile collective '{}' (expected none|all_reduce|reduce_scatter|all_gather)",
+                            raw
+                        )))
+                    }
+                });
+            }
+            _ => {
+                return Err(self.err(format!(
+                    "unknown tile annotation key '{}' (supported: tile_m,tile_n,tile_k,unroll,pipeline_stages,precision,quant,dist,replicas,mesh_axis,layout,accum,collective)",
+                    key
+                )))
+            }
+        }
+        Ok(())
     }
 
     fn if_stmt(&mut self) -> Result<Stmt, JitError> {
@@ -211,11 +352,33 @@ impl Parser {
     }
 
     fn let_stmt(&mut self) -> Result<Stmt, JitError> {
-        let span = self.span();
+        let start_span = self.span();
         let name = self.ident()?;
         self.eat(&Token::Eq)?;
         let value = self.expr()?;
-        Ok(Stmt::Let { name, value, span })
+
+        let mut where_clauses = Vec::new();
+        if self.is_ident_text("where") && !matches!(self.lookahead(1), Some(Token::Eq)) {
+            self.advance(); // consume contextual `where`
+            where_clauses.push(self.expr()?);
+            while self.check(&Token::Comma) {
+                self.advance();
+                where_clauses.push(self.expr()?);
+            }
+        }
+
+        let end_span = if let Some(last) = where_clauses.last() {
+            value.span.merge(last.span)
+        } else {
+            value.span
+        };
+
+        Ok(Stmt::Let {
+            name,
+            value,
+            where_clauses,
+            span: start_span.merge(end_span),
+        })
     }
 
     // ── expressions (precedence climbing) ─────────────────────────
@@ -409,18 +572,41 @@ impl Parser {
         self.eat(&Token::LBracket)?;
         let mut dims = Vec::new();
         if !self.check(&Token::RBracket) {
-            dims.push(self.expect_int()? as usize);
+            dims.push(self.shape_dim()?);
             while self.check(&Token::Comma) {
                 self.advance();
                 if self.check(&Token::RBracket) {
                     break; // trailing comma
                 }
-                dims.push(self.expect_int()? as usize);
+                dims.push(self.shape_dim()?);
             }
         }
         let end_span = self.span();
         self.eat(&Token::RBracket)?;
         Ok(SExpr::new(Expr::Shape(dims), start_span.merge(end_span)))
+    }
+
+    fn shape_dim(&mut self) -> Result<ShapeDim, JitError> {
+        match self.peek() {
+            Token::Int(v) => {
+                self.advance();
+                if v < 0 {
+                    return Err(self.err(format!(
+                        "shape dimensions must be non-negative, got {}",
+                        v
+                    )));
+                }
+                Ok(ShapeDim::Const(v as usize))
+            }
+            Token::Ident(name) => {
+                self.advance();
+                Ok(ShapeDim::Symbol(name))
+            }
+            other => Err(self.err(format!(
+                "expected shape dimension (INT or IDENT), got {:?}",
+                other
+            ))),
+        }
     }
 
     fn int_lit(&mut self) -> Result<SExpr, JitError> {
@@ -456,6 +642,10 @@ impl Parser {
         self.peek() == *token
     }
 
+    fn is_ident_text(&self, text: &str) -> bool {
+        matches!(self.peek(), Token::Ident(ref s) if s == text)
+    }
+
     fn eat(&mut self, expected: &Token) -> Result<(), JitError> {
         let actual = self.peek();
         if actual == *expected {
@@ -484,6 +674,14 @@ impl Parser {
             }
             other => Err(self.err(format!("expected integer, got {:?}", other))),
         }
+    }
+
+    fn expect_usize(&mut self) -> Result<usize, JitError> {
+        let v = self.expect_int()?;
+        if v < 0 {
+            return Err(self.err(format!("expected non-negative integer, got {}", v)));
+        }
+        Ok(v as usize)
     }
 
     fn span(&self) -> Span {

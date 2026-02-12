@@ -7,7 +7,9 @@ use anyhow::Result;
 use tch::{Device, Kind, Tensor};
 
 const MAGIC: &[u8; 8] = b"FRTA_CKP";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
+const MIN_SUPPORTED_VERSION: u32 = 1;
+const CHECKPOINT_HEADER_BYTES: usize = 80;
 
 #[derive(Debug)]
 pub struct AdapterCheckpoint {
@@ -38,7 +40,7 @@ struct CheckpointHeader {
 
 impl CheckpointHeader {
     fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(80);
+        let mut buf = Vec::with_capacity(CHECKPOINT_HEADER_BYTES);
         buf.extend_from_slice(MAGIC);
         buf.extend_from_slice(&self.version.to_le_bytes());
         buf.extend_from_slice(&self.step.to_le_bytes());
@@ -51,12 +53,12 @@ impl CheckpointHeader {
         buf.extend_from_slice(&self.timestamp.to_le_bytes());
         buf.extend_from_slice(&self.tensor_count.to_le_bytes());
         // pad to 80 bytes
-        buf.resize(80, 0);
+        buf.resize(CHECKPOINT_HEADER_BYTES, 0);
         buf
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self> {
-        if data.len() < 80 {
+        if data.len() < CHECKPOINT_HEADER_BYTES {
             return Err(anyhow::anyhow!("header too short: {} bytes", data.len()));
         }
         if &data[0..8] != MAGIC {
@@ -102,23 +104,46 @@ impl TensorMeta {
     }
 
     fn from_reader(data: &[u8], offset: &mut usize) -> Result<Self> {
-        let name_len = u16::from_le_bytes(data[*offset..*offset + 2].try_into()?);
-        *offset += 2;
-        let name = String::from_utf8(data[*offset..*offset + name_len as usize].to_vec())?;
-        *offset += name_len as usize;
-        let ndim = data[*offset];
-        *offset += 1;
+        let name_len = u16::from_le_bytes(read_chunk(data, offset, 2)?.try_into()?);
+        let name = String::from_utf8(read_chunk(data, offset, name_len as usize)?.to_vec())?;
+        let ndim = read_chunk(data, offset, 1)?[0];
         let mut dims = Vec::with_capacity(ndim as usize);
         for _ in 0..ndim {
-            dims.push(i64::from_le_bytes(data[*offset..*offset + 8].try_into()?));
-            *offset += 8;
+            dims.push(i64::from_le_bytes(read_chunk(data, offset, 8)?.try_into()?));
         }
-        let dtype = data[*offset];
-        *offset += 1;
-        let data_bytes = u64::from_le_bytes(data[*offset..*offset + 8].try_into()?);
-        *offset += 8;
+        let dtype = read_chunk(data, offset, 1)?[0];
+        let data_bytes = u64::from_le_bytes(read_chunk(data, offset, 8)?.try_into()?);
         Ok(Self { name_len, name, ndim, dims, dtype, data_bytes })
     }
+}
+
+fn read_chunk<'a>(data: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8]> {
+    let end = (*offset).saturating_add(len);
+    if end > data.len() {
+        return Err(anyhow::anyhow!(
+            "checkpoint truncated: need {} bytes at offset {}, total {}",
+            len,
+            *offset,
+            data.len()
+        ));
+    }
+    let chunk = &data[*offset..end];
+    *offset = end;
+    Ok(chunk)
+}
+
+fn decode_f32_bytes(raw: &[u8]) -> Result<Vec<f32>> {
+    if !raw.len().is_multiple_of(std::mem::size_of::<f32>()) {
+        return Err(anyhow::anyhow!(
+            "invalid f32 blob size: {} bytes",
+            raw.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(raw.len() / std::mem::size_of::<f32>());
+    for bytes in raw.chunks_exact(4) {
+        out.push(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+    }
+    Ok(out)
 }
 
 pub fn save_checkpoint(ckpt: &AdapterCheckpoint, path: &PathBuf) -> Result<()> {
@@ -217,10 +242,10 @@ pub fn load_checkpoint(path: &PathBuf, device: Device) -> Result<AdapterCheckpoi
     let data = fs::read(path)?;
     let header = CheckpointHeader::from_bytes(&data)?;
 
-    if header.version != VERSION {
+    if header.version < MIN_SUPPORTED_VERSION || header.version > VERSION {
         return Err(anyhow::anyhow!(
-            "checkpoint version mismatch: file={} expected={}",
-            header.version, VERSION
+            "checkpoint version mismatch: file={} supported={}..={}",
+            header.version, MIN_SUPPORTED_VERSION, VERSION
         ));
     }
 
@@ -228,29 +253,24 @@ pub fn load_checkpoint(path: &PathBuf, device: Device) -> Result<AdapterCheckpoi
     let lora_alpha = f64::from_bits(header.lora_alpha_bits);
     let lr = f64::from_bits(header.lr_bits);
 
-    let mut offset = 80usize;
+    let mut offset = CHECKPOINT_HEADER_BYTES;
     let mut adapters_a = Vec::new();
     let mut adapters_b = Vec::new();
 
     for _ in 0..header.tensor_count {
         let meta = TensorMeta::from_reader(&data, &mut offset)?;
         let byte_count = meta.data_bytes as usize;
-        let float_count = byte_count / std::mem::size_of::<f32>();
+        let raw = read_chunk(&data, &mut offset, byte_count)?;
+        let floats = decode_f32_bytes(raw)?;
 
-        let raw = &data[offset..offset + byte_count];
-        let floats: &[f32] = unsafe {
-            std::slice::from_raw_parts(raw.as_ptr() as *const f32, float_count)
-        };
-        offset += byte_count;
-
-        let tensor = Tensor::from_slice(floats)
+        let tensor = Tensor::from_slice(&floats)
             .reshape(&meta.dims)
             .to_device(device)
             .set_requires_grad(true);
 
-        if meta.name.contains("lora_a") {
+        if meta.name.ends_with("_lora_a") {
             adapters_a.push(tensor);
-        } else if meta.name.contains("lora_b") {
+        } else if meta.name.ends_with("_lora_b") {
             adapters_b.push(tensor);
         }
     }

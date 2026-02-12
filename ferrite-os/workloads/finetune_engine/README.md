@@ -60,7 +60,7 @@ Streams model shards through bounded VRAM via wave-scheduled CUDA streams, train
 
 | File | Purpose |
 |------|---------|
-| `save_adapter.rs` | Serialize/deserialize LoRA adapter weights with binary checkpoint format |
+| `save_adapter.rs` | Serialize/deserialize LoRA adapter checkpoints (weights + optional optimizer tensors) |
 
 ### eval/ — Validation
 
@@ -113,7 +113,11 @@ Streams model shards through bounded VRAM via wave-scheduled CUDA streams, train
   --weights-source synthetic \
   --model-gb 100 --shard-mb 64 --steps 200 \
   --streams 64 --wave-streams 16 --micro-batch 8 \
-  --hidden 2048 --lora-rank 16 --lr 0.001
+  --hidden 2048 --lora-rank 16 \
+  --optimizer adamw --schedule cosine_decay \
+  --lr 0.001 --min-lr 0.0001 --warmup-steps 200 \
+  --inner-steps 2 --grad-clip 1.0 --weight-decay 0.01 \
+  --checkpoint-path /tmp/finetune.ckpt --save-every 25
 ```
 
 ### Real Weights (directory shape profile)
@@ -122,8 +126,26 @@ Streams model shards through bounded VRAM via wave-scheduled CUDA streams, train
 ./ferriterc/ferrite-run ./finetune_engine/scripting_finetune.rs --torch -- \
   --weights-source directory --weights-dir /path/to/model \
   --dataset /path/to/train.jsonl --dataset-format jsonl \
-  --steps 200 --streams 64 --wave-streams 16
+  --steps 200 --streams 64 --wave-streams 16 \
+  --optimizer sgd --schedule linear_warmup --momentum 0.9
 ```
+
+### Resume from Checkpoint
+
+```bash
+./ferriterc/ferrite-run ./finetune_engine/scripting_finetune.rs --torch -- \
+  --weights-source synthetic \
+  --model-gb 100 --shard-mb 64 --steps 400 \
+  --streams 64 --wave-streams 16 --micro-batch 8 \
+  --hidden 2048 --lora-rank 16 \
+  --optimizer adamw --schedule cosine_decay \
+  --lr 0.001 --min-lr 0.0001 --warmup-steps 200 \
+  --checkpoint-path /tmp/finetune.ckpt --resume --save-every 25
+```
+
+`scripting_finetune.rs` now writes checkpoint format `FRTA_CKP` version `2`.  
+Version 2 adds per-shard optimizer tensors (`m`, `v`, `velocity`) so `--resume` can continue with optimizer history instead of cold-starting moments.  
+Loaders accept both version 1 and version 2 checkpoints.
 
 ### Build Shard Index
 
@@ -156,8 +178,12 @@ Streams model shards through bounded VRAM via wave-scheduled CUDA streams, train
 ```bash
 ./ferriterc/ferrite-run ./finetune_engine/eval/validation_loop.rs --torch -- \
   --dataset /path/to/eval.jsonl --split-ratio 0.9 \
-  --micro-batch 8 --hidden 2048
+  --weights-source synthetic --model-gb 100 --shard-mb 64 \
+  --micro-batch 8 --hidden 2048 --lora-rank 16 \
+  --adapter-path /tmp/finetune.ckpt
 ```
+
+Validation uses the same deterministic synthetic base-weight construction as training (`synthetic` mode), so repeated eval runs and post-resume comparisons stay stable.
 
 ### LR Schedule Preview
 
