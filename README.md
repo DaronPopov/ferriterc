@@ -18,7 +18,7 @@ The base execution model is still standard CUDA on NVIDIA hardware. The ISA laye
 ## Install
 
 ```bash
-git clone https://github.com/DaronPopov/ferriterc.git
+git clone git@github.com:DaronPopov/ferriterc.git
 cd ferriterc
 ./install.sh
 ```
