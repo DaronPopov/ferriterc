@@ -850,6 +850,687 @@ fn smoke_test_boot_and_ping() {
     suite.assert_all_passed();
 }
 
+/// Dedicated V1 task ABI integration: submit a task through the daemon's
+/// runtime and poll the completion queue until the matching task completes.
+#[test]
+fn task_completion_v1_roundtrip() {
+    let _lock = GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    eprintln!();
+    eprintln!("═══════════════════════════════════════════════════");
+    eprintln!("  DAEMON INTEGRATION: TASK COMPLETION ABI V1");
+    eprintln!("═══════════════════════════════════════════════════");
+    eprintln!();
+
+    let daemon = DaemonInstance::start(DaemonOptions {
+        single_pool_strict: false,
+        extra_env: vec![("FERRITE_BOOT_KERNEL".to_string(), "1".to_string())],
+    });
+    let mut suite = TestSuite::new("Task Completion ABI V1");
+
+    let initial_snap = daemon.send_json("snapshot");
+    suite.check(
+        "snapshot: kernel_running field present",
+        initial_snap.get("kernel_running").is_some(),
+        format!("snapshot={initial_snap}"),
+    );
+
+    let submit = daemon.send_json("task-submit-v1 0 1 7 0");
+    suite.check_json_eq("submit: ok", &submit, "ok", serde_json::json!(true));
+    let submitted_task_id = submit["task_id"].as_i64().unwrap_or(-1);
+    suite.check(
+        "submit: task_id >= 0",
+        submitted_task_id >= 0,
+        format!("task_id={submitted_task_id} full={submit}"),
+    );
+
+    let poll_deadline = Instant::now() + Duration::from_secs(3);
+    let mut matched_completion: Option<serde_json::Value> = None;
+    let mut polls = 0u32;
+    while Instant::now() < poll_deadline {
+        let polled = daemon.send_json("task-poll-v1");
+        polls += 1;
+        let empty = polled["empty"].as_bool().unwrap_or(true);
+        if !empty {
+            let task_id = polled["result"]["task_id"].as_i64().unwrap_or(-1);
+            if task_id == submitted_task_id {
+                matched_completion = Some(polled);
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    if let Some(done) = matched_completion {
+        suite.check_json_eq(
+            "completion: status OK",
+            &done["result"],
+            "status",
+            serde_json::json!(0u32),
+        );
+        suite.check_json_eq(
+            "completion: opcode NOP",
+            &done["result"],
+            "opcode",
+            serde_json::json!(0u32),
+        );
+        suite.check_json_eq(
+            "completion: tenant_id preserved",
+            &done["result"],
+            "tenant_id",
+            serde_json::json!(7u32),
+        );
+    } else {
+        let snap = daemon.send_json("snapshot");
+        suite.check(
+            "completion received for submitted task",
+            false,
+            format!(
+                "no matching completion within timeout; task_id={} polls={} snapshot={}",
+                submitted_task_id, polls, snap
+            ),
+        );
+    }
+
+    // Ask persistent kernel to shut down cleanly (opcode 3).
+    let _ = daemon.send_json("task-submit-v1 3 0 0 0");
+
+    suite.print_summary();
+    suite.assert_all_passed();
+}
+
+/// ISA v0 integration:
+/// submit control/arithmetic/branch/memory/syscall scripts through opcode=ISA_RUN and validate
+/// completion status plus context metadata returned by task-poll-v1.
+#[test]
+fn task_isa_v0_roundtrip() {
+    let _lock = GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    eprintln!();
+    eprintln!("═══════════════════════════════════════════════════");
+    eprintln!("  DAEMON INTEGRATION: ISA V0");
+    eprintln!("═══════════════════════════════════════════════════");
+    eprintln!();
+
+    let daemon = DaemonInstance::start(DaemonOptions {
+        single_pool_strict: false,
+        extra_env: vec![("FERRITE_BOOT_KERNEL".to_string(), "1".to_string())],
+    });
+    let mut suite = TestSuite::new("ISA V0");
+
+    for _ in 0..256 {
+        let polled = daemon.send_json("task-poll-v1");
+        if polled["empty"].as_bool().unwrap_or(true) {
+            break;
+        }
+    }
+
+    let poll_for_task = |task_id: i64, timeout: Duration| -> Option<serde_json::Value> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            let polled = daemon.send_json("task-poll-v1");
+            if !polled["empty"].as_bool().unwrap_or(true)
+                && polled["result"]["task_id"].as_i64().unwrap_or(-1) == task_id
+            {
+                return Some(polled);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    };
+
+    let submit_halt = daemon.send_json("task-submit-isa-v0 41 halt 64 1");
+    suite.check_json_eq("submit halt: ok", &submit_halt, "ok", serde_json::json!(true));
+    let halt_id = submit_halt["task_id"].as_i64().unwrap_or(-1);
+    suite.check("submit halt: task_id >= 0", halt_id >= 0, format!("task_id={halt_id}"));
+    let halt_done = poll_for_task(halt_id, Duration::from_secs(5));
+    suite.check("halt completion observed", halt_done.is_some(), format!("task_id={halt_id}"));
+    if let Some(done) = &halt_done {
+        suite.check_json_eq("halt status OK", &done["result"], "status", serde_json::json!(0u32));
+        suite.check_json_eq(
+            "halt opcode ISA_RUN",
+            &done["result"],
+            "opcode",
+            serde_json::json!(ptx_sys::PTX_TASK_OPCODE_ISA_RUN),
+        );
+    }
+
+    let submit_trap = daemon.send_json("task-submit-isa-v0 41 trap 64 1");
+    suite.check_json_eq("submit trap: ok", &submit_trap, "ok", serde_json::json!(true));
+    let trap_id = submit_trap["task_id"].as_i64().unwrap_or(-1);
+    suite.check("submit trap: task_id >= 0", trap_id >= 0, format!("task_id={trap_id}"));
+    let trap_done = poll_for_task(trap_id, Duration::from_secs(5));
+    suite.check("trap completion observed", trap_done.is_some(), format!("task_id={trap_id}"));
+    if let Some(done) = &trap_done {
+        suite.check_json_eq(
+            "trap status runtime error",
+            &done["result"],
+            "status",
+            serde_json::json!(ptx_sys::PTX_TASK_STATUS_RUNTIME_ERROR),
+        );
+    }
+
+    let submit_yield = daemon.send_json("task-submit-isa-v0 41 yield 1 1");
+    suite.check_json_eq("submit yield: ok", &submit_yield, "ok", serde_json::json!(true));
+    let yield_id = submit_yield["task_id"].as_i64().unwrap_or(-1);
+    suite.check("submit yield: task_id >= 0", yield_id >= 0, format!("task_id={yield_id}"));
+    let yield_done = poll_for_task(yield_id, Duration::from_secs(5));
+    suite.check("yield completion observed", yield_done.is_some(), format!("task_id={yield_id}"));
+    if let Some(done) = &yield_done {
+        suite.check_json_eq("yield status OK", &done["result"], "status", serde_json::json!(0u32));
+    }
+
+    let submit_movi = daemon.send_json("task-submit-isa-v0 41 movi 64 1");
+    suite.check_json_eq("submit movi: ok", &submit_movi, "ok", serde_json::json!(true));
+    let movi_id = submit_movi["task_id"].as_i64().unwrap_or(-1);
+    suite.check("submit movi: task_id >= 0", movi_id >= 0, format!("task_id={movi_id}"));
+    let movi_done = poll_for_task(movi_id, Duration::from_secs(5));
+    suite.check("movi completion observed", movi_done.is_some(), format!("task_id={movi_id}"));
+    if let Some(done) = &movi_done {
+        suite.check_json_eq("movi status OK", &done["result"], "status", serde_json::json!(0u32));
+    }
+
+    let submit_arith = daemon.send_json("task-submit-isa-v0 41 arith 64 1");
+    suite.check_json_eq("submit arith: ok", &submit_arith, "ok", serde_json::json!(true));
+    let arith_id = submit_arith["task_id"].as_i64().unwrap_or(-1);
+    suite.check("submit arith: task_id >= 0", arith_id >= 0, format!("task_id={arith_id}"));
+    let arith_done = poll_for_task(arith_id, Duration::from_secs(5));
+    suite.check("arith completion observed", arith_done.is_some(), format!("task_id={arith_id}"));
+    if let Some(done) = &arith_done {
+        suite.check_json_eq("arith status OK", &done["result"], "status", serde_json::json!(0u32));
+    }
+
+    let submit_branch = daemon.send_json("task-submit-isa-v0 41 branch 64 1");
+    suite.check_json_eq("submit branch: ok", &submit_branch, "ok", serde_json::json!(true));
+    let branch_id = submit_branch["task_id"].as_i64().unwrap_or(-1);
+    suite.check("submit branch: task_id >= 0", branch_id >= 0, format!("task_id={branch_id}"));
+    let branch_done = poll_for_task(branch_id, Duration::from_secs(5));
+    suite.check("branch completion observed", branch_done.is_some(), format!("task_id={branch_id}"));
+    if let Some(done) = &branch_done {
+        suite.check_json_eq("branch status OK", &done["result"], "status", serde_json::json!(0u32));
+    }
+
+    let submit_jmp = daemon.send_json("task-submit-isa-v0 41 jmp 64 1");
+    suite.check_json_eq("submit jmp: ok", &submit_jmp, "ok", serde_json::json!(true));
+    let jmp_id = submit_jmp["task_id"].as_i64().unwrap_or(-1);
+    suite.check("submit jmp: task_id >= 0", jmp_id >= 0, format!("task_id={jmp_id}"));
+    let jmp_done = poll_for_task(jmp_id, Duration::from_secs(5));
+    suite.check("jmp completion observed", jmp_done.is_some(), format!("task_id={jmp_id}"));
+    if let Some(done) = &jmp_done {
+        suite.check_json_eq("jmp status OK", &done["result"], "status", serde_json::json!(0u32));
+    }
+
+    let submit_pc_oob = daemon.send_json("task-submit-isa-v0 41 pc_oob 64 1");
+    suite.check_json_eq("submit pc_oob: ok", &submit_pc_oob, "ok", serde_json::json!(true));
+    let pc_oob_id = submit_pc_oob["task_id"].as_i64().unwrap_or(-1);
+    suite.check(
+        "submit pc_oob: task_id >= 0",
+        pc_oob_id >= 0,
+        format!("task_id={pc_oob_id}"),
+    );
+    let pc_oob_done = poll_for_task(pc_oob_id, Duration::from_secs(5));
+    suite.check(
+        "pc_oob completion observed",
+        pc_oob_done.is_some(),
+        format!("task_id={pc_oob_id}"),
+    );
+    if let Some(done) = &pc_oob_done {
+        suite.check_json_eq(
+            "pc_oob status runtime error",
+            &done["result"],
+            "status",
+            serde_json::json!(ptx_sys::PTX_TASK_STATUS_RUNTIME_ERROR),
+        );
+    }
+
+    let submit_mem_ld = daemon.send_json("task-submit-isa-v0 41 mem_ld 64 1");
+    suite.check_json_eq("submit mem_ld: ok", &submit_mem_ld, "ok", serde_json::json!(true));
+    let mem_ld_id = submit_mem_ld["task_id"].as_i64().unwrap_or(-1);
+    suite.check(
+        "submit mem_ld: task_id >= 0",
+        mem_ld_id >= 0,
+        format!("task_id={mem_ld_id}"),
+    );
+    let mem_ld_done = poll_for_task(mem_ld_id, Duration::from_secs(5));
+    suite.check(
+        "mem_ld completion observed",
+        mem_ld_done.is_some(),
+        format!("task_id={mem_ld_id}"),
+    );
+    if let Some(done) = &mem_ld_done {
+        suite.check_json_eq("mem_ld status OK", &done["result"], "status", serde_json::json!(0u32));
+    }
+
+    let submit_mem_oob = daemon.send_json("task-submit-isa-v0 41 mem_oob 64 1");
+    suite.check_json_eq("submit mem_oob: ok", &submit_mem_oob, "ok", serde_json::json!(true));
+    let mem_oob_id = submit_mem_oob["task_id"].as_i64().unwrap_or(-1);
+    suite.check(
+        "submit mem_oob: task_id >= 0",
+        mem_oob_id >= 0,
+        format!("task_id={mem_oob_id}"),
+    );
+    let mem_oob_done = poll_for_task(mem_oob_id, Duration::from_secs(5));
+    suite.check(
+        "mem_oob completion observed",
+        mem_oob_done.is_some(),
+        format!("task_id={mem_oob_id}"),
+    );
+    if let Some(done) = &mem_oob_done {
+        suite.check_json_eq(
+            "mem_oob status runtime error",
+            &done["result"],
+            "status",
+            serde_json::json!(ptx_sys::PTX_TASK_STATUS_RUNTIME_ERROR),
+        );
+    }
+
+    let submit_sys_yield = daemon.send_json("task-submit-isa-v0 41 sys_yield 1 1");
+    suite.check_json_eq(
+        "submit sys_yield: ok",
+        &submit_sys_yield,
+        "ok",
+        serde_json::json!(true),
+    );
+    let sys_yield_id = submit_sys_yield["task_id"].as_i64().unwrap_or(-1);
+    suite.check(
+        "submit sys_yield: task_id >= 0",
+        sys_yield_id >= 0,
+        format!("task_id={sys_yield_id}"),
+    );
+    let sys_yield_done = poll_for_task(sys_yield_id, Duration::from_secs(5));
+    suite.check(
+        "sys_yield completion observed",
+        sys_yield_done.is_some(),
+        format!("task_id={sys_yield_id}"),
+    );
+    if let Some(done) = &sys_yield_done {
+        suite.check_json_eq(
+            "sys_yield status OK",
+            &done["result"],
+            "status",
+            serde_json::json!(0u32),
+        );
+    }
+
+    let submit_sys_bad = daemon.send_json("task-submit-isa-v0 41 sys_bad 64 1");
+    suite.check_json_eq("submit sys_bad: ok", &submit_sys_bad, "ok", serde_json::json!(true));
+    let sys_bad_id = submit_sys_bad["task_id"].as_i64().unwrap_or(-1);
+    suite.check(
+        "submit sys_bad: task_id >= 0",
+        sys_bad_id >= 0,
+        format!("task_id={sys_bad_id}"),
+    );
+    let sys_bad_done = poll_for_task(sys_bad_id, Duration::from_secs(5));
+    suite.check(
+        "sys_bad completion observed",
+        sys_bad_done.is_some(),
+        format!("task_id={sys_bad_id}"),
+    );
+    if let Some(done) = &sys_bad_done {
+        suite.check_json_eq(
+            "sys_bad status runtime error",
+            &done["result"],
+            "status",
+            serde_json::json!(ptx_sys::PTX_TASK_STATUS_RUNTIME_ERROR),
+        );
+    }
+
+    let _ = daemon.send_json("task-submit-v1 3 0 0 0");
+
+    suite.print_summary();
+    suite.assert_all_passed();
+}
+
+/// DAG + continuation integration:
+///   A (nop) -> B (depends on A) -> C (continuation emitted by B)
+#[test]
+fn task_dag_continuation_v1_roundtrip() {
+    let _lock = GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    eprintln!();
+    eprintln!("═══════════════════════════════════════════════════");
+    eprintln!("  DAEMON INTEGRATION: TASK DAG + CONTINUATION V1");
+    eprintln!("═══════════════════════════════════════════════════");
+    eprintln!();
+
+    let daemon = DaemonInstance::start(DaemonOptions {
+        single_pool_strict: false,
+        extra_env: vec![("FERRITE_BOOT_KERNEL".to_string(), "1".to_string())],
+    });
+    let mut suite = TestSuite::new("Task DAG + Continuation ABI V1");
+
+    // Drain stale completions so ordering checks are scoped to this test only.
+    for _ in 0..256 {
+        let polled = daemon.send_json("task-poll-v1");
+        if polled["empty"].as_bool().unwrap_or(true) {
+            break;
+        }
+    }
+
+    let submit_a = daemon.send_json("task-submit-v1 0 1 21 0");
+    suite.check_json_eq("submit A: ok", &submit_a, "ok", serde_json::json!(true));
+    let task_a = submit_a["task_id"].as_i64().unwrap_or(-1);
+    suite.check("submit A: task_id >= 0", task_a >= 0, format!("task_id={task_a}"));
+
+    let submit_b = daemon.send_json(&format!("task-submit-v1 0 1 21 0 {} 0", task_a));
+    suite.check_json_eq("submit B: ok", &submit_b, "ok", serde_json::json!(true));
+    let task_b = submit_b["task_id"].as_i64().unwrap_or(-1);
+    suite.check("submit B: task_id >= 0", task_b >= 0, format!("task_id={task_b}"));
+
+    let flags_b = submit_b["flags"].as_u64().unwrap_or(0);
+    suite.check(
+        "submit B: dependency flag set",
+        (flags_b & ptx_sys::PTX_TASK_FLAG_WAIT_ON_TASK as u64) != 0,
+        format!("flags={flags_b:#x}"),
+    );
+    suite.check(
+        "submit B: continuation flag set",
+        (flags_b & ptx_sys::PTX_TASK_FLAG_CONTINUATION as u64) != 0,
+        format!("flags={flags_b:#x}"),
+    );
+
+    let poll_deadline = Instant::now() + Duration::from_secs(4);
+    let mut completions: Vec<serde_json::Value> = Vec::new();
+    while Instant::now() < poll_deadline {
+        let polled = daemon.send_json("task-poll-v1");
+        if !polled["empty"].as_bool().unwrap_or(true) {
+            completions.push(polled["result"].clone());
+            let mut seen_a = false;
+            let mut seen_b = false;
+            let mut seen_cont = false;
+            for done in &completions {
+                let tid = done["task_id"].as_i64().unwrap_or(-1);
+                if tid == task_a {
+                    seen_a = true;
+                } else if tid == task_b {
+                    seen_b = true;
+                } else if tid >= 0 {
+                    seen_cont = true;
+                }
+            }
+            if seen_a && seen_b && seen_cont {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let mut idx_a = None;
+    let mut idx_b = None;
+    let mut continuation: Option<&serde_json::Value> = None;
+    for (idx, done) in completions.iter().enumerate() {
+        let tid = done["task_id"].as_i64().unwrap_or(-1);
+        if tid == task_a {
+            idx_a = Some(idx);
+        } else if tid == task_b {
+            idx_b = Some(idx);
+        } else if tid >= 0 {
+            continuation = Some(done);
+        }
+    }
+
+    suite.check(
+        "completion includes A",
+        idx_a.is_some(),
+        format!("completions={completions:?}"),
+    );
+    suite.check(
+        "completion includes B",
+        idx_b.is_some(),
+        format!("completions={completions:?}"),
+    );
+    suite.check(
+        "completion includes continuation task",
+        continuation.is_some(),
+        format!("completions={completions:?}"),
+    );
+    if let (Some(a), Some(b)) = (idx_a, idx_b) {
+        suite.check("DAG order A before B", a < b, format!("idx_a={a} idx_b={b}"));
+    }
+
+    if let (Some(b), Some(c)) = (idx_b, continuation) {
+        let idx_c = completions
+            .iter()
+            .position(|x| x["task_id"] == c["task_id"])
+            .unwrap_or(usize::MAX);
+        suite.check("continuation executes after B", b < idx_c, format!("idx_b={b} idx_c={idx_c}"));
+        suite.check_json_eq("continuation opcode", c, "opcode", serde_json::json!(0u32));
+        suite.check_json_eq("continuation tenant_id inherited", c, "tenant_id", serde_json::json!(21u32));
+        suite.check_json_eq("continuation status OK", c, "status", serde_json::json!(0u32));
+    }
+
+    // Ask persistent kernel to shut down cleanly (opcode 3).
+    let _ = daemon.send_json("task-submit-v1 3 0 0 0");
+
+    suite.print_summary();
+    suite.assert_all_passed();
+}
+
+/// Cooperative preemption / time-slicing fairness:
+/// long task A is submitted first, short task B second. With cooperative
+/// slicing, B should complete before A (no long-task monopoly).
+#[test]
+fn task_timeslice_fairness_v1_roundtrip() {
+    let _lock = GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    eprintln!();
+    eprintln!("═══════════════════════════════════════════════════");
+    eprintln!("  DAEMON INTEGRATION: TASK TIMESLICE FAIRNESS V1");
+    eprintln!("═══════════════════════════════════════════════════");
+    eprintln!();
+
+    let daemon = DaemonInstance::start(DaemonOptions {
+        single_pool_strict: false,
+        extra_env: vec![("FERRITE_BOOT_KERNEL".to_string(), "1".to_string())],
+    });
+    let mut suite = TestSuite::new("Task Timeslice Fairness ABI V1");
+
+    // Drain stale completions.
+    for _ in 0..256 {
+        let polled = daemon.send_json("task-poll-v1");
+        if polled["empty"].as_bool().unwrap_or(true) {
+            break;
+        }
+    }
+
+    let submit_long = daemon.send_json("task-submit-coop 1 20000 64 1");
+    suite.check_json_eq("submit long: ok", &submit_long, "ok", serde_json::json!(true));
+    let long_id = submit_long["task_id"].as_i64().unwrap_or(-1);
+    suite.check("submit long: task_id >= 0", long_id >= 0, format!("task_id={long_id}"));
+
+    let submit_short = daemon.send_json("task-submit-coop 2 512 64 1");
+    suite.check_json_eq("submit short: ok", &submit_short, "ok", serde_json::json!(true));
+    let short_id = submit_short["task_id"].as_i64().unwrap_or(-1);
+    suite.check("submit short: task_id >= 0", short_id >= 0, format!("task_id={short_id}"));
+
+    let poll_deadline = Instant::now() + Duration::from_secs(30);
+    let mut completions: Vec<serde_json::Value> = Vec::new();
+    while Instant::now() < poll_deadline {
+        let polled = daemon.send_json("task-poll-v1");
+        if !polled["empty"].as_bool().unwrap_or(true) {
+            completions.push(polled["result"].clone());
+            let seen_long = completions.iter().any(|d| d["task_id"].as_i64().unwrap_or(-1) == long_id);
+            let seen_short = completions.iter().any(|d| d["task_id"].as_i64().unwrap_or(-1) == short_id);
+            if seen_long && seen_short {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let idx_long = completions
+        .iter()
+        .position(|d| d["task_id"].as_i64().unwrap_or(-1) == long_id);
+    let idx_short = completions
+        .iter()
+        .position(|d| d["task_id"].as_i64().unwrap_or(-1) == short_id);
+
+    suite.check(
+        "completion includes long task",
+        idx_long.is_some(),
+        format!("long_id={long_id} completions={completions:?}"),
+    );
+    suite.check(
+        "completion includes short task",
+        idx_short.is_some(),
+        format!("short_id={short_id} completions={completions:?}"),
+    );
+
+    if let (Some(i_long), Some(i_short)) = (idx_long, idx_short) {
+        suite.check(
+            "short task completes before long task",
+            i_short < i_long,
+            format!("idx_short={i_short} idx_long={i_long}"),
+        );
+    }
+
+    if let Some(i_short) = idx_short {
+        suite.check_json_eq(
+            "short status OK",
+            &completions[i_short],
+            "status",
+            serde_json::json!(0u32),
+        );
+    }
+    if let Some(i_long) = idx_long {
+        suite.check_json_eq(
+            "long status OK",
+            &completions[i_long],
+            "status",
+            serde_json::json!(0u32),
+        );
+    }
+
+    // Shut down persistent kernel.
+    let _ = daemon.send_json("task-submit-v1 3 0 0 0");
+
+    suite.print_summary();
+    suite.assert_all_passed();
+}
+
+/// Per-tenant budget enforcement stress:
+/// one tenant floods the queue with many single-slice jobs (batched in one
+/// daemon command so contention is real), then another tenant submits one task.
+/// The second tenant should still complete without waiting for the flood tenant
+/// to drain the whole queue.
+#[test]
+fn task_tenant_budget_starvation_guard_v1_roundtrip() {
+    let _lock = GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    eprintln!();
+    eprintln!("═══════════════════════════════════════════════════");
+    eprintln!("  DAEMON INTEGRATION: TENANT BUDGET STARVATION GUARD V1");
+    eprintln!("═══════════════════════════════════════════════════");
+    eprintln!();
+
+    let daemon = DaemonInstance::start(DaemonOptions {
+        single_pool_strict: false,
+        extra_env: vec![("FERRITE_BOOT_KERNEL".to_string(), "1".to_string())],
+    });
+    let mut suite = TestSuite::new("Tenant Budget Starvation Guard ABI V1");
+
+    // Drain stale completions.
+    for _ in 0..256 {
+        let polled = daemon.send_json("task-poll-v1");
+        if polled["empty"].as_bool().unwrap_or(true) {
+            break;
+        }
+    }
+
+    // Flood tenant 1 with heavier one-slice cooperative tasks (single batched
+    // command so submission overhead does not serialize the stress pattern).
+    const HOG_COUNT: usize = 24;
+    let submit_hog_batch = daemon.send_json(&format!("task-submit-coop-batch 1 {HOG_COUNT} 256 256 1"));
+    suite.check_json_eq("submit hog batch: ok", &submit_hog_batch, "ok", serde_json::json!(true));
+    suite.check_json_eq(
+        "submit hog batch: submitted count",
+        &submit_hog_batch,
+        "submitted",
+        serde_json::json!(HOG_COUNT as u32),
+    );
+
+    // Victim is single-slice so completion order directly reflects scheduler fairness.
+    let submit_victim = daemon.send_json("task-submit-coop 2 256 256 1");
+    suite.check_json_eq("submit victim: ok", &submit_victim, "ok", serde_json::json!(true));
+    let victim_task_id = submit_victim["task_id"].as_i64().unwrap_or(-1);
+    suite.check(
+        "submit victim: task_id >= 0",
+        victim_task_id >= 0,
+        format!("task_id={victim_task_id}"),
+    );
+
+    // Ensure there is still contention at victim submit time (at least one non-victim
+    // task remains active). This avoids false positives from fully drained floods.
+    let snap_after_submit = daemon.send_json("snapshot");
+    let active_after_submit = snap_after_submit["active_tasks"].as_i64().unwrap_or(0);
+    suite.check(
+        "contention present at victim submit",
+        active_after_submit > 1,
+        format!("active_tasks={active_after_submit}"),
+    );
+
+    // Drain completions already produced before/at victim submission; ordering checks
+    // below are scoped only to post-submit scheduling behavior under contention.
+    let mut victim_done: Option<serde_json::Value> = None;
+    for _ in 0..512 {
+        let polled = daemon.send_json("task-poll-v1");
+        if polled["empty"].as_bool().unwrap_or(true) {
+            break;
+        }
+        let done = polled["result"].clone();
+        if done["task_id"].as_i64().unwrap_or(-1) == victim_task_id {
+            victim_done = Some(done);
+            break;
+        }
+    }
+
+    let poll_deadline = Instant::now() + Duration::from_secs(30);
+    let mut completions_seen = 0usize;
+    let mut tenant1_before_victim = 0usize;
+    while victim_done.is_none() && Instant::now() < poll_deadline {
+        let polled = daemon.send_json("task-poll-v1");
+        if polled["empty"].as_bool().unwrap_or(true) {
+            std::thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+
+        completions_seen += 1;
+        let done = polled["result"].clone();
+        let tid = done["task_id"].as_i64().unwrap_or(-1);
+        let tenant = done["tenant_id"].as_u64().unwrap_or(u64::MAX);
+        if tid == victim_task_id {
+            victim_done = Some(done);
+            break;
+        }
+        if tenant == 1 {
+            tenant1_before_victim += 1;
+        }
+    }
+
+    suite.check(
+        "victim completion observed",
+        victim_done.is_some(),
+        format!(
+            "victim_task_id={victim_task_id} completions_seen={completions_seen} tenant1_before_victim={tenant1_before_victim}"
+        ),
+    );
+    if let Some(done) = &victim_done {
+        suite.check_json_eq("victim status OK", done, "status", serde_json::json!(0u32));
+    }
+
+    suite.check(
+        "tenant1 flood bounded before victim completes",
+        tenant1_before_victim <= 12,
+        format!("tenant1_before_victim={tenant1_before_victim} (expected <= 12)"),
+    );
+
+    // Shut down persistent kernel.
+    let _ = daemon.send_json("task-submit-v1 3 0 0 0");
+
+    suite.print_summary();
+    suite.assert_all_passed();
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Exhaustive Run-List Execution
 // ═══════════════════════════════════════════════════════════════════

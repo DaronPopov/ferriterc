@@ -4,6 +4,8 @@ Status: Draft
 Scope: `ferrite-os` + `ferrite-gpu-lang`  
 Goal: Make Ferrite's runtime model behave more like a GPU-native manycore OS, where GPU SMs execute queued work as long-lived workers (not just per-op host launches).
 
+Related spec: `gpu-isa-v0-design.md` defines the bytecode/VM layer that sits on this roadmap's scheduler and queue substrate.
+
 ## Why This Document
 
 The current stack already has strong host-side scheduling, stream parallelism, memory management, and JIT graph compilation.  

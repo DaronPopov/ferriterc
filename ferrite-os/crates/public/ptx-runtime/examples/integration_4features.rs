@@ -128,19 +128,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // ── Feature 4: task submission ─────────────────────────
+    // ── Feature 4: task submission + completion ABI v1 ─────
     {
-        print!("[4] submit_task ... ");
+        print!("[4] submit_task + submit_task_v1 ... ");
 
-        // Submit a NOP task (opcode 0)
+        // Submit a legacy NOP task (opcode 0)
         let mut args: [*mut libc::c_void; 8] = [ptr::null_mut(); 8];
-        let tid = runtime.submit_task(0, 1, &mut args);
+        let tid_legacy = runtime.submit_task(0, 1, &mut args);
 
-        if tid >= 0 {
-            println!("PASS  (task_id={})", tid);
+        // Submit a V1 NOP task with explicit descriptor metadata.
+        let mut desc = ptx_sys::PTXTaskDescV1::default();
+        desc.abi_version = ptx_sys::PTX_TASK_ABI_V1;
+        desc.opcode = 0;
+        desc.priority = 1;
+        desc.tenant_id = 42;
+        desc.arg_count = 0;
+        let tid_v1 = runtime.submit_task_v1(&desc);
+
+        if tid_legacy >= 0 && tid_v1 >= 0 {
+            // Completion polling is non-blocking; this may be empty when the
+            // persistent kernel is not booted in this direct-runtime path.
+            let polled = runtime.poll_completion_v1().is_some();
+            println!(
+                "PASS  (legacy_tid={}, v1_tid={}, completion_polled={})",
+                tid_legacy, tid_v1, polled
+            );
             pass += 1;
         } else {
-            println!("FAIL  (returned {})", tid);
+            println!(
+                "FAIL  (legacy_tid={}, v1_tid={})",
+                tid_legacy, tid_v1
+            );
             fail += 1;
         }
     }

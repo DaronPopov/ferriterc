@@ -26,7 +26,7 @@ extern "C" {
 #define GPU_HOT_MAX_NAME_LEN        64
 #define GPU_HOT_DEFAULT_VRAM_PERCENT 70.0f
 #define GPU_HOT_IPC_KEY_PREFIX      "/ptx_os_"
-#define GPU_HOT_IPC_KEY_SUFFIX      "_v1"
+#define GPU_HOT_IPC_KEY_SUFFIX      "_v2"
 #define GPU_HOT_IPC_KEY_MAX_LEN     64
 
 // TLSF Allocator Configuration
@@ -39,7 +39,74 @@ extern "C" {
 
 // PTX-OS Task Queue
 #define PTX_MAX_QUEUE_SIZE          1024
+#define PTX_MAX_COMPLETION_QUEUE_SIZE 1024
 #define PTX_MAX_TASK_ARGS           8
+#define PTX_TASK_ABI_V1             1
+
+// Task completion status
+#define PTX_TASK_STATUS_OK                  0
+#define PTX_TASK_STATUS_QUEUE_FULL          1
+#define PTX_TASK_STATUS_UNSUPPORTED_OPCODE  2
+#define PTX_TASK_STATUS_RUNTIME_ERROR       3
+#define PTX_TASK_STATUS_YIELDED             4
+
+// Core task opcodes
+#define PTX_TASK_OPCODE_NOP                 0
+#define PTX_TASK_OPCODE_COMPUTE             1
+#define PTX_TASK_OPCODE_SHUTDOWN            3
+#define PTX_TASK_OPCODE_SWAP_IN             4
+#define PTX_TASK_OPCODE_VFS_MOUNT           5
+#define PTX_TASK_OPCODE_INTERRUPT           6
+#define PTX_TASK_OPCODE_LAUNCH_KERNEL       7
+#define PTX_TASK_OPCODE_COOPERATIVE_WORK    9
+#define PTX_TASK_OPCODE_ISA_RUN             10
+
+// Task graph flags (DAG/continuation semantics)
+#define PTX_TASK_FLAG_WAIT_ON_TASK          0x1
+#define PTX_TASK_FLAG_CONTINUATION          0x2
+#define PTX_TASK_FLAG_COOPERATIVE           0x4
+
+// Reserved args[] slots used when task graph flags are enabled
+#define PTX_TASK_META_ARG_WORK_REMAINING    4
+#define PTX_TASK_META_ARG_QUANTUM           5
+#define PTX_TASK_META_ARG_DEPENDENCY        6
+#define PTX_TASK_META_ARG_CONTINUATION      7
+
+// Cooperative scheduler budget model (token bucket per tenant)
+#define PTX_TENANT_BUDGET_INITIAL           256
+#define PTX_TENANT_BUDGET_MAX               512
+#define PTX_TENANT_BUDGET_REFILL_PER_TICK   32
+
+// ISA v0 ABI
+#define PTX_ISA_ABI_V0                      1
+#define PTX_ISA_V0_OP_NOP                   0x00
+#define PTX_ISA_V0_OP_HALT                  0x01
+#define PTX_ISA_V0_OP_TRAP                  0x02
+#define PTX_ISA_V0_OP_YIELD                 0x03
+#define PTX_ISA_V0_OP_JMP                   0x04
+#define PTX_ISA_V0_OP_MOVI                  0x10
+#define PTX_ISA_V0_OP_ADD                   0x11
+#define PTX_ISA_V0_OP_SUB                   0x12
+#define PTX_ISA_V0_OP_BR_EQ                 0x20
+#define PTX_ISA_V0_OP_ASSERT_EQI            0x21
+#define PTX_ISA_V0_OP_LD_U32                0x30
+#define PTX_ISA_V0_OP_ST_U32                0x31
+#define PTX_ISA_V0_OP_LD_CONST              0x32
+#define PTX_ISA_V0_OP_SYSCALL               0x40
+#define PTX_ISA_V0_SYS_YIELD                1
+#define PTX_ISA_V0_SYS_SIGNAL               2
+#define PTX_ISA_V0_STATE_RUNNING            0x1
+#define PTX_ISA_V0_STATE_HALTED             0x2
+#define PTX_ISA_V0_STATE_TRAPPED            0x4
+#define PTX_ISA_V0_STATE_YIELDED            0x8
+#define PTX_ISA_V0_TRAP_NONE                0
+#define PTX_ISA_V0_TRAP_INVALID_PC          1
+#define PTX_ISA_V0_TRAP_INVALID_OPCODE      2
+#define PTX_ISA_V0_TRAP_NULL_PROGRAM        3
+#define PTX_ISA_V0_TRAP_NULL_CONTEXT        4
+#define PTX_ISA_V0_TRAP_ASSERT_FAILED       5
+#define PTX_ISA_V0_TRAP_INVALID_MEM         6
+#define PTX_ISA_V0_TRAP_INVALID_SYSCALL     7
 
 // Priority Levels
 #define PTX_PRIORITY_REALTIME       0
@@ -139,12 +206,73 @@ typedef struct PTXOSTask {
     uint32_t task_id;
     uint32_t opcode;
     uint32_t priority;
+    uint32_t tenant_id;
+    uint32_t flags;
+    uint32_t arg_count;
+    uint32_t yield_count;
     bool active;
     bool completed;
     void* args[PTX_MAX_TASK_ARGS];
     uint64_t submitted_at;
+    uint64_t started_at;
     uint64_t completed_at;
+    uint64_t vruntime;
 } PTXOSTask;
+
+// ============================================================================
+// PTX-OS V1 Task Descriptor
+// ============================================================================
+
+typedef struct PTXTaskDescV1 {
+    uint32_t abi_version;   // must be PTX_TASK_ABI_V1
+    uint32_t opcode;
+    uint32_t priority;
+    uint32_t flags;
+    uint32_t tenant_id;
+    uint32_t arg_count;     // <= PTX_MAX_TASK_ARGS
+    void* args[PTX_MAX_TASK_ARGS];
+} PTXTaskDescV1;
+
+typedef struct PTXTaskResultV1 {
+    uint32_t abi_version;   // PTX_TASK_ABI_V1
+    uint32_t task_id;
+    uint32_t opcode;
+    uint32_t priority;
+    uint32_t tenant_id;
+    uint32_t status;        // PTX_TASK_STATUS_*
+    uint64_t submitted_at;
+    uint64_t started_at;
+    uint64_t completed_at;
+} PTXTaskResultV1;
+
+// ============================================================================
+// PTX ISA v0 Program/Context
+// ============================================================================
+
+typedef struct PTXISAProgramV0 {
+    uint32_t abi_version;     // PTX_ISA_ABI_V0
+    uint32_t flags;
+    uint32_t code_words;      // number of 64-bit words
+    uint32_t const_bytes;
+    uint64_t code_ptr;        // device-visible pointer
+    uint64_t const_ptr;       // optional
+    uint32_t entry_pc;        // instruction index
+    uint32_t reserved;
+} PTXISAProgramV0;
+
+typedef struct PTXISAContextV0 {
+    uint32_t abi_version;      // PTX_ISA_ABI_V0
+    uint32_t state_flags;      // PTX_ISA_V0_STATE_*
+    uint32_t trap_code;        // PTX_ISA_V0_TRAP_*
+    uint32_t last_opcode;      // last executed opcode byte
+    uint32_t regs[32];         // v0 GPR file
+    uint32_t pc;               // instruction index
+    uint32_t pred;             // predicate register
+    uint32_t mem_size;         // bytes
+    uint64_t mem_ptr;          // optional linear memory window
+    uint32_t steps_total;      // lifetime instruction count
+    uint32_t steps_last_slice; // instructions in last dispatch
+} PTXISAContextV0;
 
 // ============================================================================
 // PTX-OS Task Queue
@@ -156,6 +284,13 @@ typedef struct PTXTaskQueue {
     volatile uint32_t tail;
     volatile uint32_t lock;
 } PTXTaskQueue;
+
+typedef struct PTXTaskResultQueue {
+    PTXTaskResultV1 results[PTX_MAX_COMPLETION_QUEUE_SIZE];
+    volatile uint32_t head;
+    volatile uint32_t tail;
+    volatile uint32_t overruns;
+} PTXTaskResultQueue;
 
 // ============================================================================
 // PTX Kernel Launch Descriptor (for CDP)
@@ -335,6 +470,12 @@ typedef struct PTXSystemState {
 
     // Task queue
     PTXTaskQueue queue;
+    PTXTaskResultQueue completion_queue;
+    volatile uint32_t next_task_id;
+    volatile uint64_t tenant_vruntime[PTX_MAX_QUEUE_SIZE];
+    volatile uint32_t scheduler_epoch;
+    volatile uint32_t tenant_budget[PTX_MAX_QUEUE_SIZE];
+    volatile uint32_t tenant_budget_epoch[PTX_MAX_QUEUE_SIZE];
 
     // Operation counter
     volatile uint64_t total_ops;
@@ -486,6 +627,9 @@ typedef struct GPUHotSystemSnapshot {
     uint32_t queue_head;
     uint32_t queue_tail;
     uint32_t queue_lock;
+    uint32_t completion_head;
+    uint32_t completion_tail;
+    uint32_t completion_overruns;
 } GPUHotSystemSnapshot;
 
 // ============================================================================
@@ -657,6 +801,8 @@ void  gpu_hot_export_context(GPUHotRuntime* runtime);
 
 void ptx_os_boot_persistent_kernel(GPUHotRuntime* runtime);
 int ptx_os_submit_task(GPUHotRuntime* runtime, uint32_t opcode, uint32_t priority, void* args[PTX_MAX_TASK_ARGS]);
+int ptx_os_submit_task_v1(GPUHotRuntime* runtime, const PTXTaskDescV1* desc);
+int ptx_os_poll_completion_v1(GPUHotRuntime* runtime, PTXTaskResultV1* out_result);
 
 // ============================================================================
 // VMM API

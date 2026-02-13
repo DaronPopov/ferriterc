@@ -221,8 +221,13 @@ Output:
   "active_tasks": 5,
   "vram_used": 4096,
   "watchdog_alert": false,
+  "kernel_running": false,
+  "shutdown_requested": false,
   "queue_head": 0,
-  "queue_tail": 0
+  "queue_tail": 0,
+  "completion_head": 0,
+  "completion_tail": 0,
+  "completion_overruns": 0
 }
 ```
 
@@ -235,6 +240,129 @@ ferrite-daemon keepalive
 Output:
 ```json
 {"ok":true,"message":"keepalive sent"}
+```
+
+#### Task Submit (ABI v1)
+
+```bash
+ferrite-daemon task-submit-v1 [opcode] [priority] [tenant_id] [flags] [depends_on_task_id] [continuation_opcode]
+```
+
+Output:
+```json
+{
+  "ok": true,
+  "task_id": 1,
+  "opcode": 0,
+  "priority": 1,
+  "tenant_id": 7,
+  "flags": 0,
+  "depends_on_task_id": null,
+  "continuation_opcode": null
+}
+```
+
+Example DAG edge with continuation:
+```bash
+# Submit B that waits for task 10 and enqueues opcode 0 continuation on completion.
+ferrite-daemon task-submit-v1 0 1 7 0 10 0
+```
+
+#### Cooperative Time-Sliced Task
+
+```bash
+ferrite-daemon task-submit-coop 42 20000 64 1
+```
+
+Output:
+```json
+{
+  "ok": true,
+  "task_id": 12,
+  "opcode": 9,
+  "tenant_id": 42,
+  "priority": 1,
+  "work_units": 20000,
+  "quantum": 64
+}
+```
+
+#### Cooperative Batch Submit
+
+```bash
+ferrite-daemon task-submit-coop-batch 42 24 256 256 1
+```
+
+Output:
+```json
+{
+  "ok": true,
+  "requested": 24,
+  "submitted": 24,
+  "first_task_id": 100,
+  "last_task_id": 123,
+  "tenant_id": 42,
+  "priority": 1,
+  "work_units": 256,
+  "quantum": 256
+}
+```
+
+#### ISA v0 Task Submit
+
+```bash
+ferrite-daemon task-submit-isa-v0 42 halt 64 1
+```
+
+Modes:
+
+- `halt`: execute `HALT` immediately
+- `trap`: execute `TRAP` and complete with runtime error
+- `yield`: execute `YIELD`, then resume and halt
+- `movi`: execute `MOVI` + `ASSERT_EQI` + `HALT`
+- `arith`: execute `ADD` + `ASSERT_EQI` + `HALT`
+- `branch`: execute `BR_EQ` to skip `TRAP`, then `HALT`
+- `jmp`: execute `JMP` to skip `TRAP`, then `HALT`
+- `pc_oob`: execute out-of-bounds `JMP` and trap with runtime error
+- `mem_ld`: execute `LD_U32` + `ASSERT_EQI` + `HALT`
+- `mem_oob`: execute out-of-bounds `LD_U32` and trap with runtime error
+- `sys_yield`: execute syscall `SYS_YIELD`, then resume and halt
+- `sys_bad`: execute invalid syscall id and trap with runtime error
+
+Output:
+```json
+{
+  "ok": true,
+  "task_id": 200,
+  "opcode": 10,
+  "tenant_id": 42,
+  "priority": 1,
+  "slice_steps": 64,
+  "mode": "halt",
+  "code_words": 1
+}
+```
+
+#### Task Poll (ABI v1)
+
+```bash
+ferrite-daemon task-poll-v1
+```
+
+Output (when completion is available):
+```json
+{
+  "ok": true,
+  "empty": false,
+  "result": {
+    "abi_version": 1,
+    "task_id": 1,
+    "opcode": 0,
+    "priority": 1,
+    "tenant_id": 7,
+    "status": 0
+  }
+}
 ```
 
 #### Live Watch Mode

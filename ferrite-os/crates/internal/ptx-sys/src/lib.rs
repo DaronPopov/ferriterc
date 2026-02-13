@@ -81,13 +81,72 @@ pub const PTX_STABLE_ABI_VERSION: u32 = 1;
 pub const PTX_STABLE_CONFIG_DEFAULT: u32 = 0;
 pub const PTX_STABLE_INVALID_DEVICE: i32 = -1;
 
-pub const TLSF_FL_INDEX_MAX: u32 = 32;
+pub const TLSF_FL_INDEX_MAX: u32 = 34;
 pub const TLSF_SL_INDEX_COUNT: u32 = 16;
 pub const TLSF_MIN_BLOCK_SIZE: u32 = 64;
 pub const TLSF_ALIGNMENT: u32 = 256;
 
 pub const PTX_MAX_QUEUE_SIZE: u32 = 1024;
+pub const PTX_MAX_COMPLETION_QUEUE_SIZE: u32 = 1024;
 pub const PTX_MAX_TASK_ARGS: u32 = 8;
+pub const PTX_TASK_ABI_V1: u32 = 1;
+
+pub const PTX_TASK_STATUS_OK: u32 = 0;
+pub const PTX_TASK_STATUS_QUEUE_FULL: u32 = 1;
+pub const PTX_TASK_STATUS_UNSUPPORTED_OPCODE: u32 = 2;
+pub const PTX_TASK_STATUS_RUNTIME_ERROR: u32 = 3;
+pub const PTX_TASK_STATUS_YIELDED: u32 = 4;
+
+pub const PTX_TASK_OPCODE_NOP: u32 = 0;
+pub const PTX_TASK_OPCODE_COMPUTE: u32 = 1;
+pub const PTX_TASK_OPCODE_SHUTDOWN: u32 = 3;
+pub const PTX_TASK_OPCODE_SWAP_IN: u32 = 4;
+pub const PTX_TASK_OPCODE_VFS_MOUNT: u32 = 5;
+pub const PTX_TASK_OPCODE_INTERRUPT: u32 = 6;
+pub const PTX_TASK_OPCODE_LAUNCH_KERNEL: u32 = 7;
+pub const PTX_TASK_OPCODE_COOPERATIVE_WORK: u32 = 9;
+pub const PTX_TASK_OPCODE_ISA_RUN: u32 = 10;
+
+pub const PTX_TASK_FLAG_WAIT_ON_TASK: u32 = 0x1;
+pub const PTX_TASK_FLAG_CONTINUATION: u32 = 0x2;
+pub const PTX_TASK_FLAG_COOPERATIVE: u32 = 0x4;
+pub const PTX_TASK_META_ARG_WORK_REMAINING: usize = 4;
+pub const PTX_TASK_META_ARG_QUANTUM: usize = 5;
+pub const PTX_TASK_META_ARG_DEPENDENCY: usize = 6;
+pub const PTX_TASK_META_ARG_CONTINUATION: usize = 7;
+pub const PTX_TENANT_BUDGET_INITIAL: u32 = 256;
+pub const PTX_TENANT_BUDGET_MAX: u32 = 512;
+pub const PTX_TENANT_BUDGET_REFILL_PER_TICK: u32 = 32;
+
+pub const PTX_ISA_ABI_V0: u32 = 1;
+pub const PTX_ISA_V0_OP_NOP: u32 = 0x00;
+pub const PTX_ISA_V0_OP_HALT: u32 = 0x01;
+pub const PTX_ISA_V0_OP_TRAP: u32 = 0x02;
+pub const PTX_ISA_V0_OP_YIELD: u32 = 0x03;
+pub const PTX_ISA_V0_OP_JMP: u32 = 0x04;
+pub const PTX_ISA_V0_OP_MOVI: u32 = 0x10;
+pub const PTX_ISA_V0_OP_ADD: u32 = 0x11;
+pub const PTX_ISA_V0_OP_SUB: u32 = 0x12;
+pub const PTX_ISA_V0_OP_BR_EQ: u32 = 0x20;
+pub const PTX_ISA_V0_OP_ASSERT_EQI: u32 = 0x21;
+pub const PTX_ISA_V0_OP_LD_U32: u32 = 0x30;
+pub const PTX_ISA_V0_OP_ST_U32: u32 = 0x31;
+pub const PTX_ISA_V0_OP_LD_CONST: u32 = 0x32;
+pub const PTX_ISA_V0_OP_SYSCALL: u32 = 0x40;
+pub const PTX_ISA_V0_SYS_YIELD: u32 = 1;
+pub const PTX_ISA_V0_SYS_SIGNAL: u32 = 2;
+pub const PTX_ISA_V0_STATE_RUNNING: u32 = 0x1;
+pub const PTX_ISA_V0_STATE_HALTED: u32 = 0x2;
+pub const PTX_ISA_V0_STATE_TRAPPED: u32 = 0x4;
+pub const PTX_ISA_V0_STATE_YIELDED: u32 = 0x8;
+pub const PTX_ISA_V0_TRAP_NONE: u32 = 0;
+pub const PTX_ISA_V0_TRAP_INVALID_PC: u32 = 1;
+pub const PTX_ISA_V0_TRAP_INVALID_OPCODE: u32 = 2;
+pub const PTX_ISA_V0_TRAP_NULL_PROGRAM: u32 = 3;
+pub const PTX_ISA_V0_TRAP_NULL_CONTEXT: u32 = 4;
+pub const PTX_ISA_V0_TRAP_ASSERT_FAILED: u32 = 5;
+pub const PTX_ISA_V0_TRAP_INVALID_MEM: u32 = 6;
+pub const PTX_ISA_V0_TRAP_INVALID_SYSCALL: u32 = 7;
 
 pub const PTX_PRIORITY_REALTIME: u32 = 0;
 pub const PTX_PRIORITY_HIGH: u32 = 1;
@@ -420,11 +479,17 @@ pub struct PTXOSTask {
     pub task_id: u32,
     pub opcode: u32,
     pub priority: u32,
+    pub tenant_id: u32,
+    pub flags: u32,
+    pub arg_count: u32,
+    pub yield_count: u32,
     pub active: bool,
     pub completed: bool,
     pub args: [*mut c_void; 8],
     pub submitted_at: u64,
+    pub started_at: u64,
     pub completed_at: u64,
+    pub vruntime: u64,
 }
 
 #[repr(C)]
@@ -434,6 +499,88 @@ pub struct PTXTaskQueue {
     pub head: u32,
     pub tail: u32,
     pub lock: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct PTXTaskDescV1 {
+    pub abi_version: u32,
+    pub opcode: u32,
+    pub priority: u32,
+    pub flags: u32,
+    pub tenant_id: u32,
+    pub arg_count: u32,
+    pub args: [*mut c_void; 8],
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct PTXTaskResultV1 {
+    pub abi_version: u32,
+    pub task_id: u32,
+    pub opcode: u32,
+    pub priority: u32,
+    pub tenant_id: u32,
+    pub status: u32,
+    pub submitted_at: u64,
+    pub started_at: u64,
+    pub completed_at: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct PTXISAProgramV0 {
+    pub abi_version: u32,
+    pub flags: u32,
+    pub code_words: u32,
+    pub const_bytes: u32,
+    pub code_ptr: u64,
+    pub const_ptr: u64,
+    pub entry_pc: u32,
+    pub reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct PTXISAContextV0 {
+    pub abi_version: u32,
+    pub state_flags: u32,
+    pub trap_code: u32,
+    pub last_opcode: u32,
+    pub regs: [u32; 32],
+    pub pc: u32,
+    pub pred: u32,
+    pub mem_size: u32,
+    pub mem_ptr: u64,
+    pub steps_total: u32,
+    pub steps_last_slice: u32,
+}
+
+impl Default for PTXISAContextV0 {
+    fn default() -> Self {
+        Self {
+            abi_version: PTX_ISA_ABI_V0,
+            state_flags: 0,
+            trap_code: 0,
+            last_opcode: 0,
+            regs: [0; 32],
+            pc: 0,
+            pred: 0,
+            mem_size: 0,
+            mem_ptr: 0,
+            steps_total: 0,
+            steps_last_slice: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct PTXTaskResultQueue {
+    pub results: [PTXTaskResultV1; 1024],
+    pub head: u32,
+    pub tail: u32,
+    pub overruns: u32,
 }
 
 #[repr(C)]
@@ -533,6 +680,12 @@ pub struct PTXSystemState {
     pub signal_mask: u64,
     pub interrupt_cnt: u32,
     pub queue: PTXTaskQueue,
+    pub completion_queue: PTXTaskResultQueue,
+    pub next_task_id: u32,
+    pub tenant_vruntime: [u64; 1024],
+    pub scheduler_epoch: u32,
+    pub tenant_budget: [u32; 1024],
+    pub tenant_budget_epoch: [u32; 1024],
     pub total_ops: u64,
     pub fs_node_count: u32,
     pub vmm: *mut VMMState,
@@ -722,6 +875,9 @@ pub struct GPUHotSystemSnapshot {
     pub queue_head: u32,
     pub queue_tail: u32,
     pub queue_lock: u32,
+    pub completion_head: u32,
+    pub completion_tail: u32,
+    pub completion_overruns: u32,
 }
 
 /// Context hook statistics - tracks blocked creates, prevented switches, etc.
@@ -755,6 +911,7 @@ pub struct GPUHotConfig {
     pub force_daemon_mode: bool,
     pub quiet_init: bool,
     pub max_streams: u32,
+    pub single_pool_strict: bool,
 }
 
 impl Default for GPUHotConfig {
@@ -771,6 +928,7 @@ impl Default for GPUHotConfig {
             force_daemon_mode: false,
             quiet_init: false,
             max_streams: 16, // Must match C gpu_hot_default_config(); GPU_HOT_MAX_STREAMS is the cap, not the default
+            single_pool_strict: false,
         }
     }
 }
@@ -975,6 +1133,11 @@ extern "C" {
         opcode: u32,
         priority: u32,
         args: *mut *mut c_void,
+    ) -> c_int;
+    pub fn ptx_os_submit_task_v1(runtime: *mut GPUHotRuntime, desc: *const PTXTaskDescV1) -> c_int;
+    pub fn ptx_os_poll_completion_v1(
+        runtime: *mut GPUHotRuntime,
+        out_result: *mut PTXTaskResultV1,
     ) -> c_int;
 
     // Context Export API

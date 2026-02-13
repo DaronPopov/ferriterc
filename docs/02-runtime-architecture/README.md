@@ -62,3 +62,4 @@
 
 - `02.01`: Runtime operations: `runbooks/runtime-operations.md`
 - `02.02`: GPU manycore execution roadmap: `gpu-manycore-roadmap.md`
+- `02.03`: GPU ISA v0 design: `gpu-isa-v0-design.md`

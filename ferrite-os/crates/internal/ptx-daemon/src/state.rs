@@ -49,6 +49,7 @@ pub struct DaemonState {
     // ── multi-tenant scheduler (Plan-A) ─────────────────────────
     /// Multi-tenant GPU scheduler with fair dispatch and quota enforcement.
     pub scheduler: parking_lot::Mutex<Scheduler>,
+
 }
 
 pub struct ManagedApp {

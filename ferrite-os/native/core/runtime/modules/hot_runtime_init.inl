@@ -109,6 +109,24 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
         // Segment already exists, we are a client
         is_daemon = false;
         shm_fd = shm_open(ipc_key, O_RDWR, 0666);
+
+        // If the existing segment size doesn't match the current ABI layout,
+        // recreate it to avoid SIGBUS from mapping beyond the object size.
+        if (shm_fd != -1) {
+            struct stat st;
+            if (fstat(shm_fd, &st) == 0 && (size_t)st.st_size != total_shm_size) {
+                printf(
+                    "[Ferrite-OS] Shared-memory ABI size mismatch (found=%zu, expected=%zu). Recreating segment.\n",
+                    (size_t)st.st_size,
+                    total_shm_size
+                );
+                close(shm_fd);
+                shm_fd = -1;
+                shm_unlink(ipc_key);
+                shm_fd = shm_open(ipc_key, O_CREAT | O_EXCL | O_RDWR, 0666);
+                is_daemon = true;
+            }
+        }
     }
 
     if (shm_fd == -1) {
@@ -361,4 +379,3 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
 
     return runtime;
 }
-
