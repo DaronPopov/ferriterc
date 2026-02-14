@@ -4,28 +4,6 @@ Status: Draft
 Scope: `ferrite-os` + `ferrite-gpu-lang`  
 Objective: Add a minimal device ISA execution layer so Ferrite can run bounded instruction streams on resident GPU workers, not only fixed opcodes.
 
-## Implementation Status (as of February 13, 2026)
-
-Implemented now:
-
-1. `ISA_RUN` task opcode + ABI structs in native header and `ptx-sys`.
-2. Persistent-kernel decode/execute loop with:
-   - Phase A: `NOP`, `HALT`, `TRAP`, `YIELD`
-   - Phase B subset: `JMP`, `MOVI`, `ADD`, `SUB`, `BR_EQ`, `ASSERT_EQI`
-   - Phase C subset: `LD_U32`, `ST_U32`, `LD_CONST`, `SYSCALL` (`SYS_YIELD`, `SYS_SIGNAL`)
-3. Deterministic trap classes including invalid PC/opcode/assert/memory/syscall cases.
-4. Daemon submit surface:
-   - `task-submit-isa-v0 <tenant> [mode] [slice_steps] [priority]`
-   - current inline conformance modes include:
-     `halt`, `trap`, `yield`, `movi`, `arith`, `branch`, `jmp`, `pc_oob`, `mem_ld`, `mem_oob`, `sys_yield`, `sys_bad`
-5. Integration coverage in `daemon_integration` for these inline modes and scheduler compatibility.
-
-Not implemented yet:
-
-1. Dedicated `task-poll-isa-v0` API/command (current flow uses `task-poll-v1` completions).
-2. Full `ferrite-gpu-lang` ISA backend lowering and backend selector rollout.
-3. Full opcode families listed in this design (`BR_NE`, `BR_LT`, `BR_GE`, vector/fp families, richer syscall table).
-
 ## Why This Is The Next Piece
 
 Ferrite already has:
@@ -192,14 +170,8 @@ Additions in `ptx-runtime`:
 
 Daemon command additions:
 
-1. `task-submit-isa-v0 <tenant> [mode] [slice_steps] [priority]`
-2. `task-poll-v1` (current completion polling path for ISA tasks)
-
-Current inline conformance mode set:
-
-1. `halt`, `trap`, `yield`
-2. `movi`, `arith`, `branch`, `jmp`, `pc_oob`
-3. `mem_ld`, `mem_oob`, `sys_yield`, `sys_bad`
+1. `task-submit-isa-v0 <tenant> [mode] [slice_steps] [priority]` (Phase A inline modes: `halt|trap|yield`)
+2. `task-poll-isa-v0 <task_id>`
 
 ## Language Integration
 

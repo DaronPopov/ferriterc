@@ -10,7 +10,7 @@ Operational guide for LLM agents working in `ferriterc`.
 ## Repo Root
 
 ```bash
-cd /home/daron/on33/ferriterc
+cd /home/daron/fdfd/ferriterc
 ```
 
 ## Core Entrypoints
@@ -46,7 +46,7 @@ cd ferrite-os
 cargo test -p ferrite-daemon --test daemon_integration -- --list
 ```
 
-Run one suite:
+Run one suite (recommended first):
 
 ```bash
 cargo test -p ferrite-daemon --test daemon_integration permissive_mode_full_suite -- --nocapture --test-threads=1
@@ -57,30 +57,6 @@ Run all daemon integration tests:
 ```bash
 cargo test -p ferrite-daemon --test daemon_integration -- --test-threads=1 --nocapture
 ```
-
-## Required Smoke Matrix (LLM Default Before Commit/Push)
-
-Run these in order, one command at a time (do not parallelize daemon tests):
-
-```bash
-cd ferrite-os
-make all
-cargo check -p ferrite-daemon
-cargo test -p ferrite-daemon --test daemon_integration task_isa_v0_roundtrip -- --nocapture --test-threads=1
-cargo test -p ferrite-daemon --test daemon_integration task_completion_v1_roundtrip -- --test-threads=1
-cargo test -p ferrite-daemon --test daemon_integration task_dag_continuation_v1_roundtrip -- --test-threads=1
-cargo test -p ferrite-daemon --test daemon_integration task_timeslice_fairness_v1_roundtrip -- --test-threads=1
-cargo test -p ferrite-daemon --test daemon_integration task_tenant_budget_starvation_guard_v1_roundtrip -- --test-threads=1
-```
-
-Use this Definition of Done for change validation:
-
-- `docs/02-runtime-architecture/llm-definition-of-done.md`
-
-### Full-Suite Caveat
-
-- `permissive_mode_full_suite` and `strict_mode_full_suite` may fail for environment/example path reasons unrelated to scheduler/ISA correctness (for example `run-entry` missing local example files).
-- Treat the smoke matrix above as the release gate unless a task explicitly targets those full-suite scenarios.
 
 ## Root Systemic Testkit
 
