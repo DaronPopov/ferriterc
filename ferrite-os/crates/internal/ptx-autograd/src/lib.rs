@@ -38,7 +38,7 @@ pub mod ops;
 pub mod compiler;
 
 pub use tape::{Tape, TapeNode, TAPE};
-pub use backward::backward;
+pub use backward::{backward, backward_with_create_graph};
 pub use grad_fn::GradFn;
 pub use variable::Variable;
 pub use compiler::{compile_from_tape, compile_from_tape_with_inputs};

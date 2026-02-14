@@ -223,6 +223,41 @@ impl PtxRuntime {
     pub fn submit_task(&self, opcode: u32, priority: u32, args: &mut [*mut libc::c_void; 8]) -> i32 {
         unsafe { ptx_sys::ptx_os_submit_task(self.inner.raw, opcode, priority, args.as_mut_ptr()) }
     }
+
+    // ========================================================================
+    // Persistent Kernel & CUDA Dynamic Parallelism
+    // ========================================================================
+
+    /// Boot the persistent OS kernel on the GPU.
+    ///
+    /// The persistent kernel runs an infinite scheduling loop that polls
+    /// the task queue and dispatches work via CUDA Dynamic Parallelism.
+    /// This must be called before `submit_task` or `cdp_test_recursive`.
+    pub fn boot_persistent_kernel(&self) {
+        unsafe { ptx_sys::ptx_os_boot_persistent_kernel(self.inner.raw) }
+    }
+
+    /// Run the CDP recursive self-scheduling test.
+    ///
+    /// Submits a kernel that, upon execution by the persistent scheduler,
+    /// re-enqueues itself back into the task queue — creating a fully
+    /// autonomous GPU-side execution loop:
+    ///
+    /// ```text
+    /// Host submit → Scheduler → CDP child → device_submit → Scheduler → ...
+    /// ```
+    ///
+    /// Returns the number of iterations completed, or an error.
+    pub fn cdp_test_recursive(&self, iterations: i32) -> Result<i32> {
+        let result = unsafe { ptx_sys::ptx_cdp_test_recursive(self.inner.raw, iterations) };
+        if result < 0 {
+            Err(Error::Internal {
+                message: format!("CDP recursive test failed with code {}", result),
+            })
+        } else {
+            Ok(result)
+        }
+    }
 }
 
 #[cfg(test)]

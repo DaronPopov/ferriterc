@@ -21,6 +21,28 @@ pub trait GradFn: Send + Sync {
     /// require gradient.
     fn backward(&self, grad_output: &Tensor, saved: &[Tensor]) -> Result<Vec<Option<Tensor>>>;
 
+    /// Compute gradients while recording on the tape for higher-order derivatives.
+    ///
+    /// When `create_graph=true`, gradient computations must themselves be
+    /// differentiable. This method performs the same backward computation
+    /// through `Variable` ops so the operations are recorded on the tape.
+    ///
+    /// The default implementation delegates to the non-recording `backward`.
+    /// Override this for gradient functions that need to support second derivatives.
+    fn backward_create_graph(
+        &self,
+        grad_output: &crate::Variable,
+        saved: &[crate::Variable],
+    ) -> Result<Vec<Option<crate::Variable>>> {
+        // Default: compute through raw tensors (no graph recording)
+        let saved_tensors: Vec<Tensor> = saved.iter().map(|v| v.tensor().clone()).collect();
+        let grads = self.backward(grad_output.tensor(), &saved_tensors)?;
+        Ok(grads
+            .into_iter()
+            .map(|opt| opt.map(|t| crate::Variable::new(t, false)))
+            .collect())
+    }
+
     /// Get the name of this gradient function (for debugging).
     fn name(&self) -> &'static str;
 }
@@ -50,10 +72,20 @@ pub struct AddBackward;
 
 impl GradFn for AddBackward {
     fn backward(&self, grad_output: &Tensor, _saved: &[Tensor]) -> Result<Vec<Option<Tensor>>> {
-        // Both inputs get the same gradient
         Ok(vec![
             Some(grad_output.clone_tensor()?),
             Some(grad_output.clone_tensor()?),
+        ])
+    }
+
+    fn backward_create_graph(
+        &self,
+        grad_output: &crate::Variable,
+        _saved: &[crate::Variable],
+    ) -> Result<Vec<Option<crate::Variable>>> {
+        Ok(vec![
+            Some(grad_output.clone()),
+            Some(grad_output.clone()),
         ])
     }
 
@@ -69,6 +101,17 @@ impl GradFn for SubBackward {
     fn backward(&self, grad_output: &Tensor, _saved: &[Tensor]) -> Result<Vec<Option<Tensor>>> {
         Ok(vec![
             Some(grad_output.clone_tensor()?),
+            Some(grad_output.neg()?),
+        ])
+    }
+
+    fn backward_create_graph(
+        &self,
+        grad_output: &crate::Variable,
+        _saved: &[crate::Variable],
+    ) -> Result<Vec<Option<crate::Variable>>> {
+        Ok(vec![
+            Some(grad_output.clone()),
             Some(grad_output.neg()?),
         ])
     }
@@ -92,6 +135,19 @@ impl GradFn for MulBackward {
         ])
     }
 
+    fn backward_create_graph(
+        &self,
+        grad_output: &crate::Variable,
+        saved: &[crate::Variable],
+    ) -> Result<Vec<Option<crate::Variable>>> {
+        let a = &saved[0];
+        let b = &saved[1];
+        Ok(vec![
+            Some(grad_output.mul(b)?),
+            Some(grad_output.mul(a)?),
+        ])
+    }
+
     fn name(&self) -> &'static str {
         "MulBackward"
     }
@@ -106,12 +162,29 @@ impl GradFn for DivBackward {
         let a = &saved[0];
         let b = &saved[1];
 
-        // d/da = grad / b
         let grad_a = grad_output.div(b)?;
 
-        // d/db = -grad * a / b^2 = -grad * a * (1/b) * (1/b)
         let b_inv = b.recip()?;
         let grad_b = grad_output.neg()?.mul(a)?.mul(&b_inv)?.mul(&b_inv)?;
+
+        Ok(vec![Some(grad_a), Some(grad_b)])
+    }
+
+    fn backward_create_graph(
+        &self,
+        grad_output: &crate::Variable,
+        saved: &[crate::Variable],
+    ) -> Result<Vec<Option<crate::Variable>>> {
+        let a = &saved[0];
+        let b = &saved[1];
+
+        // d/da = grad / b  (recorded on tape)
+        let grad_a = grad_output.div(b)?;
+
+        // d/db = -grad * a / b^2  (recorded on tape)
+        let neg_grad = grad_output.neg()?;
+        let neg_grad_a = neg_grad.mul(a)?;
+        let grad_b = neg_grad_a.div(&b.mul(b)?)?;
 
         Ok(vec![Some(grad_a), Some(grad_b)])
     }
@@ -133,6 +206,14 @@ impl GradFn for NegBackward {
         Ok(vec![Some(grad_output.neg()?)])
     }
 
+    fn backward_create_graph(
+        &self,
+        grad_output: &crate::Variable,
+        _saved: &[crate::Variable],
+    ) -> Result<Vec<Option<crate::Variable>>> {
+        Ok(vec![Some(grad_output.neg()?)])
+    }
+
     fn name(&self) -> &'static str {
         "NegBackward"
     }
@@ -144,6 +225,15 @@ pub struct ExpBackward;
 
 impl GradFn for ExpBackward {
     fn backward(&self, grad_output: &Tensor, saved: &[Tensor]) -> Result<Vec<Option<Tensor>>> {
+        let output = &saved[0];  // exp(x)
+        Ok(vec![Some(grad_output.mul(output)?)])
+    }
+
+    fn backward_create_graph(
+        &self,
+        grad_output: &crate::Variable,
+        saved: &[crate::Variable],
+    ) -> Result<Vec<Option<crate::Variable>>> {
         let output = &saved[0];  // exp(x)
         Ok(vec![Some(grad_output.mul(output)?)])
     }
@@ -163,6 +253,15 @@ impl GradFn for LogBackward {
         Ok(vec![Some(grad_output.div(input)?)])
     }
 
+    fn backward_create_graph(
+        &self,
+        grad_output: &crate::Variable,
+        saved: &[crate::Variable],
+    ) -> Result<Vec<Option<crate::Variable>>> {
+        let input = &saved[0];
+        Ok(vec![Some(grad_output.div(input)?)])
+    }
+
     fn name(&self) -> &'static str {
         "LogBackward"
     }
@@ -175,9 +274,25 @@ pub struct SqrtBackward;
 impl GradFn for SqrtBackward {
     fn backward(&self, grad_output: &Tensor, saved: &[Tensor]) -> Result<Vec<Option<Tensor>>> {
         let output = &saved[0];  // sqrt(x)
-        // grad * 0.5 / sqrt(x)
         let grad_input = grad_output.mul_scalar(0.5)?.div(output)?;
         Ok(vec![Some(grad_input)])
+    }
+
+    fn backward_create_graph(
+        &self,
+        grad_output: &crate::Variable,
+        saved: &[crate::Variable],
+    ) -> Result<Vec<Option<crate::Variable>>> {
+        let output = &saved[0];  // sqrt(x)
+        // grad * 0.5 / sqrt(x) — both mul and div are recorded
+        let half = crate::Variable::leaf(Tensor::full(
+            grad_output.shape(),
+            0.5,
+            grad_output.dtype(),
+            grad_output.runtime(),
+        )?);
+        let scaled = grad_output.mul(&half)?;
+        Ok(vec![Some(scaled.div(output)?)])
     }
 
     fn name(&self) -> &'static str {
@@ -192,11 +307,25 @@ pub struct TanhBackward;
 impl GradFn for TanhBackward {
     fn backward(&self, grad_output: &Tensor, saved: &[Tensor]) -> Result<Vec<Option<Tensor>>> {
         let output = &saved[0];  // tanh(x)
-        // grad * (1 - tanh(x)^2)
         let tanh_sq = output.sqr()?;
         let one_minus = tanh_sq.affine(-1.0, 1.0)?;  // 1 - tanh^2
         let grad_input = grad_output.mul(&one_minus)?;
         Ok(vec![Some(grad_input)])
+    }
+
+    fn backward_create_graph(
+        &self,
+        grad_output: &crate::Variable,
+        saved: &[crate::Variable],
+    ) -> Result<Vec<Option<crate::Variable>>> {
+        let output = &saved[0];  // tanh(x)
+        // 1 - tanh^2: tanh_sq via mul, then sub from ones
+        let tanh_sq = output.mul(output)?;
+        let ones = crate::Variable::ones(
+            output.shape(), output.dtype(), output.runtime(), false,
+        )?;
+        let one_minus = ones.sub(&tanh_sq)?;
+        Ok(vec![Some(grad_output.mul(&one_minus)?)])
     }
 
     fn name(&self) -> &'static str {

@@ -659,6 +659,16 @@ void ptx_os_boot_persistent_kernel(GPUHotRuntime* runtime);
 int ptx_os_submit_task(GPUHotRuntime* runtime, uint32_t opcode, uint32_t priority, void* args[PTX_MAX_TASK_ARGS]);
 
 // ============================================================================
+// CUDA Dynamic Parallelism — Device-Side Self-Scheduling
+// ============================================================================
+
+// Run a recursive CDP test: the persistent kernel dispatches a child kernel
+// which re-enqueues itself back into the task queue, creating a fully
+// autonomous GPU-side execution loop.  Returns the number of iterations
+// completed, or a negative error code.
+int ptx_cdp_test_recursive(GPUHotRuntime* runtime, int iterations);
+
+// ============================================================================
 // VMM API
 // ============================================================================
 

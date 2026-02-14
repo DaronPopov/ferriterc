@@ -39,7 +39,7 @@
 //! ```
 
 use std::sync::Arc;
-use ptx_runtime::{PtxRuntime, Stream, Result, Error};
+use ptx_runtime::{PtxRuntime, CublasHandle, GemmOp, Stream, Result, Error};
 
 /// Tile configuration for compute operations.
 ///
@@ -164,12 +164,15 @@ pub enum TilingPattern {
 
 /// Tiled matrix multiplication.
 ///
-/// Performs matrix multiplication using custom tiling for optimal
-/// performance. Uses shared memory and register tiling.
+/// Performs matrix multiplication by partitioning the output matrix into
+/// tiles and dispatching a cuBLAS SGEMM per tile. This improves cache
+/// locality for very large matrices and enables pipelining across tiles
+/// on different streams.
 pub struct TiledMatmul {
     #[allow(dead_code)]
     runtime: Arc<PtxRuntime>,
     config: TileConfig,
+    handle: CublasHandle,
 }
 
 impl TiledMatmul {
@@ -179,6 +182,7 @@ impl TiledMatmul {
         Ok(Self {
             runtime: Arc::clone(runtime),
             config,
+            handle: CublasHandle::new()?,
         })
     }
 
@@ -189,39 +193,135 @@ impl TiledMatmul {
 
     /// Perform tiled matrix multiplication: C = A @ B
     ///
-    /// DEFERRED: Custom tiled kernel not yet available in ptx-sys.
-    /// Use `ptx_compute::gemm::Matmul` (cuBLAS) for production matmul.
+    /// Tiles the output (M x N) into blocks of `block_tile_m x block_tile_n`
+    /// and issues a cuBLAS SGEMM per tile. Each tile reads a horizontal strip
+    /// of A and a vertical strip of B, producing a sub-block of C.
     ///
     /// # Arguments
     ///
-    /// * `a` - Matrix A (m × k)
-    /// * `b` - Matrix B (k × n)
-    /// * `c` - Output matrix C (m × n)
+    /// * `a` - Matrix A in row-major layout (m × k)
+    /// * `b` - Matrix B in row-major layout (k × n)
+    /// * `c` - Output matrix C in row-major layout (m × n)
     /// * `m, n, k` - Matrix dimensions
     /// * `stream` - CUDA stream
     ///
     /// # Safety
     ///
-    /// Pointers must be valid GPU memory.
+    /// Pointers must be valid GPU memory with the stated dimensions.
     pub unsafe fn multiply_f32(
         &self,
-        _a: *const f32,
-        _b: *const f32,
-        _c: *mut f32,
+        a: *const f32,
+        b: *const f32,
+        c: *mut f32,
         m: usize,
         n: usize,
-        _k: usize,
-        _stream: &Stream,
+        k: usize,
+        stream: &Stream,
     ) -> Result<()> {
-        // Calculate grid dimensions
-        let (grid_m, grid_n) = self.config.grid_dims(m, n);
+        self.handle.set_stream(stream)?;
 
-        // DEFERRED: No ptx_sys tiled matmul kernel exists yet.
-        // Use ptx_compute::gemm::Matmul (cuBLAS-backed) instead.
-        let _ = (grid_m, grid_n);
-        Err(Error::NotSupported {
-            message: "Tiled matmul kernel not yet available in ptx-sys. Use gemm::Matmul instead.".to_string(),
-        })
+        let tile_m = self.config.block_tile_m;
+        let tile_n = self.config.block_tile_n;
+
+        // Iterate over tiles of the output matrix
+        let mut row = 0;
+        while row < m {
+            let cur_m = tile_m.min(m - row);
+            let mut col = 0;
+            while col < n {
+                let cur_n = tile_n.min(n - col);
+
+                // A_tile: rows [row..row+cur_m], all K columns
+                // Pointer: A + row * k
+                let a_tile = a.add(row * k);
+
+                // B_tile: all K rows, cols [col..col+cur_n]
+                // Pointer: B + col  (row-major, leading dim = n)
+                let b_tile = b.add(col);
+
+                // C_tile: rows [row..row+cur_m], cols [col..col+cur_n]
+                // Pointer: C + row * n + col
+                let c_tile = c.add(row * n + col);
+
+                // cuBLAS column-major trick: C = A @ B in row-major
+                // is C^T = B^T @ A^T in column-major.
+                // Leading dimensions are the full matrix strides.
+                self.handle.sgemm(
+                    GemmOp::None,       // B (no transpose in col-major view)
+                    GemmOp::None,       // A (no transpose in col-major view)
+                    cur_n as i32,       // rows of op(B^T) = cur_n
+                    cur_m as i32,       // cols of op(A^T) = cur_m
+                    k as i32,           // shared dimension
+                    1.0,                // alpha
+                    b_tile,             // B sub-pointer
+                    n as i32,           // ldb = full row stride of B
+                    a_tile,             // A sub-pointer
+                    k as i32,           // lda = full row stride of A
+                    0.0,                // beta
+                    c_tile,             // C sub-pointer
+                    n as i32,           // ldc = full row stride of C
+                )?;
+
+                col += tile_n;
+            }
+            row += tile_m;
+        }
+
+        Ok(())
+    }
+
+    /// Perform tiled matrix multiplication (FP64): C = A @ B
+    ///
+    /// Same tiling strategy as `multiply_f32` but for double precision.
+    ///
+    /// # Safety
+    ///
+    /// Pointers must be valid GPU memory with the stated dimensions.
+    pub unsafe fn multiply_f64(
+        &self,
+        a: *const f64,
+        b: *const f64,
+        c: *mut f64,
+        m: usize,
+        n: usize,
+        k: usize,
+        stream: &Stream,
+    ) -> Result<()> {
+        self.handle.set_stream(stream)?;
+
+        let tile_m = self.config.block_tile_m;
+        let tile_n = self.config.block_tile_n;
+
+        let mut row = 0;
+        while row < m {
+            let cur_m = tile_m.min(m - row);
+            let mut col = 0;
+            while col < n {
+                let cur_n = tile_n.min(n - col);
+
+                let a_tile = a.add(row * k);
+                let b_tile = b.add(col);
+                let c_tile = c.add(row * n + col);
+
+                self.handle.dgemm(
+                    GemmOp::None,
+                    GemmOp::None,
+                    cur_n as i32,
+                    cur_m as i32,
+                    k as i32,
+                    1.0,
+                    b_tile, n as i32,
+                    a_tile, k as i32,
+                    0.0,
+                    c_tile, n as i32,
+                )?;
+
+                col += tile_n;
+            }
+            row += tile_m;
+        }
+
+        Ok(())
     }
 
     /// Get estimated FLOPS for this tiled operation.

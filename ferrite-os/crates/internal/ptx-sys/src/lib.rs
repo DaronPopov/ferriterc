@@ -977,6 +977,12 @@ extern "C" {
         args: *mut *mut c_void,
     ) -> c_int;
 
+    // CUDA Dynamic Parallelism — Device-Side Self-Scheduling
+    pub fn ptx_cdp_test_recursive(
+        runtime: *mut GPUHotRuntime,
+        iterations: c_int,
+    ) -> c_int;
+
     // Context Export API
     pub fn gpu_hot_get_context(runtime: *mut GPUHotRuntime) -> *mut c_void;
     pub fn gpu_hot_export_context(runtime: *mut GPUHotRuntime);
@@ -1927,6 +1933,176 @@ extern "C" {
 
     /// Map PyTorch stream to PTX-OS stream ID
     pub fn ptx_torch_set_stream_mapping(torch_stream: *mut c_void, ptx_stream_id: c_int);
+}
+
+// ============================================================================
+// Multi-GPU Support
+// ============================================================================
+
+/// Maximum GPUs in a multi-GPU cluster.
+pub const GPU_HOT_MAX_GPUS: usize = 16;
+
+/// GPU interconnect type.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum GPUCommType {
+    PCIe = 0,
+    NVLink = 1,
+    NVSwitch = 2,
+}
+
+/// Data type for distributed tensors.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum MultiTensorDtype {
+    Float32 = 0,
+    Float16 = 1,
+    BFloat16 = 2,
+    Int32 = 3,
+    Int16 = 4,
+    Int8 = 5,
+    Uint8 = 6,
+}
+
+/// Opaque multi-GPU cluster handle (owned by C runtime).
+#[repr(C)]
+pub struct GPUMultiCluster {
+    _private: [u8; 0],
+}
+
+/// Opaque distributed tensor handle (owned by C runtime).
+#[repr(C)]
+pub struct DistributedTensor {
+    _private: [u8; 0],
+}
+
+/// Per-GPU shard of a distributed tensor.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TensorShard {
+    pub device_id: c_int,
+    pub data: *mut c_void,
+    pub elements: size_t,
+    pub offset: size_t,
+    pub ipc_handle: cudaIpcMemHandle_t,
+}
+
+/// Aggregate statistics for a multi-GPU cluster.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct GPUMultiStats {
+    pub utilization: [f32; GPU_HOT_MAX_GPUS],
+    pub memory_usage: [f32; GPU_HOT_MAX_GPUS],
+    pub p2p_bandwidth: [[f32; GPU_HOT_MAX_GPUS]; GPU_HOT_MAX_GPUS],
+}
+
+impl Default for GPUMultiStats {
+    fn default() -> Self {
+        Self {
+            utilization: [0.0; GPU_HOT_MAX_GPUS],
+            memory_usage: [0.0; GPU_HOT_MAX_GPUS],
+            p2p_bandwidth: [[0.0; GPU_HOT_MAX_GPUS]; GPU_HOT_MAX_GPUS],
+        }
+    }
+}
+
+extern "C" {
+    // ---- Device Enumeration ----
+
+    /// Measure P2P bandwidth between two devices (GB/s).
+    pub fn gpu_measure_bandwidth(src_device: c_int, dst_device: c_int) -> f32;
+
+    // ---- P2P Communication ----
+
+    /// Enable peer-to-peer access between two GPUs (bidirectional).
+    pub fn gpu_enable_p2p(src_device: c_int, dst_device: c_int) -> c_int;
+
+    /// Disable peer-to-peer access between two GPUs.
+    pub fn gpu_disable_p2p(src_device: c_int, dst_device: c_int) -> c_int;
+
+    // ---- Cluster Management ----
+
+    /// Initialize a multi-GPU cluster with the given device IDs.
+    /// Returns NULL on failure. Each device gets its own GPUHotRuntime.
+    pub fn gpu_multicluster_init(
+        device_ids: *const c_int,
+        num_devices: c_int,
+    ) -> *mut GPUMultiCluster;
+
+    /// Shut down a multi-GPU cluster and free all resources.
+    pub fn gpu_multicluster_shutdown(cluster: *mut GPUMultiCluster);
+
+    /// Get aggregate statistics for the cluster.
+    pub fn gpu_multicluster_get_stats(
+        cluster: *mut GPUMultiCluster,
+        stats: *mut GPUMultiStats,
+    );
+
+    // ---- Distributed Tensor ----
+
+    /// Create a distributed tensor sharded across cluster devices.
+    /// `device_distribution` may be NULL for automatic round-robin.
+    pub fn gpu_distributed_tensor_create(
+        cluster: *mut GPUMultiCluster,
+        name: *const c_char,
+        shape: *const c_int,
+        dims: c_int,
+        dtype: MultiTensorDtype,
+        device_distribution: *const c_int,
+    ) -> *mut DistributedTensor;
+
+    /// Free a distributed tensor and all its shards.
+    pub fn gpu_distributed_tensor_free(tensor: *mut DistributedTensor);
+
+    // ---- Data Movement ----
+
+    /// Migrate tensor data between devices via P2P copy.
+    pub fn gpu_tensor_migrate(
+        tensor: *mut DistributedTensor,
+        src_device: c_int,
+        dst_device: c_int,
+        offset: size_t,
+        size: size_t,
+    ) -> c_int;
+
+    /// Broadcast tensor from one device to all others.
+    pub fn gpu_broadcast_tensor(
+        tensor: *mut DistributedTensor,
+        src_device: c_int,
+    ) -> c_int;
+
+    /// Reduce tensor shards to a root device.
+    /// `operation`: "sum", "max", "min", or "avg".
+    pub fn gpu_reduce_tensor(
+        result: *mut DistributedTensor,
+        input: *mut DistributedTensor,
+        root_device: c_int,
+        operation: *const c_char,
+    ) -> c_int;
+
+    // ---- Distributed Kernel Launch ----
+
+    /// Launch a kernel across multiple devices in the cluster.
+    pub fn gpu_launch_distributed_kernel(
+        cluster: *mut GPUMultiCluster,
+        kernel_name: *const c_char,
+        args: *const *const c_void,
+        grid: dim3,
+        block: dim3,
+        shared_mem: size_t,
+        stream: cudaStream_t,
+        device_distribution: *const c_int,
+    ) -> cudaError_t;
+
+    // ---- Load Balancing ----
+
+    /// Distribute `total_work` across devices proportional to `device_capacities`.
+    pub fn gpu_balance_workload(
+        cluster: *mut GPUMultiCluster,
+        workload_per_device: *mut c_int,
+        total_work: c_int,
+        device_capacities: *const c_int,
+    ) -> c_int;
 }
 
 // ============================================================================

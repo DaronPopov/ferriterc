@@ -30,6 +30,7 @@ pub mod telemetry;
 pub mod resilience;
 pub mod scheduler;
 pub mod job;
+pub mod multi_gpu;
 
 pub use device::Device;
 pub use runtime::PtxRuntime;
@@ -40,6 +41,7 @@ pub use graph::CudaGraph;
 pub use cublas::{CublasHandle, GemmOp, Gemm};
 pub use error::{Error, Result};
 pub use stats::{increment_ops, get_ops_count, reset_ops_count};
+pub use multi_gpu::GpuCluster;
 
 // Re-export commonly used types from ptx-sys
 pub use ptx_sys::{
@@ -47,4 +49,5 @@ pub use ptx_sys::{
     PTXStableConfig, PTXStableStats, PTXStableStatus,
     PTXDType as DType, PTXTensorOpcode as OpCode,
     GPU_HOT_MAX_STREAMS, PTX_STABLE_ABI_VERSION,
+    GPU_HOT_MAX_GPUS, GPUCommType, MultiTensorDtype, GPUMultiStats,
 };
