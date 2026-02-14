@@ -47,7 +47,12 @@ void gpu_hot_shutdown(GPUHotRuntime* runtime) {
     
     // Free VRAM pool (TLSF structures are inside the pool)
     if (runtime->vram_pool) {
-        ptx_driver_free(runtime->vram_pool);
+        if (runtime->managed_pool) {
+            cudaFree(runtime->vram_pool);
+        } else {
+            ptx_driver_free(runtime->vram_pool);
+        }
+        runtime->vram_pool = NULL;
     }
     
     // Destroy CUDA Graphs
@@ -100,4 +105,3 @@ void gpu_hot_shutdown(GPUHotRuntime* runtime) {
     free(runtime);
     printf("[Ferrite-OS] Shutdown complete\n");
 }
-

@@ -520,6 +520,10 @@ typedef struct GPUHotConfig {
 
     // Single-pool strict mode: deny competing pool init from child processes
     bool single_pool_strict;    // If true, refuse pool init when PTX_DAEMON_CLIENT=1
+
+    // Platform tuning
+    bool prefer_orin_unified_memory; // Prefer Orin unified-memory scheduler path
+    bool use_managed_pool;           // Allocate TLSF backing pool with cudaMallocManaged
 } GPUHotConfig;
 
 // Get default configuration

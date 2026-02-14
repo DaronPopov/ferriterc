@@ -89,6 +89,8 @@ struct GPUHotRuntime {
     size_t vram_pool_size;
     PTXTLSFAllocator* tlsf_allocator;
     int fallback_count;           // Number of cudaMalloc fallbacks
+    bool use_orin_um_kernel;      // Orin-specific persistent kernel path
+    bool managed_pool;            // TLSF backing pool uses cudaMallocManaged
 
     // CUDA Graphs
     GPUGraphHandle graphs[GPU_HOT_MAX_GRAPHS];
@@ -498,6 +500,10 @@ GPUHotConfig gpu_hot_default_config(void) {
     // Single-pool strict mode (off by default)
     config.single_pool_strict = false;
 
+    // Platform tuning defaults
+    config.prefer_orin_unified_memory = false;
+    config.use_managed_pool = false;
+
     return config;
 }
 
@@ -513,6 +519,11 @@ static bool parse_env_double(const char* key, double* out) {
     if (end == val) return false;
     *out = v;
     return true;
+}
+
+static bool env_flag_enabled(const char* key) {
+    const char* val = getenv(key);
+    return val && val[0] && val[0] != '0';
 }
 
 static bool parse_env_size(const char* key, size_t* out) {
@@ -573,6 +584,12 @@ static void apply_env_overrides(GPUHotConfig* config) {
         }
     }
 
+    // Reserve VRAM override
+    size_t reserve = 0;
+    if (parse_env_size("PTX_RESERVE_VRAM", &reserve) && reserve > 0) {
+        config->reserve_vram = reserve;
+    }
+
     // Warning threshold override (0..1 or percent 1..100)
     double warn = 0.0;
     if (parse_env_double("PTX_POOL_WARN_THRESHOLD", &warn)) {
@@ -591,5 +608,13 @@ static void apply_env_overrides(GPUHotConfig* config) {
     const char* strict_val = getenv("PTX_SINGLE_POOL_STRICT");
     if (strict_val && strict_val[0] == '1') {
         config->single_pool_strict = true;
+    }
+
+    // Platform tuning toggles
+    if (env_flag_enabled("PTX_ORIN_UM")) {
+        config->prefer_orin_unified_memory = true;
+    }
+    if (env_flag_enabled("PTX_MANAGED_POOL")) {
+        config->use_managed_pool = true;
     }
 }

@@ -172,6 +172,16 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
     printf("[Ferrite-OS] Device: %s\n", prop.name);
     printf("[Ferrite-OS] Compute Capability: %d.%d\n", prop.major, prop.minor);
     printf("[Ferrite-OS] Total VRAM: %.2f GB\n", prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
+
+    // Orin unified-memory detection/tuning gate.
+    bool detected_orin_soc = (prop.integrated != 0 && prop.major == 8 && prop.minor == 7);
+    runtime->use_orin_um_kernel = (effective_config.prefer_orin_unified_memory || detected_orin_soc);
+    runtime->managed_pool = false;
+    bool want_managed_pool = (effective_config.use_managed_pool || runtime->use_orin_um_kernel);
+    if (runtime->use_orin_um_kernel && !effective_config.quiet_init) {
+        printf("[Ferrite-OS] Orin unified-memory mode active (integrated=%d, sm=%d%d)\n",
+               prop.integrated ? 1 : 0, prop.major, prop.minor);
+    }
     
     // Create CUDA streams with priority range sensing
     int least_priority, greatest_priority;
@@ -213,6 +223,30 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
         printf("[Ferrite-OS] Error: cudaMemGetInfo failed: %s\n", cudaGetErrorString(cuda_err));
         free(runtime);
         return NULL;
+    }
+
+    // On Orin UM mode, reduce default pool pressure unless caller explicitly sized it.
+    bool explicit_pool_size = getenv("PTX_POOL_SIZE") != NULL;
+    bool explicit_pool_fraction = getenv("PTX_POOL_FRACTION") != NULL;
+    bool explicit_pool_cfg = (config &&
+                              (config->fixed_pool_size > 0 ||
+                               (config->pool_fraction > 0.0f && config->pool_fraction != 1.0f)));
+    bool explicit_pool = (explicit_pool_size || explicit_pool_fraction || explicit_pool_cfg);
+
+    bool explicit_reserve_env = getenv("PTX_RESERVE_VRAM") != NULL;
+    bool explicit_reserve_cfg = (config && config->reserve_vram > 0);
+    bool explicit_reserve = (explicit_reserve_env || explicit_reserve_cfg);
+
+    if (runtime->use_orin_um_kernel) {
+        if (!explicit_pool && effective_config.fixed_pool_size == 0) {
+            effective_config.pool_fraction = 0.35f;
+        }
+        if (!explicit_reserve && effective_config.reserve_vram == 0) {
+            size_t orin_reserve = total_mem / 5; // 20%
+            size_t min_orin_reserve = 1536ULL * 1024 * 1024; // 1.5GB
+            if (orin_reserve < min_orin_reserve) orin_reserve = min_orin_reserve;
+            effective_config.reserve_vram = orin_reserve;
+        }
     }
 
     // Calculate pool size based on config
@@ -268,17 +302,58 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
                runtime->vram_pool_size / (1024.0 * 1024.0 * 1024.0));
     }
     
-    runtime->vram_pool = ptx_driver_alloc(runtime->vram_pool_size);
+    runtime->vram_pool = NULL;
+    if (want_managed_pool) {
+        cuda_err = cudaMallocManaged(&runtime->vram_pool, runtime->vram_pool_size, cudaMemAttachGlobal);
+        if (cuda_err == cudaSuccess) {
+            runtime->managed_pool = true;
+            // Hint that this long-lived allocator pool should stay local to the active device.
+            cudaMemAdvise(runtime->vram_pool, runtime->vram_pool_size,
+                          cudaMemAdviseSetPreferredLocation, device_id);
+            cudaMemAdvise(runtime->vram_pool, runtime->vram_pool_size,
+                          cudaMemAdviseSetAccessedBy, device_id);
+            cudaMemPrefetchAsync(runtime->vram_pool, runtime->vram_pool_size, device_id, runtime->streams[0]);
+            cudaStreamSynchronize(runtime->streams[0]);
+        } else {
+            printf("[Ferrite-OS] Warning: Managed pool alloc failed (%s), falling back to cuMemAlloc\n",
+                   cudaGetErrorString(cuda_err));
+        }
+    }
     if (!runtime->vram_pool) {
-        printf("[Ferrite-OS] Warning:Dynamic allocation failed, falling back to min pool size\n");
-        runtime->vram_pool_size = effective_config.min_pool_size;
         runtime->vram_pool = ptx_driver_alloc(runtime->vram_pool_size);
+    }
+    if (!runtime->vram_pool) {
+        printf("[Ferrite-OS] Warning: Dynamic allocation failed, falling back to min pool size\n");
+        runtime->vram_pool_size = effective_config.min_pool_size;
+        if (want_managed_pool) {
+            cuda_err = cudaMallocManaged(&runtime->vram_pool, runtime->vram_pool_size, cudaMemAttachGlobal);
+            if (cuda_err == cudaSuccess) {
+                runtime->managed_pool = true;
+                cudaMemAdvise(runtime->vram_pool, runtime->vram_pool_size,
+                              cudaMemAdviseSetPreferredLocation, device_id);
+                cudaMemAdvise(runtime->vram_pool, runtime->vram_pool_size,
+                              cudaMemAdviseSetAccessedBy, device_id);
+                cudaMemPrefetchAsync(runtime->vram_pool, runtime->vram_pool_size, device_id, runtime->streams[0]);
+                cudaStreamSynchronize(runtime->streams[0]);
+            } else {
+                printf("[Ferrite-OS] Warning: Managed min-pool alloc failed (%s), falling back to cuMemAlloc\n",
+                       cudaGetErrorString(cuda_err));
+            }
+        }
+        if (!runtime->vram_pool) {
+            runtime->vram_pool = ptx_driver_alloc(runtime->vram_pool_size);
+        }
     }
 
     if (runtime->vram_pool) {
         if (!effective_config.quiet_init) {
-            printf("[Ferrite-OS] VRAM pool allocated: %.2f GB\n",
-                   runtime->vram_pool_size / (1024.0 * 1024.0 * 1024.0));
+            if (runtime->managed_pool) {
+                printf("[Ferrite-OS] Managed pool allocated: %.2f GB\n",
+                       runtime->vram_pool_size / (1024.0 * 1024.0 * 1024.0));
+            } else {
+                printf("[Ferrite-OS] VRAM pool allocated: %.2f GB\n",
+                       runtime->vram_pool_size / (1024.0 * 1024.0 * 1024.0));
+            }
         }
 
         // ========================================================================
@@ -361,4 +436,3 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
 
     return runtime;
 }
-

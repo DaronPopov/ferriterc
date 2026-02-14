@@ -213,15 +213,22 @@ void gpu_hot_export_context(GPUHotRuntime* runtime) {
 // Forward declaration of the actual kernel boot logic
 // Defined in kernels/os_kernel.cu
 extern "C" void ptx_os_launch_persistent_kernel(GPUHotRuntime* runtime, PTXSystemState* d_state);
+extern "C" void ptx_os_launch_persistent_kernel_orin_um(GPUHotRuntime* runtime, PTXSystemState* d_state);
 
 void ptx_os_boot_persistent_kernel(GPUHotRuntime* runtime) {
+    if (!runtime) return;
+
     PTXSystemState* d_state = gpu_hot_get_system_state(runtime);
     if (!d_state) {
         printf("[PTX-OS] [ERROR] Could not resolve GPU-side system state!\n");
         return;
     }
 
-    ptx_os_launch_persistent_kernel(runtime, d_state);
+    if (runtime->use_orin_um_kernel) {
+        ptx_os_launch_persistent_kernel_orin_um(runtime, d_state);
+    } else {
+        ptx_os_launch_persistent_kernel(runtime, d_state);
+    }
 }
 
 // ============================================================================
@@ -274,4 +281,3 @@ void gpu_hot_get_alloc_events(GPUHotRuntime* runtime, TLSFEventRing* ring_out) {
     ptx_tlsf_get_events(runtime->tlsf_allocator, ring_out);
     ptx_mutex_unlock(&runtime->async_lock);
 }
-
