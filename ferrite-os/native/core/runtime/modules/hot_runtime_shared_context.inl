@@ -140,12 +140,6 @@ void gpu_hot_reset_system_state(GPUHotRuntime* runtime) {
     memset(state, 0, sizeof(PTXSystemState));
     state->auth_token = auth_token;
     state->active_processes = active_processes;
-    state->next_task_id = 0;
-    state->scheduler_epoch = 1;
-    for (uint32_t i = 0; i < PTX_MAX_QUEUE_SIZE; ++i) {
-        state->tenant_budget[i] = PTX_TENANT_BUDGET_INITIAL;
-        state->tenant_budget_epoch[i] = state->scheduler_epoch;
-    }
 }
 
 void gpu_hot_flush_task_queue(GPUHotRuntime* runtime) {
@@ -155,12 +149,6 @@ void gpu_hot_flush_task_queue(GPUHotRuntime* runtime) {
     state->active_tasks = 0;
     state->max_priority_active = 0;
     memset(&state->queue, 0, sizeof(PTXTaskQueue));
-    memset(&state->completion_queue, 0, sizeof(PTXTaskResultQueue));
-    state->scheduler_epoch = state->scheduler_epoch == 0 ? 1 : state->scheduler_epoch;
-    for (uint32_t i = 0; i < PTX_MAX_QUEUE_SIZE; ++i) {
-        state->tenant_budget[i] = PTX_TENANT_BUDGET_INITIAL;
-        state->tenant_budget_epoch[i] = state->scheduler_epoch;
-    }
 }
 
 void gpu_hot_reset_watchdog(GPUHotRuntime* runtime) {
@@ -199,9 +187,6 @@ void gpu_hot_get_system_snapshot(GPUHotRuntime* runtime, GPUHotSystemSnapshot* s
     snapshot->queue_head = state->queue.head;
     snapshot->queue_tail = state->queue.tail;
     snapshot->queue_lock = state->queue.lock;
-    snapshot->completion_head = state->completion_queue.head;
-    snapshot->completion_tail = state->completion_queue.tail;
-    snapshot->completion_overruns = state->completion_queue.overruns;
 }
 
 // ============================================================================
@@ -230,10 +215,6 @@ void gpu_hot_export_context(GPUHotRuntime* runtime) {
 extern "C" void ptx_os_launch_persistent_kernel(GPUHotRuntime* runtime, PTXSystemState* d_state);
 
 void ptx_os_boot_persistent_kernel(GPUHotRuntime* runtime) {
-    // Boot with a clean scheduler/task state to avoid inheriting stale queue
-    // entries from prior daemon lifecycles sharing the same IPC segment.
-    gpu_hot_reset_system_state(runtime);
-
     PTXSystemState* d_state = gpu_hot_get_system_state(runtime);
     if (!d_state) {
         printf("[PTX-OS] [ERROR] Could not resolve GPU-side system state!\n");
@@ -293,3 +274,4 @@ void gpu_hot_get_alloc_events(GPUHotRuntime* runtime, TLSFEventRing* ring_out) {
     ptx_tlsf_get_events(runtime->tlsf_allocator, ring_out);
     ptx_mutex_unlock(&runtime->async_lock);
 }
+

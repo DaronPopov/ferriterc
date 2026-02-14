@@ -104,7 +104,7 @@ pub(super) fn cmd_snapshot(daemon: &Arc<DaemonState>, state: &mut TuiState) {
     state.push_log(LogEntry::new(
         LogCategory::Sys,
         format!(
-            "watchdog {}  kernel {}  queue {}/{}  completion {}/{} ov={}  interrupts {}",
+            "watchdog {}  kernel {}  queue {}/{}  interrupts {}",
             if snap.watchdog_alert { "ALERT" } else { "ok" },
             if snap.kernel_running {
                 "running"
@@ -113,9 +113,6 @@ pub(super) fn cmd_snapshot(daemon: &Arc<DaemonState>, state: &mut TuiState) {
             },
             snap.queue_head,
             snap.queue_tail,
-            snap.completion_head,
-            snap.completion_tail,
-            snap.completion_overruns,
             snap.interrupt_cnt,
         ),
     ));

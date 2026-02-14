@@ -223,44 +223,6 @@ impl PtxRuntime {
     pub fn submit_task(&self, opcode: u32, priority: u32, args: &mut [*mut libc::c_void; 8]) -> i32 {
         unsafe { ptx_sys::ptx_os_submit_task(self.inner.raw, opcode, priority, args.as_mut_ptr()) }
     }
-
-    /// Submit a typed V1 task descriptor to the persistent kernel queue.
-    ///
-    /// Returns the task ID on success, or -1 on failure.
-    pub fn submit_task_v1(&self, desc: &ptx_sys::PTXTaskDescV1) -> i32 {
-        unsafe { ptx_sys::ptx_os_submit_task_v1(self.inner.raw, desc) }
-    }
-
-    /// Submit a V1 task with optional dependency and continuation metadata.
-    ///
-    /// `depends_on_task_id`: task is runnable only after this task ID has completed.
-    /// `continuation_opcode`: enqueue this opcode after successful completion.
-    pub fn submit_task_v1_graph(
-        &self,
-        desc: &ptx_sys::PTXTaskDescV1,
-        depends_on_task_id: Option<u32>,
-        continuation_opcode: Option<u32>,
-    ) -> i32 {
-        let mut d = *desc;
-        if let Some(dep) = depends_on_task_id {
-            d.flags |= ptx_sys::PTX_TASK_FLAG_WAIT_ON_TASK;
-            d.args[ptx_sys::PTX_TASK_META_ARG_DEPENDENCY] = dep as usize as *mut libc::c_void;
-        }
-        if let Some(op) = continuation_opcode {
-            d.flags |= ptx_sys::PTX_TASK_FLAG_CONTINUATION;
-            d.args[ptx_sys::PTX_TASK_META_ARG_CONTINUATION] = op as usize as *mut libc::c_void;
-        }
-        unsafe { ptx_sys::ptx_os_submit_task_v1(self.inner.raw, &d) }
-    }
-
-    /// Poll one V1 completion entry from the persistent kernel.
-    ///
-    /// Returns `Some(result)` if a completion is available, else `None`.
-    pub fn poll_completion_v1(&self) -> Option<ptx_sys::PTXTaskResultV1> {
-        let mut out = ptx_sys::PTXTaskResultV1::default();
-        let rc = unsafe { ptx_sys::ptx_os_poll_completion_v1(self.inner.raw, &mut out) };
-        if rc > 0 { Some(out) } else { None }
-    }
 }
 
 #[cfg(test)]

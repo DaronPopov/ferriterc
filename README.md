@@ -3,18 +3,6 @@
 `ferriterc` is a CUDA-focused runtime and tooling stack built in Rust/CUDA.
 It builds from source in this repository and links to external libtorch binaries.
 
-## What This Is
-
-`ferriterc` is a GPU-resident runtime system, not just a kernel launcher:
-
-- Persistent CUDA microkernel running on-device (`ferrite-os/native/core/kernels/os_kernel.cu`)
-- Multi-tenant task scheduler (priority, cooperative yield/resume, fairness budgets)
-- DAG and continuation task semantics in the runtime queue ABI
-- Device ISA execution path (`ISA_RUN`) for bounded programmable control flow
-- Rust daemon/runtime control plane for submit/poll/orchestration
-
-The base execution model is still standard CUDA on NVIDIA hardware. The ISA layer is a software execution model inside the CUDA runtime kernel.
-
 ## Install
 
 ```bash
