@@ -1,11 +1,11 @@
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
+use ferrite_platform::ipc::{Endpoint, IpcStream};
 
 use crate::client::parse_json_response;
 use crate::env::{default_daemon_config, resolve_daemon_binary};
@@ -52,12 +52,13 @@ impl DaemonHarness {
             .unwrap_or(0);
         let test_id = format!("ferrite-testkit-{}-{}", std::process::id(), nonce);
 
+        let tmp = ferrite_platform::paths::temp_dir();
         let socket_path = cfg
             .socket_path
-            .unwrap_or_else(|| PathBuf::from(format!("/tmp/{test_id}.sock")));
+            .unwrap_or_else(|| tmp.join(format!("{test_id}.sock")));
         let pid_file = cfg
             .pid_file
-            .unwrap_or_else(|| PathBuf::from(format!("/tmp/{test_id}.pid")));
+            .unwrap_or_else(|| tmp.join(format!("{test_id}.pid")));
 
         let _ = std::fs::remove_file(&socket_path);
         let _ = std::fs::remove_file(&pid_file);
@@ -83,9 +84,7 @@ impl DaemonHarness {
             cmd.env("FERRITE_SINGLE_POOL_STRICT", "1");
         }
 
-        if let Ok(ld) = std::env::var("LD_LIBRARY_PATH") {
-            cmd.env("LD_LIBRARY_PATH", ld);
-        }
+        ferrite_platform::dylib_env::propagate_dylib_path(&mut cmd);
 
         for (k, v) in cfg.extra_env {
             cmd.env(k, v);
@@ -147,7 +146,8 @@ impl DaemonHarness {
     }
 
     fn try_send_raw(&self, cmd: &str, timeout: Duration) -> Result<String> {
-        let stream = UnixStream::connect(&self.socket_path)
+        let endpoint = Endpoint::new(self.socket_path.to_string_lossy().as_ref());
+        let mut stream = IpcStream::connect(&endpoint)
             .with_context(|| format!("connect socket {}", self.socket_path.display()))?;
         stream
             .set_read_timeout(Some(timeout))
@@ -156,7 +156,6 @@ impl DaemonHarness {
             .set_write_timeout(Some(Duration::from_secs(5)))
             .context("set write timeout")?;
 
-        let mut stream = stream;
         stream.write_all(cmd.as_bytes()).context("write command")?;
         stream.write_all(b"\n").context("write newline")?;
         stream.flush().context("flush")?;

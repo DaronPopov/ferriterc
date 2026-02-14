@@ -1,5 +1,4 @@
 use std::io::{self, Write as _};
-use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,34 +21,7 @@ use crate::events::{DaemonEvent, LogCategory, LogEntry};
 use crate::script_runner::ScriptRunner;
 use crate::state::DaemonState;
 
-/// Redirect C-level stdout/stderr to /dev/null so the GPU runtime's
-/// printf output doesn't bleed through the TUI.  Returns a File
-/// wrapping a dup'd copy of the original stdout fd for ratatui.
-fn steal_stdio() -> io::Result<std::fs::File> {
-    unsafe {
-        let tty_fd = libc::dup(libc::STDOUT_FILENO);
-        if tty_fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        let devnull = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/null")?;
-
-        libc::dup2(devnull.as_raw_fd(), libc::STDOUT_FILENO);
-        libc::dup2(devnull.as_raw_fd(), libc::STDERR_FILENO);
-
-        Ok(std::fs::File::from_raw_fd(tty_fd))
-    }
-}
-
-fn restore_stdio(tty: &std::fs::File) {
-    unsafe {
-        libc::dup2(tty.as_raw_fd(), libc::STDOUT_FILENO);
-        libc::dup2(tty.as_raw_fd(), libc::STDERR_FILENO);
-    }
-}
+// Stdio stealing and restoration are handled by ferrite_platform::tty.
 
 pub fn run_tui(
     daemon: Arc<DaemonState>,
@@ -57,10 +29,13 @@ pub fn run_tui(
     rx: Receiver<DaemonEvent>,
     tx: Sender<DaemonEvent>,
 ) -> io::Result<()> {
-    let tty = steal_stdio()?;
+    let stdio_guard = ferrite_platform::tty::steal_stdio()?;
+    let tty = stdio_guard
+        .tty_file()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture TTY"))?;
 
     enable_raw_mode()?;
-    let mut tty_writer = io::BufWriter::new(&tty);
+    let mut tty_writer = io::BufWriter::new(tty);
     execute!(
         tty_writer,
         EnterAlternateScreen,
@@ -69,8 +44,7 @@ pub fn run_tui(
     )?;
     tty_writer.flush()?;
 
-    let render_fd = unsafe { libc::dup(tty.as_raw_fd()) };
-    let render_file = unsafe { std::fs::File::from_raw_fd(render_fd) };
+    let render_file = stdio_guard.dup_tty_fd()?;
     let backend = CrosstermBackend::new(render_file);
     let mut terminal = Terminal::new(backend)?;
 
@@ -846,7 +820,7 @@ pub fn run_tui(
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
-    restore_stdio(&tty);
+    stdio_guard.restore();
 
     Ok(())
 }

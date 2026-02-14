@@ -4,10 +4,11 @@ use crate::queue::BoundedQueue;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::Shutdown;
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use ferrite_platform::ipc::{Endpoint, IpcStream};
 
 /// Discover the daemon socket path using the same logic as ferrite-daemon.
 pub fn discover_socket() -> String {
@@ -18,16 +19,13 @@ pub fn discover_socket() -> String {
         // Backward-compatible alias used by some clients.
         return s;
     }
-    let uid = unsafe { libc::geteuid() };
-    if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
-        return format!("{}/ferrite-daemon.sock", xdg);
-    }
-    format!("/tmp/ferrite-os-{}/daemon.sock", uid)
+    ferrite_platform::paths::default_socket_addr()
 }
 
 /// Send a command to the daemon via IPC and return the response.
 pub fn ipc_send(socket_path: &str, command: &str) -> anyhow::Result<String> {
-    let mut stream = UnixStream::connect(socket_path)?;
+    let endpoint = Endpoint::new(socket_path);
+    let mut stream = IpcStream::connect(&endpoint)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.write_all(command.as_bytes())?;

@@ -27,10 +27,7 @@ mod supervisor;
 mod tui;
 
 pub fn run_daemon() {
-    // Ignore SIGPIPE
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-    }
+    ferrite_platform::signals::ignore_pipe_signal();
 
     let invocation = match bootstrap::parse_cli() {
         Ok(v) => v,

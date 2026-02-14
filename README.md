@@ -8,7 +8,7 @@ It builds from source in this repository and links to external libtorch binaries
 ```bash
 git clone git@github.com:DaronPopov/ferriterc.git
 cd ferriterc
-./install.sh
+./scripts/install.sh
 ```
 
 ## Requirements
@@ -17,7 +17,7 @@ cd ferriterc
 - NVIDIA GPU driver
 - CUDA toolkit (`nvcc` available in `PATH`)
 
-`install.sh` handles:
+`scripts/install.sh` handles:
 - host build tools (when missing, via distro package manager)
 - Rust toolchain bootstrap (when missing)
 - CUPTI installation attempt (Linux package managers)
@@ -33,31 +33,31 @@ No Python torch install is required.
 Set SM explicitly:
 
 ```bash
-./install.sh --sm 86
+./scripts/install.sh --sm 86
 ```
 
 Optional legacy behavior (auto-install CUDA toolkit if `nvcc` is missing):
 
 ```bash
-./install.sh --auto-install-cuda
+./scripts/install.sh --auto-install-cuda
 ```
 
 Enable boot-time daemon service:
 
 ```bash
-./install.sh --enable-service
+./scripts/install.sh --enable-service
 ```
 
 Pin exact external artifacts/features:
 
 ```bash
-./install.sh --pins "sm=89,libtorch_url=https://download.pytorch.org/libtorch/cu126/libtorch-shared-with-deps-2.9.0%2Bcu126.zip,libtorch_tag=cu126,cudarc_feature=cuda-12060"
+./scripts/install.sh --pins "sm=89,libtorch_url=https://download.pytorch.org/libtorch/cu126/libtorch-shared-with-deps-2.9.0%2Bcu126.zip,libtorch_tag=cu126,cudarc_feature=cuda-12060"
 ```
 
 Equivalent explicit flags:
 
 ```bash
-./install.sh --sm 89 \
+./scripts/install.sh --sm 89 \
   --libtorch-url "https://download.pytorch.org/libtorch/cu126/libtorch-shared-with-deps-2.9.0%2Bcu126.zip" \
   --libtorch-tag cu126 \
   --cudarc-feature cuda-12060
@@ -65,7 +65,7 @@ Equivalent explicit flags:
 
 CUDA compatibility is selected from `compat.toml` based on detected toolkit version.
 
-## What `install.sh` does
+## What `scripts/install.sh` does
 
 1. Builds `ferrite-os` (TLSF allocator, stream pool, IPC)
 2. Builds `ferrite-gpu-lang` with Torch support
@@ -102,7 +102,7 @@ Workload scripts live under `ferrite-os/workloads/`.
 ferriterc/
   ferrite-daemon           Root daemon launcher wrapper
   ferrite-run              Root script runner wrapper
-  install.sh               One-line installer
+  scripts/install.sh       One-line installer
   ferrite-os/              GPU runtime core
     crates/
       public/              User-facing Rust crates

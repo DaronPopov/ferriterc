@@ -52,7 +52,11 @@ pub(super) fn cmd_help(state: &mut TuiState) {
     ));
     state.push_log(LogEntry::new(
         LogCategory::Sys,
-        "  kill <id|name>   stop a process",
+        "  stop             stop all running programs (keeps daemon alive)",
+    ));
+    state.push_log(LogEntry::new(
+        LogCategory::Sys,
+        "  kill <id|name>   stop a single process",
     ));
     state.push_log(LogEntry::new(
         LogCategory::Sys,
@@ -456,7 +460,8 @@ pub(super) fn cmd_binds(state: &mut TuiState) {
     state.push_log(LogEntry::new(LogCategory::Sys, "  snapshot         system snapshot"));
     state.push_log(LogEntry::new(LogCategory::Sys, "  ps / apps        list managed processes"));
     state.push_log(LogEntry::new(LogCategory::Sys, "  start <app>      launch managed app"));
-    state.push_log(LogEntry::new(LogCategory::Sys, "  kill <id|name>   stop a process"));
+    state.push_log(LogEntry::new(LogCategory::Sys, "  stop             stop all running programs"));
+    state.push_log(LogEntry::new(LogCategory::Sys, "  kill <id|name>   stop a single process"));
     state.push_log(LogEntry::new(LogCategory::Sys, "  uptime           daemon uptime"));
     state.push_log(LogEntry::new(LogCategory::Sys, "  pool             vram pool status"));
     state.push_log(LogEntry::new(LogCategory::Sys, "  defrag           defragment vram"));

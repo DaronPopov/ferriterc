@@ -10,6 +10,7 @@ description = "High-level builder SDK for daemon-native GPU compute applications
 ptx-runtime = { workspace = true }
 ptx-tensor = { path = "../../internal/ptx-tensor" }
 ptx-sys = { workspace = true }
+ferrite-platform = { workspace = true }
 libc = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

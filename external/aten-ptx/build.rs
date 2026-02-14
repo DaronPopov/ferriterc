@@ -1,11 +1,11 @@
 // Build script to compile C++ PyTorch allocator
 //
 // Resolution order for libtorch:
-//   1. LIBTORCH env var (set by install.sh / ferrite-run)
+//   1. LIBTORCH env var (set by scripts/install.sh / ferrite-run)
 //   2. ../libtorch  (external/libtorch relative to external/aten-ptx)
 //   3. ../../external/libtorch  (repo root)
 //
-// No Python fallback — libtorch is provisioned by install.sh as a standalone
+// No Python fallback — libtorch is provisioned by scripts/install.sh as a standalone
 // C++ distribution. This avoids version mismatches between pip-installed
 // PyTorch and the headers we compile against.
 
@@ -21,7 +21,7 @@ fn looks_like_libtorch(root: &Path) -> bool {
 }
 
 fn resolve_libtorch(manifest_dir: &Path) -> PathBuf {
-    // 1. LIBTORCH env var (highest priority — set by install.sh and ferrite-run)
+    // 1. LIBTORCH env var (highest priority — set by scripts/install.sh and ferrite-run)
     if let Ok(p) = env::var("LIBTORCH") {
         let path = PathBuf::from(&p);
         if looks_like_libtorch(&path) {
@@ -50,7 +50,7 @@ fn resolve_libtorch(manifest_dir: &Path) -> PathBuf {
 
     panic!(
         "Could not find libtorch.\n\
-         Run ./install.sh to provision it, or set LIBTORCH=/path/to/libtorch.\n\
+         Run ./scripts/install.sh to provision it, or set LIBTORCH=/path/to/libtorch.\n\
          Searched:\n  - LIBTORCH env var\n{}",
         candidates
             .iter()

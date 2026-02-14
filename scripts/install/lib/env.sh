@@ -10,7 +10,7 @@ usage() {
 Ferrite Runtime Source Installer
 
 Usage:
-  ./install.sh [--sm <SM>] [--verbose] [--enable-service]
+  ./scripts/install.sh [--sm <SM>] [--verbose] [--enable-service]
                [--libtorch-url <URL>] [--libtorch-tag <TAG>] [--cudarc-feature <FEATURE>]
                [--onnxruntime-version <VERSION>] [--onnxruntime-url <URL>]
                [--auto-install-cuda]

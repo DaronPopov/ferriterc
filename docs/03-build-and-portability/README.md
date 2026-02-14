@@ -2,7 +2,7 @@
 
 ## Install Pipeline
 
-Installer entrypoint: `install.sh`
+Installer entrypoint: `scripts/install.sh`
 
 Core stages (from `scripts/install/install.sh`):
 
@@ -47,26 +47,26 @@ Notes:
 Automatic mode:
 
 ```bash
-./install.sh
+./scripts/install.sh
 ```
 
 Pinned mode:
 
 ```bash
-./install.sh --pins "sm=89,libtorch_url=<URL>,libtorch_tag=cu126,cudarc_feature=cuda-12060"
+./scripts/install.sh --pins "sm=89,libtorch_url=<URL>,libtorch_tag=cu126,cudarc_feature=cuda-12060"
 ```
 
 Equivalent explicit flags:
 
 ```bash
-./install.sh --sm 89 --libtorch-url "<URL>" --libtorch-tag cu126 --cudarc-feature cuda-12060
+./scripts/install.sh --sm 89 --libtorch-url "<URL>" --libtorch-tag cu126 --cudarc-feature cuda-12060
 ```
 
 Core-only mode (skips libtorch and torch-dependent crates):
 
 ```bash
-./install.sh --core-only
-./install.sh --core-only --sm 86
+./scripts/install.sh --core-only
+./scripts/install.sh --core-only --sm 86
 ```
 
 ## Boot Service
@@ -74,7 +74,7 @@ Core-only mode (skips libtorch and torch-dependent crates):
 Optional systemd setup:
 
 ```bash
-./install.sh --enable-service
+./scripts/install.sh --enable-service
 ```
 
 Installs and enables:

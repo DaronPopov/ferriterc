@@ -38,7 +38,7 @@
 - Daemon crate: `ferrite-os/crates/internal/ptx-daemon`
 - Primary CLI entrypoint: `ferrite-daemon` (root wrapper / installed command)
 - Binary artifacts: `ferrite-os/target/release/ferrite-daemon` and `ferrite-os/target/release/ferrite`
-- Optional systemd installation via `install.sh --enable-service`
+- Optional systemd installation via `scripts/install.sh --enable-service`
 
 ## Critical Runtime Boundaries
 

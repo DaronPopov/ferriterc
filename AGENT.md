@@ -17,7 +17,7 @@ cd /home/daron/fdfd/ferriterc
 
 - Scripts/runtime wrapper: `./ferrite-run`
 - Daemon wrapper (root, canonical): `./ferrite-daemon`
-- Installer: `./install.sh`
+- Installer: `./scripts/install.sh`
 - Systemic test tooling: `testkit/`
 
 ## Build and Check Commands

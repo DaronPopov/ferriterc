@@ -694,44 +694,21 @@ fn run_command(mut cmd: Command) -> Result<(), String> {
 }
 
 fn apply_ld_library_path(cmd: &mut Command, repo_root: &Path) {
-    let existing = env::var("LD_LIBRARY_PATH").unwrap_or_default();
-    let mut prepend: Vec<String> = Vec::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
 
     for dir in runtime_lib_candidates(repo_root) {
-        push_unique_existing_dir(&mut prepend, dir);
+        if dir.exists() {
+            dirs.push(dir);
+        }
     }
 
     for dir in libtorch_lib_candidates(repo_root) {
-        push_unique_existing_dir(&mut prepend, dir);
-    }
-
-    if prepend.is_empty() {
-        return;
-    }
-
-    for existing_path in existing.split(':') {
-        let p = existing_path.trim();
-        if p.is_empty() || prepend.iter().any(|v| v == p) {
-            continue;
+        if dir.exists() {
+            dirs.push(dir);
         }
-        prepend.push(p.to_string());
     }
 
-    cmd.env("LD_LIBRARY_PATH", prepend.join(":"));
-}
-
-fn push_unique_existing_dir(out: &mut Vec<String>, path: PathBuf) {
-    if !path.exists() {
-        return;
-    }
-    let val = fs::canonicalize(&path)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .to_string();
-    if out.iter().any(|v| v == &val) {
-        return;
-    }
-    out.push(val);
+    ferrite_platform::dylib_env::apply_dylib_path(cmd, &dirs);
 }
 
 fn runtime_lib_candidates(repo_root: &Path) -> Vec<PathBuf> {

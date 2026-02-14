@@ -12,7 +12,7 @@ Provide interactive daemon UX without changing daemon command semantics.
 
 ## Forbidden Cross-Dependencies
 - No direct dependency on `ferrite-os/native/core/**` CUDA internals
-- No install/provision policy logic (`install.sh`, `scripts/install/**`)
+- No install/provision policy logic (`scripts/install.sh`, `scripts/install/**`)
 
 ## No-Break Rules
 - Keep command keybindings/command routing behavior stable unless explicitly requested

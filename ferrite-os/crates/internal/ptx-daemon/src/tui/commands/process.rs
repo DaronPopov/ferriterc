@@ -72,11 +72,55 @@ pub(super) fn cmd_start(daemon: &Arc<DaemonState>, state: &mut TuiState, args: &
 }
 
 pub(super) fn cmd_stop(daemon: &Arc<DaemonState>, state: &mut TuiState) {
+    let mut stopped_something = false;
+
+    // 1. Stop stability test if running
     if state.stability_running.load(Ordering::Relaxed) {
         state.stability_running.store(false, Ordering::Relaxed);
-        state.push_log(LogEntry::new(LogCategory::Sys, "stopping..."));
-    } else {
-        daemon.shutdown();
+        state.push_log(LogEntry::new(LogCategory::Sys, "stopped stability test"));
+        stopped_something = true;
+    }
+
+    // 2. Cancel running script (same as /stop)
+    if state.run_status != crate::tui::state::run_state::RunStatus::Idle {
+        state.run_cancel_flag.store(true, Ordering::Relaxed);
+        state.push_log(LogEntry::new(LogCategory::Sys, "stopped running script"));
+        stopped_something = true;
+    }
+
+    // 3. Kill all managed apps
+    {
+        let mut apps = daemon.apps.lock();
+        if !apps.is_empty() {
+            let count = apps.len();
+            for (_, app) in apps.iter_mut() {
+                let _ = app.child.kill();
+                let _ = app.child.wait();
+            }
+            apps.clear();
+            state.push_log(LogEntry::new(
+                LogCategory::App,
+                format!("stopped {} managed app(s)", count),
+            ));
+            stopped_something = true;
+        }
+    }
+
+    // 4. Stop all active durable jobs
+    {
+        let mut supervisor = daemon.supervisor.lock();
+        let stopped_jobs = supervisor.stop_all("stopped by operator");
+        if stopped_jobs > 0 {
+            state.push_log(LogEntry::new(
+                LogCategory::Sys,
+                format!("stopped {} durable job(s)", stopped_jobs),
+            ));
+            stopped_something = true;
+        }
+    }
+
+    if !stopped_something {
+        state.push_log(LogEntry::new(LogCategory::Sys, "nothing running"));
     }
 }
 

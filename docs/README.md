@@ -33,7 +33,7 @@ It is written for engineers and LLM coding agents.
 
 ## Source-of-Truth Files
 
-- Installer: `install.sh`
+- Installer: `scripts/install.sh`
 - Runtime launcher: `ferrite-run`
 - Daemon launcher: `ferrite-daemon`
 - Compatibility mapping: `compat.toml`

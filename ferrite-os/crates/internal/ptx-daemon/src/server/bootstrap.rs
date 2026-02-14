@@ -1,9 +1,7 @@
-use std::fs;
 use std::io;
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
 use std::sync::Arc;
 
+use ferrite_platform::ipc::{IpcListener, Endpoint};
 use ptx_runtime::PtxRuntime;
 use tracing::{error, info, warn};
 
@@ -15,12 +13,14 @@ use crate::state::DaemonState;
 use crate::supervisor::JobSupervisor;
 
 pub(super) fn should_use_tui(config: &DaemonConfig) -> bool {
-    !config.headless && unsafe { libc::isatty(libc::STDOUT_FILENO) == 1 }
+    !config.headless && ferrite_platform::tty::stdout_is_tty()
 }
 
 pub(super) fn init_logging(config: &DaemonConfig, use_tui: bool) {
     if use_tui {
-        let log_dir = config.log_dir.clone().unwrap_or_else(|| "/tmp".to_string());
+        let log_dir = config.log_dir.clone().unwrap_or_else(|| {
+            ferrite_platform::paths::temp_dir().to_string_lossy().to_string()
+        });
         let file_appender = tracing_appender::rolling::daily(&log_dir, "ferrite-daemon.log");
         let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
         if let Err(e) = tracing_subscriber::fmt()
@@ -56,29 +56,15 @@ pub(super) fn init_logging(config: &DaemonConfig, use_tui: bool) {
 }
 
 pub(super) fn create_pid_file(config: &DaemonConfig) -> io::Result<PidFile> {
-    PidFile::create(Path::new(&config.pid_file)).map_err(|e| {
+    PidFile::create(std::path::Path::new(&config.pid_file)).map_err(|e| {
         error!("Failed to create PID file: {}", e);
         e
     })
 }
 
-pub(super) fn prepare_listener(config: &DaemonConfig) -> io::Result<UnixListener> {
-    let socket_path = Path::new(&config.socket_path);
-    if socket_path.exists() {
-        if UnixStream::connect(socket_path).is_ok() {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "Daemon already running",
-            ));
-        }
-        fs::remove_file(socket_path)?;
-    }
-
-    if let Some(parent) = socket_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    UnixListener::bind(&config.socket_path)
+pub(super) fn prepare_listener(config: &DaemonConfig) -> io::Result<IpcListener> {
+    let endpoint = Endpoint::new(&config.socket_path);
+    IpcListener::bind(&endpoint)
 }
 
 pub(super) fn init_runtime(config: &DaemonConfig) -> io::Result<Arc<PtxRuntime>> {
@@ -127,17 +113,17 @@ pub(super) fn build_state(
     runtime: Arc<PtxRuntime>,
     config: DaemonConfig,
 ) -> io::Result<(Arc<DaemonState>, Arc<parking_lot::Mutex<ScriptRunner>>)> {
-    const FALLBACK_JOB_STATE_DIR: &str = "/tmp/ferrite-jobs-fallback";
+    let fallback_dir = ferrite_platform::paths::fallback_job_state_dir();
 
     // Initialize the durable job supervisor.
     let job_store = match JobStore::new(&config.jobs.state_dir) {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!("failed to create job store at {}: {}; using /tmp fallback", config.jobs.state_dir, e);
-            JobStore::new(FALLBACK_JOB_STATE_DIR).map_err(|fallback_err| {
+            tracing::warn!("failed to create job store at {}: {}; using fallback", config.jobs.state_dir, e);
+            JobStore::new(&fallback_dir).map_err(|fallback_err| {
                 io::Error::other(format!(
                     "failed to create job store at {} ({}) and fallback {} ({})",
-                    config.jobs.state_dir, e, FALLBACK_JOB_STATE_DIR, fallback_err
+                    config.jobs.state_dir, e, fallback_dir, fallback_err
                 ))
             })?
         }
@@ -147,10 +133,10 @@ pub(super) fn build_state(
         Ok(pair) => pair,
         Err(e) => {
             tracing::error!("job supervisor init failed: {}; starting with empty supervisor", e);
-            let fallback_store = JobStore::new(FALLBACK_JOB_STATE_DIR).map_err(|fallback_err| {
+            let fallback_store = JobStore::new(&fallback_dir).map_err(|fallback_err| {
                 io::Error::other(format!(
                     "job supervisor init failed ({}) and fallback store {} creation failed ({})",
-                    e, FALLBACK_JOB_STATE_DIR, fallback_err
+                    e, fallback_dir, fallback_err
                 ))
             })?;
             // Create an empty supervisor with no recovered jobs.

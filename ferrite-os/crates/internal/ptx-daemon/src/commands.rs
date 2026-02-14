@@ -1311,6 +1311,37 @@ pub fn handle_run_list(state: &DaemonState) -> io::Result<String> {
     }
 }
 
+/// Handle `ferrite-stop` — stop all running programs without shutting down the daemon.
+///
+/// Stops all managed apps and all active durable jobs.
+pub fn handle_ferrite_stop(state: &DaemonState) -> io::Result<String> {
+    // Stop all managed apps
+    let stopped_apps = {
+        let mut apps = state.apps.lock();
+        let count = apps.len();
+        for (_, app) in apps.iter_mut() {
+            let _ = app.child.kill();
+            let _ = app.child.wait();
+        }
+        apps.clear();
+        count
+    };
+
+    // Stop all active durable jobs
+    let stopped_jobs = {
+        let mut supervisor = state.supervisor.lock();
+        supervisor.stop_all("stopped by ferrite-stop")
+    };
+
+    let response = serde_json::json!({
+        "ok": true,
+        "message": "all programs stopped",
+        "stopped_apps": stopped_apps,
+        "stopped_jobs": stopped_jobs,
+    });
+    to_json_line(&response)
+}
+
 pub fn handle_help() -> io::Result<String> {
     let help = r#"{
   "ok": true,
@@ -1336,6 +1367,7 @@ pub fn handle_help() -> io::Result<String> {
     "job-status <id>": "Show status of a durable job",
     "job-list": "List all durable jobs",
     "job-history <id>": "Show state transition history for a job",
+    "ferrite-stop": "Stop all running programs (apps, jobs) without shutting down",
     "shutdown": "Shutdown daemon",
     "help": "Show this help"
   }

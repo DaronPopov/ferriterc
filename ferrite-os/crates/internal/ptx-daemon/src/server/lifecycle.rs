@@ -4,33 +4,31 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
-use signal_hook::iterator::Signals;
+use ferrite_platform::signals::LifecycleSignal;
 use tracing::{info, warn};
 
 use crate::state::DaemonState;
 
 pub(super) fn start_signal_handler(state: Arc<DaemonState>) {
     thread::spawn(move || {
-        let mut signals = match Signals::new([SIGTERM, SIGINT, SIGHUP]) {
-            Ok(signals) => signals,
+        let rx = match ferrite_platform::signals::subscribe() {
+            Ok(rx) => rx,
             Err(e) => {
                 warn!(error = %e, "Failed to register signal handlers");
                 return;
             }
         };
 
-        for sig in signals.forever() {
-            match sig {
-                SIGTERM | SIGINT => {
-                    info!("Received signal {}, initiating shutdown", sig);
+        for signal in rx.iter() {
+            match signal {
+                LifecycleSignal::Shutdown => {
+                    info!("Received shutdown signal, initiating shutdown");
                     state.shutdown();
                     break;
                 }
-                SIGHUP => {
-                    info!("Received SIGHUP, reloading configuration not yet implemented");
+                LifecycleSignal::Reload => {
+                    info!("Received reload signal, reloading configuration not yet implemented");
                 }
-                _ => {}
             }
         }
     });
@@ -54,7 +52,7 @@ pub(super) fn start_watch_thread(state: Arc<DaemonState>) {
     }
 
     let watch_ms = state.config.watch_ms;
-    let is_tty = unsafe { libc::isatty(libc::STDOUT_FILENO) == 1 };
+    let is_tty = ferrite_platform::tty::stdout_is_tty();
 
     thread::spawn(move || {
         info!("Watch thread started (interval: {}ms)", watch_ms);

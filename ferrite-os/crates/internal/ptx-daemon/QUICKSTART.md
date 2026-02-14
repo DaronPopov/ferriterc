@@ -72,7 +72,7 @@ Use the installer-managed systemd flow:
 
 ```bash
 cd /path/to/ferriterc
-./install.sh --enable-service
+./scripts/install.sh --enable-service
 ```
 
 This generates and installs `/etc/systemd/system/ferrite-daemon.service` from

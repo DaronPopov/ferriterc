@@ -1,42 +1,34 @@
-//! Unix socket IPC client for communicating with the Ferrite daemon.
+//! IPC client for communicating with the Ferrite daemon.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::path::PathBuf;
 use std::time::Duration;
+
+use ferrite_platform::ipc::{Endpoint, IpcStream};
 
 use crate::error::AppError;
 
-/// Default daemon socket path.
-const LEGACY_DEFAULT_SOCKET_PATH: &str = "/tmp/ferrite.sock";
-
 fn current_default_socket_path() -> String {
-    let uid = unsafe { libc::geteuid() };
-    if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
-        format!("{}/ferrite-daemon.sock", xdg)
-    } else {
-        format!("/tmp/ferrite-os-{}/daemon.sock", uid)
-    }
+    ferrite_platform::paths::default_socket_addr()
 }
 
-/// Client for sending commands to the Ferrite daemon over a Unix socket.
+/// Client for sending commands to the Ferrite daemon over IPC.
 pub(crate) struct DaemonClient {
-    socket_path: PathBuf,
+    endpoint: Endpoint,
 }
 
 impl DaemonClient {
-    /// Create a client targeting the given socket path.
-    pub fn new(socket_path: impl Into<PathBuf>) -> Self {
+    /// Create a client targeting the given socket/pipe path.
+    pub fn new(socket_path: impl Into<String>) -> Self {
         Self {
-            socket_path: socket_path.into(),
+            endpoint: Endpoint::new(socket_path),
         }
     }
 
-    /// Auto-detect the daemon socket path.
+    /// Auto-detect the daemon endpoint.
     ///
     /// Checks `FERRITE_SOCKET`, then `FERRITE_DAEMON_SOCKET`, then current defaults.
-    /// Keeps legacy `/tmp/ferrite.sock` as a fallback when present.
+    /// Keeps legacy path as a fallback when present.
     pub fn auto_detect() -> Self {
         if let Ok(path) = std::env::var("FERRITE_SOCKET") {
             return Self::new(path);
@@ -46,26 +38,26 @@ impl DaemonClient {
         }
 
         let current = current_default_socket_path();
-        if Path::new(&current).exists() || !Path::new(LEGACY_DEFAULT_SOCKET_PATH).exists() {
+        let legacy = ferrite_platform::paths::legacy_socket_path();
+        if Path::new(&current).exists() || !Path::new(legacy).exists() {
             return Self::new(current);
         }
 
-        Self::new(LEGACY_DEFAULT_SOCKET_PATH)
+        Self::new(legacy)
     }
 
-    /// Check if the daemon socket exists (does not guarantee connectivity).
+    /// Check if the daemon endpoint exists (does not guarantee connectivity).
     pub fn socket_exists(&self) -> bool {
-        self.socket_path.exists()
+        ferrite_platform::ipc::endpoint_exists(&self.endpoint)
     }
 
     /// Send a command to the daemon and return the response.
     pub fn send_command(&self, command: &str) -> Result<String, AppError> {
-        let mut stream = UnixStream::connect(&self.socket_path).map_err(|e| {
+        let mut stream = IpcStream::connect(&self.endpoint).map_err(|e| {
             AppError::DaemonUnavailable {
                 message: format!(
                     "cannot connect to {}: {}",
-                    self.socket_path.display(),
-                    e
+                    self.endpoint, e
                 ),
             }
         })?;

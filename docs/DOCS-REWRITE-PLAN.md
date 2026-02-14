@@ -40,8 +40,8 @@ ferrite-daemon                            # exists (root wrapper; canonical daem
 ferrite-os/ferrite-daemon.sh              # exists (local wrapper)
 ferrite-os/tooling/scripts/ferrite-run     # exists (local wrapper)
 ferrite-run                               # exists (root wrapper)
-install.sh                                # exists (root symlink/entrypoint)
-uninstall.sh                              # exists
+scripts/install.sh                        # exists (installer entrypoint)
+scripts/uninstall.sh                      # exists
 
 ferrite-os/crates/internal/ptx-daemon/src/
   tui/                                    # extensive: app.rs, commands/, editor/, etc.
@@ -211,7 +211,7 @@ Problems:
 - Missing `--core-only` in "Pinning Modes" section
 
 Fix:
-- Rewrite "Install Pipeline" to show the actual stage order from `install.sh`:
+- Rewrite "Install Pipeline" to show the actual stage order from `scripts/install.sh`:
   1. Platform/arch detection
   2. Defaults + CLI parsing
   3. Preflight checks (host tools, CUDA toolkit auto-install, Rust toolchain)
@@ -239,8 +239,8 @@ Fix:
   CUDA toolkit is auto-installed if absent."
 - Add core-only install example:
   ```
-  ./install.sh --core-only
-  ./install.sh --core-only --sm 86
+  ./scripts/install.sh --core-only
+  ./scripts/install.sh --core-only --sm 86
   ```
 - Add validation for installer libs:
   ```
@@ -270,7 +270,7 @@ Fix:
 ## Task 11: Fix `docs/04-llm-programming-guides/architecture-walkthrough.md`
 
 Problems:
-- "Layer Map" → installer layer only lists `install.sh`, `compat.toml`,
+- "Layer Map" → installer layer only lists `scripts/install.sh`, `compat.toml`,
   `scripts/resolve_cuda_compat.sh` — missing `scripts/install/lib/*.sh`
 - Missing daemon config in any layer
 - Missing mention of `ferrite-os/crates/internal/ptx-daemon/ferrite-daemon.toml`

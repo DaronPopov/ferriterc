@@ -81,7 +81,7 @@ cp crates/internal/ptx-daemon/ferrite-daemon.toml ~/.config/ferrite-os/daemon.to
 
 ```bash
 # From repository root, generate + install service using installer flow
-./install.sh --enable-service
+./scripts/install.sh --enable-service
 ```
 
 ## Usage

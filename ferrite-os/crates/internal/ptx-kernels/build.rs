@@ -4,6 +4,17 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=kernels/");
+    println!("cargo:rerun-if-env-changed=FERRITE_PLATFORM_MANIFEST");
+
+    // ── Platform manifest seam ──────────────────────────────────────
+    // When FERRITE_PLATFORM_MANIFEST is set, use manifest-declared
+    // artifacts for linking instead of probing the host.
+    if let Ok(manifest_path) = env::var("FERRITE_PLATFORM_MANIFEST") {
+        if apply_platform_manifest(&manifest_path) {
+            return; // manifest handled everything
+        }
+        println!("cargo:warning=FERRITE_PLATFORM_MANIFEST set but invalid for ptx-kernels; falling back");
+    }
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
@@ -86,6 +97,88 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
+}
+
+/// Apply link/compile directives from a platform manifest file (TOML).
+///
+/// Expected format:
+/// ```toml
+/// [ptx-kernels]
+/// cuda_path = "C:\\cuda"
+/// cuda_arch = "sm_86"
+/// lib_dirs = ["C:\\cuda\\lib\\x64"]
+/// link_libs = ["cudart", "cuda"]
+/// skip_kernel_build = false  # optional, default false
+/// ```
+fn apply_platform_manifest(path: &str) -> bool {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("cargo:warning=Cannot read platform manifest {}: {}", path, e);
+            return false;
+        }
+    };
+
+    let mut in_section = false;
+    let mut lib_dirs: Vec<String> = Vec::new();
+    let mut link_libs: Vec<String> = Vec::new();
+    let mut skip_kernel_build = false;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_section = trimmed == "[ptx-kernels]";
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if let Some((key, val)) = trimmed.split_once('=') {
+            let key = key.trim();
+            let val = val.trim();
+            match key {
+                "lib_dirs" => lib_dirs = parse_toml_string_array(val),
+                "link_libs" => link_libs = parse_toml_string_array(val),
+                "skip_kernel_build" => skip_kernel_build = val.trim() == "true",
+                "cuda_arch" => {
+                    // Override CUDA_ARCH from manifest
+                    // This is consumed by the cc::Build above, but the manifest
+                    // path runs before the cc::Build, so we set env.
+                    std::env::set_var("CUDA_ARCH", val.trim_matches('"'));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if lib_dirs.is_empty() && link_libs.is_empty() && !skip_kernel_build {
+        return false;
+    }
+
+    if skip_kernel_build {
+        // On Windows without NVCC, skip the CUDA kernel compilation entirely.
+        // A pre-built static library should be provided via lib_dirs.
+        println!("cargo:warning=Skipping CUDA kernel build (manifest: skip_kernel_build=true)");
+    }
+
+    for dir in &lib_dirs {
+        println!("cargo:rustc-link-search=native={}", dir);
+    }
+    for lib in &link_libs {
+        println!("cargo:rustc-link-lib={}", lib);
+    }
+
+    println!("cargo:rerun-if-changed={}", path);
+    true
+}
+
+fn parse_toml_string_array(raw: &str) -> Vec<String> {
+    let inner = raw.trim().trim_start_matches('[').trim_end_matches(']');
+    inner
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn find_cuda_kernels() -> Option<PathBuf> {

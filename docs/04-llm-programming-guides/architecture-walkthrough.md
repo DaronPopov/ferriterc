@@ -7,7 +7,7 @@ Given a requested change, identify the correct layer first, then edit only neces
 ## Layer Map
 
 1. Installer and compatibility
-   - `install.sh`
+   - `scripts/install.sh`
    - `scripts/install/install.sh`
    - `scripts/install/lib/*.sh` (args, build, cuda, diag, env, libtorch, policy, preflight, rust, service)
    - `compat.toml`

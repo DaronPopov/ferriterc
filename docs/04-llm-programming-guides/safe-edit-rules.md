@@ -24,7 +24,7 @@ All three must remain consistent.
 After shell changes, run:
 
 ```bash
-bash -n install.sh
+bash -n scripts/install.sh
 bash -n ferrite-run
 bash -n scripts/resolve_cuda_compat.sh
 bash -n scripts/install/lib/*.sh

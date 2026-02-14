@@ -1,10 +1,10 @@
 use std::io::{self, Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
+use ferrite_platform::ipc::{IpcListener, IpcStream};
 use tracing::{debug, error, trace, warn};
 
 use crate::config::DaemonConfig;
@@ -115,7 +115,7 @@ mod tests {
 }
 
 pub(super) fn run_socket_listener(
-    listener: UnixListener,
+    listener: IpcListener,
     state: Arc<DaemonState>,
     runner: Arc<parking_lot::Mutex<ScriptRunner>>,
     config: DaemonConfig,
@@ -128,7 +128,7 @@ pub(super) fn run_socket_listener(
 
     while state.is_running() {
         match listener.accept() {
-            Ok((stream, _)) => {
+            Ok(stream) => {
                 let active = state.active_clients.load(Ordering::Relaxed);
                 if active >= config.max_clients as u64 {
                     warn!(
@@ -159,7 +159,7 @@ pub(super) fn run_socket_listener(
 }
 
 fn handle_client(
-    mut stream: UnixStream,
+    mut stream: IpcStream,
     state: Arc<DaemonState>,
     _runner: Arc<parking_lot::Mutex<ScriptRunner>>,
     event_tx: Option<mpsc::Sender<DaemonEvent>>,

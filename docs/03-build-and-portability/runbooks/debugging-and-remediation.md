@@ -27,7 +27,7 @@ Manual workaround:
 ```bash
 # Install CUDA toolkit manually, then re-run:
 export PATH="/usr/local/cuda/bin:$PATH"
-./install.sh
+./scripts/install.sh
 ```
 
 ## If Shared Memory Collides Between Users

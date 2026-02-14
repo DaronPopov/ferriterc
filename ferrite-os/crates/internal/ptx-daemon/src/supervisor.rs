@@ -169,6 +169,23 @@ impl JobSupervisor {
         Ok(())
     }
 
+    /// Stop all active (non-terminal) jobs. Returns the number of jobs stopped.
+    pub fn stop_all(&mut self, reason: &str) -> usize {
+        let active_ids: Vec<DurableJobId> = self
+            .jobs
+            .iter()
+            .filter(|(_, job)| !job.state().is_terminal())
+            .map(|(id, _)| *id)
+            .collect();
+        let count = active_ids.len();
+        for id in active_ids {
+            if let Err(e) = self.stop(id, reason.to_string()) {
+                tracing::warn!(job_id = id.raw(), error = %e, "failed to stop job in stop_all");
+            }
+        }
+        count
+    }
+
     /// Look up a job by ID.
     pub fn status(&self, id: DurableJobId) -> Option<&DurableJob> {
         self.jobs.get(&id)

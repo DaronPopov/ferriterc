@@ -4,14 +4,14 @@
 Provide deterministic one-line source install with auto and pinned compatibility flows.
 
 ## Owned Paths
-- `install.sh`
+- `scripts/install.sh`
 - `scripts/install/install.sh`
 - `scripts/install/lib/*.sh`
 - `scripts/resolve_cuda_compat.sh`
 - install sections in `README.md` and `INSTALL.md`
 
 ## Public Interfaces
-- CLI flags for `./install.sh` (including `--core-only` which skips libtorch and torch-dependent crates)
+- CLI flags for `./scripts/install.sh` (including `--core-only` which skips libtorch and torch-dependent crates)
 - Compatibility resolver output contract (`--format env|json`)
 - Modular installer libraries in `scripts/install/lib/*.sh`: args, build, cuda, diag, env, libtorch, policy, preflight, rust, service
 

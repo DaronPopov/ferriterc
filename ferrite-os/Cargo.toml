@@ -14,6 +14,8 @@ members = [
     "crates/internal/ptx-runner",
     "crates/internal/ptx-daemon",
     "crates/internal/ptx-renderd",
+    "crates/internal/ferrite-platform",
+    "crates/internal/ferrite-connectors",
 ]
 default-members = ["crates/internal/ptx-runner"]
 
@@ -35,6 +37,7 @@ ptx-autograd = { path = "crates/internal/ptx-autograd" }
 ptx-compiler = { path = "crates/internal/ptx-compiler" }
 ptx-kernels = { path = "crates/internal/ptx-kernels" }
 ptx-app = { path = "crates/public/ptx-app" }
+ferrite-platform = { path = "crates/internal/ferrite-platform" }
 
 # External dependencies
 libc = "0.2"

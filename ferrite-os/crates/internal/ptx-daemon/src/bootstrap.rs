@@ -30,6 +30,7 @@ pub fn print_usage() {
     eprintln!("    apps                  List managed apps");
     eprintln!("    app-start APP [ARGS]  Start managed app");
     eprintln!("    app-stop ID|NAME      Stop managed app");
+    eprintln!("    ferrite-stop          Stop all running programs (keeps daemon alive)");
     eprintln!("    run-file PATH [FLAGS] Run Rust file via ptx-runner");
     eprintln!("    run-entry ENTRY_ID    Run discovered Rust entry ID");
     eprintln!("    run-list              List discovered Rust entries");

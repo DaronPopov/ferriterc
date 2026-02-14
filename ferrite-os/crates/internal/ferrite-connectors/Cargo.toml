@@ -5,6 +5,7 @@ edition = "2021"
 description = "External dataflow connector layer for the Ferrite daemon"
 
 [dependencies]
+ferrite-platform = { path = "../ferrite-platform" }
 ureq = "2"
 tungstenite = "0.21"
 serde = { version = "1", features = ["derive"] }

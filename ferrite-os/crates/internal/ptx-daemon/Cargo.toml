@@ -17,6 +17,7 @@ path = "src/bin/ferrite.rs"
 [dependencies]
 ptx-runtime = { workspace = true }
 ptx-sys = { workspace = true }
+ferrite-platform = { workspace = true }
 libc = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

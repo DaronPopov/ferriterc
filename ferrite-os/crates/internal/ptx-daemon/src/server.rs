@@ -1,7 +1,7 @@
-use std::fs;
 use std::io;
 use std::sync::{mpsc, Arc};
 
+use ferrite_platform::ipc;
 use tracing::info;
 
 use crate::config::DaemonConfig;
@@ -73,7 +73,7 @@ pub fn run_server(config: DaemonConfig) -> io::Result<()> {
     let (state, runner) = match bootstrap::build_state(runtime, config.clone()) {
         Ok(state) => state,
         Err(e) => {
-            let _ = fs::remove_file(&config.socket_path);
+            ipc::remove_endpoint(&ipc::Endpoint::new(&config.socket_path));
             return Err(e);
         }
     };
@@ -148,7 +148,7 @@ pub fn run_server(config: DaemonConfig) -> io::Result<()> {
     emit_diag("daemon.server", "PASS", "DMN-SRV-0006", "shutting down daemon", "none");
     lifecycle::shutdown_managed_apps(&state);
 
-    let _ = fs::remove_file(&config.socket_path);
+    ipc::remove_endpoint(&ipc::Endpoint::new(&config.socket_path));
 
     info!("Daemon stopped");
     emit_diag("daemon.server", "PASS", "DMN-SRV-0007", "daemon stopped", "none");

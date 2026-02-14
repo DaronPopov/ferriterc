@@ -18,7 +18,7 @@ pub fn dispatch(invocation: CliInvocation) -> Result<(), i32> {
             Ok(())
         }
         cmd @ ("ping" | "status" | "stats" | "metrics" | "snapshot" | "health" | "keepalive"
-        | "shutdown" | "help" | "apps" | "app-start" | "app-stop"
+        | "shutdown" | "ferrite-stop" | "help" | "apps" | "app-start" | "app-stop"
         | "run-file" | "run-entry" | "run-list"
         | "job-submit" | "job-stop" | "job-status" | "job-list" | "job-history") => {
             let line = serde_json::json!({

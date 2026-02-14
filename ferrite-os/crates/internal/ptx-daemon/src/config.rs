@@ -34,8 +34,7 @@ pub struct JobsConfig {
 }
 
 fn default_jobs_state_dir() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    format!("{}/.ferrite/jobs", home)
+    ferrite_platform::paths::default_jobs_state_dir()
 }
 fn default_jobs_restart_policy() -> String {
     "never".to_string()
@@ -312,23 +311,11 @@ impl SchedulerConfig {
 }
 
 fn default_socket_path() -> String {
-    // Prefer XDG_RUNTIME_DIR (per-user tmpdir, e.g. /run/user/1000)
-    // Fall back to /tmp/ferrite-os-<uid>/
-    let uid = unsafe { libc::geteuid() };
-    if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
-        format!("{}/ferrite-daemon.sock", xdg)
-    } else {
-        format!("/tmp/ferrite-os-{}/daemon.sock", uid)
-    }
+    ferrite_platform::paths::default_socket_addr()
 }
 
 fn default_pid_path() -> String {
-    let uid = unsafe { libc::geteuid() };
-    if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
-        format!("{}/ferrite-daemon.pid", xdg)
-    } else {
-        format!("/tmp/ferrite-os-{}/daemon.pid", uid)
-    }
+    ferrite_platform::paths::default_pid_path()
 }
 
 fn default_max_clients() -> usize {

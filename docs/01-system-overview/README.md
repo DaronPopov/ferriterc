@@ -34,7 +34,7 @@
 
 ## Key Interfaces
 
-- Install/build entrypoint: `install.sh`
+- Install/build entrypoint: `scripts/install.sh`
 - Script execution entrypoint: `ferrite-run`
 - Daemon execution entrypoint: `ferrite-daemon` (installed command / root wrapper)
 - Compatibility resolver: `scripts/resolve_cuda_compat.sh`

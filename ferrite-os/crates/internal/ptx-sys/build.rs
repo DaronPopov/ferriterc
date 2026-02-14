@@ -9,6 +9,21 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=FERRITE_PLATFORM_MANIFEST");
+
+    // ── Platform manifest seam ──────────────────────────────────────
+    // When FERRITE_PLATFORM_MANIFEST is set, parse the manifest for
+    // pre-resolved include/lib/link artifacts instead of probing the
+    // host.  This allows Windows (or cross-compile) builds to supply
+    // paths discovered by `scripts/windows_builder/generate_manifest.py`.
+    if let Ok(manifest_path) = env::var("FERRITE_PLATFORM_MANIFEST") {
+        if apply_platform_manifest(&manifest_path) {
+            return; // manifest handled all linking
+        }
+        // Fall through to normal discovery if manifest was invalid.
+        println!("cargo:warning=FERRITE_PLATFORM_MANIFEST set but invalid; falling back to host discovery");
+    }
+
     let script_env = load_env_from_script();
     let verbose = env::var("PTX_SYS_VERBOSE")
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -56,7 +71,7 @@ fn main() {
              ERROR: libptx_os.so not found at {}\n\n\
              The Ferrite-OS C/CUDA runtime must be built before Rust crates.\n\
              Run one of:\n\
-               ./install.sh              (full automated install)\n\
+               ./scripts/install.sh      (full automated install)\n\
                cd ferrite-os && make all (manual C/CUDA build)\n\
              ============================================================\n",
             lib_dir.display()
@@ -261,6 +276,84 @@ fn detect_sm_with_nvcc(cuda_path: &PathBuf, project_root: &PathBuf) -> Option<St
 
     let cap = String::from_utf8_lossy(&output.stdout);
     normalize_sm(&cap)
+}
+
+/// Apply link directives from a platform manifest file (TOML).
+///
+/// Expected format:
+/// ```toml
+/// [ptx-sys]
+/// lib_dirs = ["C:\\cuda\\lib\\x64", "C:\\ferrite\\lib"]
+/// link_libs = ["ptx_os", "cudart", "cublas"]
+/// link_kind = "dylib"     # optional, default "dylib"
+/// include_dirs = ["C:\\cuda\\include"]
+/// gpu_sm = "sm_86"        # optional
+/// ```
+fn apply_platform_manifest(path: &str) -> bool {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("cargo:warning=Cannot read platform manifest {}: {}", path, e);
+            return false;
+        }
+    };
+
+    // Minimal TOML parsing — extract key = value and key = ["...", "..."]
+    // lines under a [ptx-sys] section.
+    let mut in_section = false;
+    let mut lib_dirs: Vec<String> = Vec::new();
+    let mut link_libs: Vec<String> = Vec::new();
+    let mut link_kind = "dylib".to_string();
+    let mut gpu_sm: Option<String> = None;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_section = trimmed == "[ptx-sys]";
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if let Some((key, val)) = trimmed.split_once('=') {
+            let key = key.trim();
+            let val = val.trim();
+            match key {
+                "lib_dirs" => lib_dirs = parse_toml_string_array(val),
+                "link_libs" => link_libs = parse_toml_string_array(val),
+                "link_kind" => link_kind = val.trim_matches('"').to_string(),
+                "gpu_sm" => gpu_sm = Some(val.trim_matches('"').to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    if lib_dirs.is_empty() && link_libs.is_empty() {
+        return false;
+    }
+
+    for dir in &lib_dirs {
+        println!("cargo:rustc-link-search=native={}", dir);
+    }
+    for lib in &link_libs {
+        println!("cargo:rustc-link-lib={}={}", link_kind, lib);
+    }
+    if let Some(sm) = gpu_sm {
+        println!("cargo:rustc-env=PTX_GPU_SM={}", sm);
+    }
+
+    println!("cargo:rerun-if-changed={}", path);
+    true
+}
+
+/// Parse a TOML-style string array: `["a", "b", "c"]`
+fn parse_toml_string_array(raw: &str) -> Vec<String> {
+    let inner = raw.trim().trim_start_matches('[').trim_end_matches(']');
+    inner
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn load_env_from_script() -> HashMap<String, String> {

@@ -20,13 +20,13 @@ cd ferriterc
 ## 2) Install (Auto)
 
 ```bash
-./install.sh
+./scripts/install.sh
 ```
 
 If auto SM detection fails:
 
 ```bash
-./install.sh --sm 86
+./scripts/install.sh --sm 86
 ```
 
 That is enough for most machines.
@@ -37,11 +37,11 @@ Build only the core OS (daemon, TUI, ptx-runtime) without downloading libtorch
 or building torch-dependent crates. Useful for headless GPU servers or CI:
 
 ```bash
-./install.sh --core-only
+./scripts/install.sh --core-only
 ```
 
 ```bash
-./install.sh --core-only --sm 86
+./scripts/install.sh --core-only --sm 86
 ```
 
 ## 4) Install (Pinned Exact Versions/Links)
@@ -49,13 +49,13 @@ or building torch-dependent crates. Useful for headless GPU servers or CI:
 Use this when you want full manual control of external binaries.
 
 ```bash
-./install.sh --pins "sm=89,libtorch_url=https://download.pytorch.org/libtorch/cu126/libtorch-shared-with-deps-2.9.0%2Bcu126.zip,libtorch_tag=cu126,cudarc_feature=cuda-12060"
+./scripts/install.sh --pins "sm=89,libtorch_url=https://download.pytorch.org/libtorch/cu126/libtorch-shared-with-deps-2.9.0%2Bcu126.zip,libtorch_tag=cu126,cudarc_feature=cuda-12060"
 ```
 
 Equivalent explicit flags:
 
 ```bash
-./install.sh --sm 89 \
+./scripts/install.sh --sm 89 \
   --libtorch-url "https://download.pytorch.org/libtorch/cu126/libtorch-shared-with-deps-2.9.0%2Bcu126.zip" \
   --libtorch-tag cu126 \
   --cudarc-feature cuda-12060
@@ -64,7 +64,7 @@ Equivalent explicit flags:
 ## 5) Optional: Start on Boot
 
 ```bash
-./install.sh --enable-service
+./scripts/install.sh --enable-service
 ```
 
 ## 6) Run
@@ -76,7 +76,7 @@ Equivalent explicit flags:
 ## Notes
 
 - CUDA toolkit is user-managed by default (installer expects `nvcc` to exist)
-- If you want legacy behavior, use `./install.sh --auto-install-cuda`
+- If you want legacy behavior, use `./scripts/install.sh --auto-install-cuda`
 - Installer auto-handles host build tooling, Rust toolchain, CUPTI, libtorch, onnxruntime, and external integration dependency provisioning (aten/candle/xla)
 - No precompiled Ferrite binaries are fetched; installer builds this repository from source
 - No Python torch install is required (aarch64 path extracts C++ libtorch artifacts only)
