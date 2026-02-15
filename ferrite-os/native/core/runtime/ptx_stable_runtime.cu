@@ -138,6 +138,12 @@ PTXStableStatus ptx_stable_init(const PTXStableConfig* config, PTXStableRuntime*
         if (config->max_streams > 0) {
             hot_cfg.max_streams = config->max_streams;
         }
+        if (config->flags & PTX_STABLE_CONFIG_PREFER_ORIN_UM) {
+            hot_cfg.prefer_orin_unified_memory = true;
+        }
+        if (config->flags & PTX_STABLE_CONFIG_USE_MANAGED_POOL) {
+            hot_cfg.use_managed_pool = true;
+        }
         hot_cfg.quiet_init = config->quiet_init != 0;
         hot_cfg.enable_leak_detection = config->enable_leak_detection != 0;
         hot_cfg.enable_pool_health = config->enable_pool_health != 0;

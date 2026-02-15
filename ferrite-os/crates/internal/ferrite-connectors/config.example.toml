@@ -19,6 +19,12 @@ max_retries = 3
 # reconnect_ms = 3000
 # max_retries = 5
 
+# [server]
+# bind = "127.0.0.1"
+# port = 8080
+# max_connections = 64
+# feed_queue = false
+
 [sink]
 # socket_path = "/tmp/ferrite-os-1000/daemon.sock"  # auto-discovered if omitted
 command_template = "ping"

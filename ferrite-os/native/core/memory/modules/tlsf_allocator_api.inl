@@ -27,13 +27,36 @@ PTXTLSFAllocator* ptx_tlsf_create_from_pool(void* pool, size_t pool_size, bool d
     allocator->warnings_enabled = true;
     allocator->auto_defrag_enabled = true;
 
-    // Initialize first block
-    TLSFBlock* first_block = (TLSFBlock*)malloc(sizeof(TLSFBlock));
-    if (!first_block) {
+    // Pre-allocate block header slab — one-time cold-path malloc that
+    // eliminates all malloc/free from the alloc/free hot paths.
+    size_t max_possible = pool_size / TLSF_ALIGNMENT;  // theoretical max blocks
+    uint32_t slab_cap = (uint32_t)(max_possible < TLSF_SLAB_MAX_HEADERS
+                                   ? max_possible : TLSF_SLAB_MAX_HEADERS);
+    if (slab_cap < 64) slab_cap = 64;  // minimum sanity
+
+    allocator->block_slab = (TLSFBlock*)malloc(sizeof(TLSFBlock) * slab_cap);
+    if (!allocator->block_slab) {
         free(allocator);
         return NULL;
     }
-    memset(first_block, 0, sizeof(TLSFBlock));
+    memset(allocator->block_slab, 0, sizeof(TLSFBlock) * slab_cap);
+    allocator->slab_capacity = slab_cap;
+    allocator->slab_used = 0;
+
+    // Thread the slab into a free list (each entry's next_free points to the next)
+    allocator->slab_free_list = &allocator->block_slab[0];
+    for (uint32_t i = 0; i < slab_cap - 1; i++) {
+        allocator->block_slab[i].next_free = &allocator->block_slab[i + 1];
+    }
+    allocator->block_slab[slab_cap - 1].next_free = NULL;
+
+    // Initialize first block from the slab (not malloc)
+    TLSFBlock* first_block = tlsf_slab_alloc(allocator);
+    if (!first_block) {
+        free(allocator->block_slab);
+        free(allocator);
+        return NULL;
+    }
 
     first_block->device_ptr = pool;
     first_block->size = pool_size;
@@ -90,15 +113,10 @@ void ptx_tlsf_destroy(PTXTLSFAllocator* allocator) {
         ptx_driver_free(allocator->vram_pool);
     }
 
-    // Free all block headers
-    TLSFBlock* block = allocator->first_block;
-    while (block) {
-        TLSFBlock* next = block->next_phys;
-        free(block);
-        block = next;
-    }
-
-    // No separate allocation tracker to free (debug info stored in blocks)
+    // Free the pre-allocated block header slab (one free replaces N frees)
+    free(allocator->block_slab);
+    allocator->block_slab = NULL;
+    allocator->slab_free_list = NULL;
 
     free(allocator);
     printf("[TLSF] Allocator destroyed\n");
@@ -360,88 +378,110 @@ void ptx_tlsf_get_stats(PTXTLSFAllocator* allocator, TLSFPoolStats* stats) {
 
 void ptx_tlsf_validate(PTXTLSFAllocator* allocator, TLSFHealthReport* report) {
     if (!allocator || !report) return;
-    
+
     memset(report, 0, sizeof(TLSFHealthReport));
     report->is_valid = true;
-    
+
     // Validate physical chain
     TLSFBlock* block = allocator->first_block;
     int block_count = 0;
     size_t total_size = 0;
-    
-    while (block) {
+    uint32_t guard = allocator->slab_capacity + 1;
+
+    while (block && guard-- > 0) {
         block_count++;
         total_size += block->size;
-        
+
         // Check magic number
         if (block->magic != TLSF_BLOCK_MAGIC) {
-            snprintf(report->error_messages[report->error_count++], 256,
-                    "Block %d: Corrupted magic number", block_count);
+            if (report->error_count < TLSF_MAX_ERRORS) {
+                snprintf(report->error_messages[report->error_count], 256,
+                        "Block %d: Corrupted magic number", block_count);
+            }
+            report->error_count++;
             report->has_corrupted_blocks = true;
             report->is_valid = false;
         }
-        
+
         // Check chain integrity
         if (block->next_phys && block->next_phys->prev_phys != block) {
-            snprintf(report->error_messages[report->error_count++], 256,
-                    "Block %d: Broken physical chain", block_count);
+            if (report->error_count < TLSF_MAX_ERRORS) {
+                snprintf(report->error_messages[report->error_count], 256,
+                        "Block %d: Broken physical chain", block_count);
+            }
+            report->error_count++;
             report->has_broken_chains = true;
             report->is_valid = false;
         }
-        
+
         // Check device pointer alignment
         if (((uintptr_t)block->device_ptr) % TLSF_ALIGNMENT != 0) {
-            snprintf(report->error_messages[report->error_count++], 256,
-                    "Block %d: Misaligned device pointer", block_count);
+            if (report->error_count < TLSF_MAX_ERRORS) {
+                snprintf(report->error_messages[report->error_count], 256,
+                        "Block %d: Misaligned device pointer", block_count);
+            }
+            report->error_count++;
             report->is_valid = false;
         }
-        
+
         block = block->next_phys;
-        
-        if (report->error_count >= 16) break;
+
+        if (report->error_count >= TLSF_MAX_ERRORS) break;
     }
-    
+
     // Check total size
     if (total_size != allocator->vram_pool_size) {
-        snprintf(report->error_messages[report->error_count++], 256,
-                "Total block size mismatch: %zu vs %zu", total_size, allocator->vram_pool_size);
+        if (report->error_count < TLSF_MAX_ERRORS) {
+            snprintf(report->error_messages[report->error_count], 256,
+                    "Total block size mismatch: %zu vs %zu", total_size, allocator->vram_pool_size);
+        }
+        report->error_count++;
         report->is_valid = false;
     }
-    
+
     // Validate hash table
     for (int i = 0; i < TLSF_HASH_TABLE_SIZE; i++) {
         TLSFBlock* hash_block = allocator->hash_table[i].head;
         int chain_len = 0;
-        
+
         while (hash_block) {
             chain_len++;
-            
+
             // Verify hash is correct
             uint32_t expected_hash = hash_ptr(hash_block->device_ptr);
-            if (expected_hash != i) {
-                snprintf(report->error_messages[report->error_count++], 256,
-                        "Hash bucket %d: Block in wrong bucket", i);
+            if (expected_hash != (uint32_t)i) {
+                if (report->error_count < TLSF_MAX_ERRORS) {
+                    snprintf(report->error_messages[report->error_count], 256,
+                            "Hash bucket %d: Block in wrong bucket", i);
+                }
+                report->error_count++;
                 report->has_hash_errors = true;
                 report->is_valid = false;
             }
-            
+
             hash_block = hash_block->hash_next;
-            
+
             if (chain_len > 100) {
-                snprintf(report->error_messages[report->error_count++], 256,
-                        "Hash bucket %d: Infinite loop detected", i);
+                if (report->error_count < TLSF_MAX_ERRORS) {
+                    snprintf(report->error_messages[report->error_count], 256,
+                            "Hash bucket %d: Infinite loop detected", i);
+                }
+                report->error_count++;
                 report->has_hash_errors = true;
                 report->is_valid = false;
                 break;
             }
         }
     }
-    
+
     // Check for memory leaks by counting allocated blocks
     if (allocator->debug_mode && allocator->stats.allocated_blocks > 0) {
         report->has_memory_leaks = true;
-        snprintf(report->error_messages[report->error_count++], 256,
-                "Memory leak: %u allocations not freed", allocator->stats.allocated_blocks);
+        if (report->error_count < TLSF_MAX_ERRORS) {
+            snprintf(report->error_messages[report->error_count], 256,
+                    "Memory leak: %u allocations not freed", allocator->stats.allocated_blocks);
+        }
+        report->error_count++;
     }
 }
 
@@ -492,8 +532,9 @@ void ptx_tlsf_print_pool_map(PTXTLSFAllocator* allocator) {
     
     TLSFBlock* block = allocator->first_block;
     int index = 0;
-    
-    while (block) {
+    uint32_t guard = allocator->slab_capacity + 1;
+
+    while (block && guard-- > 0) {
         printf("[%3d] %p: %8zu bytes %s%s%s\n",
                index++,
                block->device_ptr,
@@ -501,13 +542,16 @@ void ptx_tlsf_print_pool_map(PTXTLSFAllocator* allocator) {
                block->is_free ? "[FREE]" : "[USED]",
                block->is_pinned ? " [PINNED]" : "",
                block->is_last ? " [LAST]" : "");
-        
+
         if (allocator->debug_mode && !block->is_free && block->alloc_file) {
             printf("      Allocated at %s:%d (ID: %u)\n",
                    block->alloc_file, block->alloc_line, block->alloc_id);
         }
-        
+
         block = block->next_phys;
+    }
+    if (guard == 0) {
+        printf("[TLSF] WARNING: Chain walk exceeded max blocks, possible corruption\n");
     }
     
     printf("==========================================\n");
@@ -533,7 +577,8 @@ void ptx_tlsf_print_allocations(PTXTLSFAllocator* allocator) {
     // Walk physical block chain to find allocated blocks
     TLSFBlock* block = allocator->first_block;
     uint32_t count = 0;
-    while (block) {
+    uint32_t guard = allocator->slab_capacity + 1;
+    while (block && guard-- > 0) {
         if (!block->is_free) {
             printf("[%4u] %p: %8zu bytes at %s:%d (age: %lu us)\n",
                    block->alloc_id,
@@ -561,8 +606,9 @@ void ptx_tlsf_defragment(PTXTLSFAllocator* allocator) {
     
     int merges = 0;
     TLSFBlock* block = allocator->first_block;
-    
-    while (block) {
+    uint32_t guard = allocator->slab_capacity + 1;
+
+    while (block && guard-- > 0) {
         if (block->is_free && block->next_phys && block->next_phys->is_free) {
             TLSFBlock* next = block->next_phys;
             
@@ -573,14 +619,14 @@ void ptx_tlsf_defragment(PTXTLSFAllocator* allocator) {
             block->size += next->size;
             block->next_phys = next->next_phys;
             block->is_last = next->is_last;
-            
+
             if (block->next_phys) {
                 block->next_phys->prev_phys = block;
             } else {
                 allocator->last_block = block;
             }
-            
-            free(next);
+
+            tlsf_slab_free(allocator, next);
             allocator->stats.total_blocks--;
             merges++;
             
@@ -740,12 +786,12 @@ void* ptx_tlsf_realloc(PTXTLSFAllocator* allocator, void* ptr, size_t new_size) 
         block->size += next->size;
         block->next_phys = next->next_phys;
         block->is_last = next->is_last;
-        
+
         if (block->next_phys) {
             block->next_phys->prev_phys = block;
         }
-        
-        free(next);
+
+        tlsf_slab_free(allocator, next);
         allocator->stats.total_blocks--;
         
         // Split if too large

@@ -114,6 +114,14 @@ pub struct DaemonConfig {
     #[serde(default = "default_pool_fraction")]
     pub pool_fraction: f32,
 
+    /// Prefer Orin-specific unified-memory scheduler path.
+    #[serde(default)]
+    pub prefer_orin_unified_memory: bool,
+
+    /// Use managed-memory TLSF backing pool.
+    #[serde(default)]
+    pub use_managed_pool: bool,
+
     /// Keepalive interval (milliseconds)
     #[serde(default = "default_keepalive_ms")]
     pub keepalive_ms: u64,
@@ -343,6 +351,13 @@ fn default_apps_bin_dir() -> Option<String> {
     None
 }
 
+fn env_bool_enabled(key: &str) -> bool {
+    matches!(
+        env::var(key).ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
+    )
+}
+
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
@@ -352,6 +367,8 @@ impl Default for DaemonConfig {
             max_clients: default_max_clients(),
             max_streams: default_max_streams(),
             pool_fraction: default_pool_fraction(),
+            prefer_orin_unified_memory: false,
+            use_managed_pool: false,
             keepalive_ms: default_keepalive_ms(),
             watch_ms: default_watch_ms(),
             watch_enabled: false,
@@ -401,6 +418,12 @@ impl DaemonConfig {
             if let Ok(streams) = val.parse() {
                 self.max_streams = streams;
             }
+        }
+        if env_bool_enabled("FERRITE_PREFER_ORIN_UM") {
+            self.prefer_orin_unified_memory = true;
+        }
+        if env_bool_enabled("FERRITE_MANAGED_POOL") {
+            self.use_managed_pool = true;
         }
         if env::var("FERRITE_BOOT_KERNEL").is_ok() {
             self.boot_kernel = true;

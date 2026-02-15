@@ -25,6 +25,12 @@ max_streams = 128
 # Fraction of available VRAM to use for memory pool
 pool_fraction = 0.25
 
+# Prefer Orin-specific unified-memory persistent scheduler path (default: false)
+prefer_orin_unified_memory = false
+
+# Use managed-memory TLSF backing pool (default: false; auto-enabled on embedded integrated GPUs)
+use_managed_pool = false
+
 # Keepalive interval in milliseconds (default: 5000)
 # How often to send keepalive signal to GPU kernel
 keepalive_ms = 5000

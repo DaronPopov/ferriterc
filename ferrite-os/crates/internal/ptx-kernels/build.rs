@@ -18,10 +18,19 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    // Detect CUDA compute capability from environment or default to sm_80
-    let cuda_arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_75".to_string());
+    // Prefer explicit CUDA_ARCH, then PTX/installer SM hints, then conservative default (sm_75).
+    let cuda_arch = env::var("CUDA_ARCH")
+        .ok()
+        .and_then(|v| normalize_cuda_arch(&v))
+        .or_else(|| env::var("PTX_GPU_SM").ok().and_then(|v| normalize_cuda_arch(&v)))
+        .or_else(|| env::var("GPU_SM").ok().and_then(|v| normalize_cuda_arch(&v)))
+        .or_else(|| env::var("CUDA_SM").ok().and_then(|v| normalize_cuda_arch(&v)))
+        .unwrap_or_else(|| "sm_75".to_string());
 
     println!("cargo:rerun-if-env-changed=CUDA_ARCH");
+    println!("cargo:rerun-if-env-changed=PTX_GPU_SM");
+    println!("cargo:rerun-if-env-changed=GPU_SM");
+    println!("cargo:rerun-if-env-changed=CUDA_SM");
 
     // Build Candle kernels
     let mut build = cc::Build::new();
@@ -179,6 +188,28 @@ fn parse_toml_string_array(raw: &str) -> Vec<String> {
         .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+fn normalize_cuda_arch(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(stripped) = trimmed.strip_prefix("sm_") {
+        let digits: String = stripped.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            None
+        } else {
+            Some(format!("sm_{}", digits))
+        }
+    } else {
+        let digits: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            None
+        } else {
+            Some(format!("sm_{}", digits))
+        }
+    }
 }
 
 fn find_cuda_kernels() -> Option<PathBuf> {

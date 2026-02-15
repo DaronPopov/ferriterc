@@ -36,6 +36,20 @@ Set SM explicitly:
 ./scripts/install.sh --sm 86
 ```
 
+Jetson examples:
+
+```bash
+# Orin
+./scripts/install.sh --sm 87
+
+# Current embedded-ready profile requires sm_75+ (Jetson Orin = sm_87)
+# Legacy Jetson SKUs (sm_72/sm_62/sm_53) require a separate legacy kernel profile.
+
+# Jetson bring-up checks
+cd ferrite-os
+tooling/scripts/jetson_doctor.sh
+```
+
 Optional legacy behavior (auto-install CUDA toolkit if `nvcc` is missing):
 
 ```bash

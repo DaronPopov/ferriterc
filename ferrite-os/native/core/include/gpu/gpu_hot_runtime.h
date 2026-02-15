@@ -457,6 +457,8 @@ typedef struct TLSFEventRing {
 // TLSF Health Report
 // ============================================================================
 
+#define TLSF_MAX_ERRORS 16
+
 typedef struct TLSFHealthReport {
     bool is_valid;
     bool has_memory_leaks;
@@ -464,7 +466,7 @@ typedef struct TLSFHealthReport {
     bool has_broken_chains;
     bool has_hash_errors;
     int error_count;
-    char error_messages[16][256];
+    char error_messages[TLSF_MAX_ERRORS][256];
 } TLSFHealthReport;
 
 // ============================================================================
@@ -524,6 +526,11 @@ typedef struct GPUHotConfig {
     // Platform tuning
     bool prefer_orin_unified_memory; // Prefer Orin unified-memory scheduler path
     bool use_managed_pool;           // Allocate TLSF backing pool with cudaMallocManaged
+
+    // Certification lockdown
+    bool allow_env_overrides;        // If false, apply_env_overrides is skipped,
+                                     // ensuring a fixed runtime profile for certification.
+                                     // Default: true (backward compatible)
 } GPUHotConfig;
 
 // Get default configuration

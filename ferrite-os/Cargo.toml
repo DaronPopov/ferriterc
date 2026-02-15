@@ -16,6 +16,9 @@ members = [
     "crates/internal/ptx-renderd",
     "crates/internal/ferrite-platform",
     "crates/internal/ferrite-connectors",
+    "crates/public/ferrite-window",
+    "crates/public/ferrite-graphics",
+    "crates/internal/ptx-render",
 ]
 default-members = ["crates/internal/ptx-runner"]
 
@@ -38,6 +41,7 @@ ptx-compiler = { path = "crates/internal/ptx-compiler" }
 ptx-kernels = { path = "crates/internal/ptx-kernels" }
 ptx-app = { path = "crates/public/ptx-app" }
 ferrite-platform = { path = "crates/internal/ferrite-platform" }
+ptx-render = { path = "crates/internal/ptx-render" }
 
 # External dependencies
 libc = "0.2"

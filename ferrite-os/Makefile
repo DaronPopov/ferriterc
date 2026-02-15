@@ -30,11 +30,16 @@ CC := gcc
 GENCODE_FLAGS := -gencode arch=compute_75,code=sm_75 \
                  -gencode arch=compute_80,code=sm_80 \
                  -gencode arch=compute_86,code=sm_86 \
+                 -gencode arch=compute_87,code=sm_87 \
                  -gencode arch=compute_89,code=sm_89 \
                  -gencode arch=compute_90,code=sm_90
 ifneq ($(GPU_SM),)
+    GPU_SM_NUM := $(shell echo "$(GPU_SM)" | tr -cd '0-9')
+    ifeq ($(shell [ -n "$(GPU_SM_NUM)" ] && [ "$(GPU_SM_NUM)" -lt 75 ] && echo yes),yes)
+        $(error GPU_SM=$(GPU_SM_NUM) is unsupported by current kernel profile; sm_75+ required)
+    endif
     # Also include detected SM if not already in the standard list
-    ifeq ($(filter $(GPU_SM),75 80 86 89 90),)
+    ifeq ($(filter $(GPU_SM),75 80 86 87 89 90),)
         GENCODE_FLAGS += -gencode arch=compute_$(GPU_SM),code=sm_$(GPU_SM)
     endif
 endif
@@ -87,7 +92,7 @@ dirs:
 	@mkdir -p $(BUILD_DIR)
 
 $(TARGET): $(CUDA_SOURCES)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) -o $@ $^
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) -o $@ $^ $(LIBS)
 	@echo "Built: $@"
 
 # Build CUDA intercept hook (LD_PRELOAD library) - includes context hook

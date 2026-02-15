@@ -1,4 +1,6 @@
 use ferrite_connectors::config::load_config;
+use ferrite_connectors::http::router::{Response, Router};
+use ferrite_connectors::http::server::HttpServer;
 use ferrite_connectors::model::Event;
 use ferrite_connectors::queue::BoundedQueue;
 use ferrite_connectors::sink::ferrite_ipc;
@@ -57,8 +59,46 @@ fn main() -> anyhow::Result<()> {
         handles.push(handle);
     }
 
+    // Optionally spawn HTTP server
+    let mut http_server: Option<HttpServer> = None;
+    if let Some(ref server_config) = config.server {
+        let bind = format!("{}:{}", server_config.bind, server_config.port);
+        let router = Arc::new(
+            Router::new()
+                .get("/health", |_, _| Response::ok("ok"))
+                .get("/status", |_, _| {
+                    Response::json(&serde_json::json!({"status": "running"}))
+                }),
+        );
+        let q = if server_config.feed_queue {
+            Some(queue.clone())
+        } else {
+            None
+        };
+        match HttpServer::start(
+            &bind,
+            router,
+            q,
+            server_config.max_connections,
+            shutdown.clone(),
+        ) {
+            Ok(server) => {
+                tracing::info!(addr = %server.addr(), "HTTP server listening");
+                http_server = Some(server);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to start HTTP server");
+            }
+        }
+    }
+
     // Run sink on main thread
     ferrite_ipc::run_sink(&config.sink, queue.clone(), shutdown.clone());
+
+    // Stop HTTP server if running
+    if let Some(mut server) = http_server {
+        server.stop();
+    }
 
     // Wait for source threads to finish
     tracing::info!("waiting for source threads to finish");

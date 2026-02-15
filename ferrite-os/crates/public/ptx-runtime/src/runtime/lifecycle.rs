@@ -12,10 +12,17 @@ impl PtxRuntime {
     /// Initialize the runtime with custom configuration.
     pub fn with_config(device_id: i32, config: Option<ptx_sys::GPUHotConfig>) -> Result<Self> {
         let cfg = config.unwrap_or_default();
+        let mut flags = ptx_sys::PTX_STABLE_CONFIG_DEFAULT;
+        if cfg.prefer_orin_unified_memory {
+            flags |= ptx_sys::PTX_STABLE_CONFIG_PREFER_ORIN_UM;
+        }
+        if cfg.use_managed_pool {
+            flags |= ptx_sys::PTX_STABLE_CONFIG_USE_MANAGED_POOL;
+        }
         let stable_cfg = ptx_sys::PTXStableConfig {
             struct_size: std::mem::size_of::<ptx_sys::PTXStableConfig>() as u32,
             abi_version: ptx_sys::PTX_STABLE_ABI_VERSION,
-            flags: ptx_sys::PTX_STABLE_CONFIG_DEFAULT,
+            flags,
             device_id,
             pool_fraction: cfg.pool_fraction,
             fixed_pool_size: cfg.fixed_pool_size as u64,

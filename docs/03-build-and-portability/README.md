@@ -109,3 +109,4 @@ Installed command surface:
 
 - `03.01`: Install and provisioning: `runbooks/install-and-provision.md`
 - `03.02`: Debugging and remediation: `runbooks/debugging-and-remediation.md`
+- `03.03`: Jetson embedded bring-up: `runbooks/jetson-embedded-bringup.md`

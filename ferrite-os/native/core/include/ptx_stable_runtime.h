@@ -19,6 +19,8 @@ extern "C" {
 
 #define PTX_STABLE_ABI_VERSION 1u
 #define PTX_STABLE_CONFIG_DEFAULT 0u
+#define PTX_STABLE_CONFIG_PREFER_ORIN_UM (1u << 0)
+#define PTX_STABLE_CONFIG_USE_MANAGED_POOL (1u << 1)
 #define PTX_STABLE_INVALID_DEVICE (-1)
 
 typedef struct PTXStableRuntime PTXStableRuntime;
@@ -37,7 +39,7 @@ typedef enum PTXStableStatus {
 typedef struct PTXStableConfig {
     uint32_t struct_size;      /* must be sizeof(PTXStableConfig) */
     uint32_t abi_version;      /* must be PTX_STABLE_ABI_VERSION */
-    uint32_t flags;            /* reserved for future behavior toggles */
+    uint32_t flags;            /* behavior toggles: PTX_STABLE_CONFIG_* */
     int32_t device_id;         /* PTX_STABLE_INVALID_DEVICE => default device 0 */
     float pool_fraction;       /* 0.0 => ignored */
     uint64_t fixed_pool_size;  /* bytes, 0 => ignored */

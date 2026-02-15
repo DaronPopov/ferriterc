@@ -4,11 +4,11 @@
 
 void* gpu_hot_shm_alloc(GPUHotRuntime* runtime, const char* name, size_t size) {
     if (!runtime || !name || !runtime->global_registry) return NULL;
-    
+
     // Check if it already exists globally
     void* existing = gpu_hot_shm_open(runtime, name);
     if (existing) return existing;
-    
+
     // Find free slot in global registry
     int slot = -1;
     for (int i = 0; i < GPU_HOT_MAX_NAMED_SEGMENTS; i++) {
@@ -17,55 +17,90 @@ void* gpu_hot_shm_alloc(GPUHotRuntime* runtime, const char* name, size_t size) {
             break;
         }
     }
-    
+
     if (slot == -1) return NULL;
-    
-    // Use CUDA Unified Memory (Managed Memory) instead of IPC
-    // This allows seamless access from both GPU and CPU, and across processes
+
+    // Allocate device memory for IPC-exportable segment.
+    // cudaMalloc (not cudaMallocManaged) is required for cudaIpcGetMemHandle.
     void* ptr = NULL;
-    cudaError_t err = cudaMallocManaged(&ptr, size, cudaMemAttachGlobal);
+    cudaError_t err = cudaMalloc(&ptr, size);
     if (err != cudaSuccess) {
-        printf("[Ferrite-OS] Error: Unified memory allocation failed: %s\n", cudaGetErrorString(err));
+        printf("[Ferrite-OS] Error: Device memory allocation for IPC failed: %s\n", cudaGetErrorString(err));
         return NULL;
     }
-    
+
     // Initialize to zero
     cudaMemset(ptr, 0, size);
-    
-    // For unified memory, we store the pointer directly instead of IPC handle
-    // The pointer is valid across all processes on the same GPU
-    cudaIpcMemHandle_t dummy_handle;
-    memset(&dummy_handle, 0, sizeof(dummy_handle));
-    
-    // Store the pointer value in the handle as a workaround
-    // (In production, you'd use a proper shared memory mechanism)
-    memcpy(&dummy_handle, &ptr, sizeof(void*));
-    
-    // Register globally
+
+    // Obtain a proper CUDA IPC handle for cross-process sharing.
+    // This handle can be opened by other processes via cudaIpcOpenMemHandle.
+    cudaIpcMemHandle_t ipc_handle;
+    memset(&ipc_handle, 0, sizeof(ipc_handle));
+    err = cudaIpcGetMemHandle(&ipc_handle, ptr);
+    if (err != cudaSuccess) {
+        printf("[Ferrite-OS] Error: cudaIpcGetMemHandle failed: %s\n", cudaGetErrorString(err));
+        cudaFree(ptr);
+        return NULL;
+    }
+
+    // Register globally with owner PID for audit traceability
     strncpy(runtime->global_registry[slot].name, name, GPU_HOT_MAX_NAME_LEN - 1);
-    runtime->global_registry[slot].ipc_handle = dummy_handle;
+    runtime->global_registry[slot].ipc_handle = ipc_handle;
     runtime->global_registry[slot].size = size;
     runtime->global_registry[slot].active = true;
     runtime->global_registry[slot].created_at = GetTickCount64();
+    runtime->global_registry[slot].owner_pid = (uint32_t)getpid();
+    runtime->global_registry[slot].ref_count = 1;
     runtime->shm_count++;
-    
-    printf("[Ferrite-OS] Created unified memory segment: '%s' (%zu bytes) at %p\n", name, size, ptr);
+
+    printf("[Ferrite-OS] Created IPC memory segment: '%s' (%zu bytes) at %p [pid=%u]\n",
+           name, size, ptr, (unsigned)getpid());
     return ptr;
 }
 
 void* gpu_hot_shm_open(GPUHotRuntime* runtime, const char* name) {
     if (!runtime || !name || !runtime->global_registry) return NULL;
-    
+
     for (int i = 0; i < GPU_HOT_MAX_NAMED_SEGMENTS; i++) {
         if (runtime->global_registry[i].active && strcmp(runtime->global_registry[i].name, name) == 0) {
-            // For unified memory, retrieve the pointer directly from the handle
+            GPURegistryEntry* entry = &runtime->global_registry[i];
+
+            // If the current process is the owner, the original device pointer
+            // is valid in this address space — retrieve it via IPC handle.
+            // For cross-process access, use cudaIpcOpenMemHandle.
+            if (entry->owner_pid == (uint32_t)getpid()) {
+                // Same process: open via IPC handle to get the mapped pointer
+                void* ptr = NULL;
+                cudaError_t err = cudaIpcOpenMemHandle(&ptr, entry->ipc_handle,
+                                                        cudaIpcMemLazyEnablePeerAccess);
+                if (err == cudaErrorMapBufferObjectFailed) {
+                    // Already mapped in this process context — the original
+                    // allocation pointer is still valid. Re-derive it from
+                    // a fresh IPC open on a peer, or return the alloc pointer.
+                    // For same-process, the alloc pointer is what we handed out.
+                    // Fall through to IPC open below.
+                }
+                if (err == cudaSuccess && ptr) {
+                    entry->ref_count++;
+                    printf("[Ferrite-OS] Opened IPC segment (same-pid): '%s' at %p\n", name, ptr);
+                    return ptr;
+                }
+            }
+
+            // Cross-process: open the IPC handle to map it into this address space
             void* ptr = NULL;
-            memcpy(&ptr, &runtime->global_registry[i].ipc_handle, sizeof(void*));
-            
-            if (ptr) {
-                printf("[Ferrite-OS] Opened unified memory segment: '%s' at %p\n", name, ptr);
+            cudaError_t err = cudaIpcOpenMemHandle(&ptr, entry->ipc_handle,
+                                                    cudaIpcMemLazyEnablePeerAccess);
+            if (err == cudaSuccess && ptr) {
+                entry->ref_count++;
+                printf("[Ferrite-OS] Opened IPC segment (cross-pid): '%s' at %p [owner=%u]\n",
+                       name, ptr, entry->owner_pid);
                 return ptr;
             }
+
+            printf("[Ferrite-OS] Error: cudaIpcOpenMemHandle failed for '%s': %s\n",
+                   name, cudaGetErrorString(err));
+            return NULL;
         }
     }
     return NULL;

@@ -160,6 +160,28 @@ detect_sm_nvidia_smi() {
   return 1
 }
 
+detect_sm_jetson_model() {
+  local model=""
+  if [ -r /proc/device-tree/model ]; then
+    model="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  elif [ -r /sys/firmware/devicetree/base/model ]; then
+    model="$(tr -d '\0' < /sys/firmware/devicetree/base/model 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  fi
+
+  if [ -z "$model" ]; then
+    return 1
+  fi
+
+  case "$model" in
+    *orin*) echo "87"; return 0 ;;
+    *xavier*) echo "72"; return 0 ;;
+    *tx2*) echo "62"; return 0 ;;
+    *nano*|*tx1*) echo "53"; return 0 ;;
+  esac
+
+  return 1
+}
+
 detect_sm_nvcc() {
   local nvcc="$1"
   local root="$2"
@@ -209,6 +231,10 @@ done
 
 if [ -z "$GPU_SM" ]; then
   GPU_SM="$(detect_sm_nvidia_smi || true)"
+fi
+
+if [ -z "$GPU_SM" ]; then
+  GPU_SM="$(detect_sm_jetson_model || true)"
 fi
 
 if [ -z "$GPU_SM" ]; then

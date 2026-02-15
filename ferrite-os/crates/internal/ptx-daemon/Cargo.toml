@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Persistent Ferrite-OS runtime daemon"
+default-run = "ferrite-daemon"
 
 [[bin]]
 name = "ferrite-daemon"

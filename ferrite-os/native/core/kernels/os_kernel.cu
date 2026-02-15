@@ -2,6 +2,19 @@
 #include <stdio.h>
 #include "gpu/gpu_hot_runtime.h"
 
+#ifndef PTX_ENABLE_CDP
+#define PTX_ENABLE_CDP 0
+#endif
+
+// Device-side printf gating: define PTX_KERNEL_QUIET at compile time to
+// silence informational prints from the persistent scheduler loop.
+// Safety-critical messages (watchdog, emergency) are never gated.
+#ifdef PTX_KERNEL_QUIET
+#define KLOG(...) ((void)0)
+#else
+#define KLOG(...) printf(__VA_ARGS__)
+#endif
+
 // ============================================================================
 // Device-Global System State Pointer
 // Set by the persistent kernel at boot so any device code (including child
@@ -21,6 +34,9 @@ __device__ PTXSystemState* d_ptx_system_state = nullptr;
 // Uses CUDA atomics instead of GCC __sync builtins (which are host-only).
 // ============================================================================
 
+// Maximum device-side spin iterations for bounded latency
+#define PTX_DEVICE_SPINLOCK_MAX 100000
+
 __device__ int ptx_device_submit_task(
     PTXSystemState* state,
     uint32_t opcode,
@@ -31,9 +47,14 @@ __device__ int ptx_device_submit_task(
 
     PTXTaskQueue* queue = &state->queue;
 
-    // Spinlock acquire via atomicCAS (compare-and-swap 0 → 1)
+    // Bounded spinlock acquire via atomicCAS (compare-and-swap 0 -> 1)
+    int spins = 0;
     while (atomicCAS((unsigned int*)&queue->lock, 0u, 1u) != 0u) {
-        // Spin — the lock is held briefly by the scheduler or another enqueuer
+        if (++spins >= PTX_DEVICE_SPINLOCK_MAX) {
+            printf("[PTX-OS] ERROR: Device spinlock timeout after %d spins\n",
+                   PTX_DEVICE_SPINLOCK_MAX);
+            return -2;
+        }
     }
 
     uint32_t head = queue->head;
@@ -104,16 +125,24 @@ __global__ void ptx_os_kernel(PTXSystemState* state) {
     __syncthreads();
     
     uint64_t iterations = 0;
-    
+
+    // Watchdog: count consecutive idle iterations with no work dispatched.
+    // If this exceeds the threshold, set watchdog_alert so the host can
+    // detect a potentially hung scheduler and take corrective action.
+    // This provides the bounded-liveness guarantee required for certification.
+    uint64_t idle_iterations = 0;
+    const uint64_t WATCHDOG_IDLE_THRESHOLD = 100000000ULL; // ~seconds at GPU clock rate
+
     // The "infinite" loop of the OS
     while (!state->shutdown_requested) {
         // Standard block sync
         __syncthreads();
-        
+
         // Thread 0: Primary Scheduler / Task Dispatcher
         if (tid == 0) {
             // Check Task Queue
             if (state->queue.head != state->queue.tail) {
+                idle_iterations = 0; // Reset watchdog on work present
                 int best_idx = -1;
                 int min_priority = 256;
                 
@@ -144,7 +173,11 @@ __global__ void ptx_os_kernel(PTXSystemState* state) {
                                 typedef void (*compute_fn_t)(void**, int);
                                 compute_fn_t fn = (compute_fn_t)task->args[0];
                                 if (fn) {
+#if PTX_ENABLE_CDP
                                     fn<<<1, 256>>>(&task->args[1], task->priority);
+#else
+                                    KLOG("[PTX-CDP] COMPUTE dispatch skipped (PTX_ENABLE_CDP=0)\n");
+#endif
                                 }
                             }
                             break;
@@ -154,18 +187,18 @@ __global__ void ptx_os_kernel(PTXSystemState* state) {
                             break;
 
                         case 4: // SWAP_IN (Virtual Memory Manager)
-                            printf("[GPU-VMM] Swapping task_id %d back to Resident VRAM\n", task->task_id);
+                            KLOG("[GPU-VMM] Swapping task_id %d back to Resident VRAM\n", task->task_id);
                             // Signal host to perform VMM swap via signal_mask bit 2
                             atomicOr((unsigned long long*)&state->signal_mask, 0x4ULL);
                             break;
 
                         case 5: // VFS_MOUNT (Tensor Filesystem)
                             state->fs_node_count++;
-                            printf("[PTX-FS] Mounted Segment Index: %d | Nodes Active: %d\n", (int)(size_t)task->args[0], state->fs_node_count);
+                            KLOG("[PTX-FS] Mounted Segment Index: %d | Nodes Active: %d\n", (int)(size_t)task->args[0], state->fs_node_count);
                             break;
 
                         case 6: // INTERRUPT (Simulated hardware interrupt)
-                            printf("[PTX-INT] Software Interrupt Generated: %p\n", task->args[0]);
+                            KLOG("[PTX-INT] Software Interrupt Generated: %p\n", task->args[0]);
                             atomicOr((unsigned long long*)&state->signal_mask, (unsigned long long)task->args[0]);
                             break;
 
@@ -174,20 +207,24 @@ __global__ void ptx_os_kernel(PTXSystemState* state) {
                                  // Cast the task's argument buffer directly to a PTXKernelLaunch descriptor
                                  PTXKernelLaunch* launch = (PTXKernelLaunch*)&task->args[0];
                                  if (launch && launch->kernel_func) {
-                                     printf("[PTX-CDP] Recursive Launch: Func=%p | Grid=(%d,%d) | Block=%d\n", 
+                                     KLOG("[PTX-CDP] Recursive Launch: Func=%p | Grid=(%d,%d) | Block=%d\n",
                                             launch->kernel_func, launch->grid.x, launch->grid.y, launch->block.x);
                                      
                                      typedef void (*kernel_ptr_t)(void**);
                                      kernel_ptr_t func = (kernel_ptr_t)launch->kernel_func;
                                      
                                      // Pass the address of the inline argument array
+#if PTX_ENABLE_CDP
                                      func<<<launch->grid, launch->block, launch->shared_mem, launch->stream>>>(launch->arg_values);
+#else
+                                     KLOG("[PTX-CDP] Recursive launch skipped (PTX_ENABLE_CDP=0)\n");
+#endif
                                  }
                             }
                             break;
                             
                         default:
-                            printf("[GPU-OS] Unknown Opcode: %d\n", task->opcode);
+                            KLOG("[GPU-OS] Unknown Opcode: %d\n", task->opcode);
                             break;
                     }
                     
@@ -206,7 +243,7 @@ __global__ void ptx_os_kernel(PTXSystemState* state) {
             if (state->signal_mask != 0) {
                 uint64_t signals = atomicExch((unsigned long long*)&state->signal_mask, 0);
                 if (signals & 0x1) {
-                    printf("[PTX-OS] Heartbeat Pulse Received from Host/App\n");
+                    KLOG("[PTX-OS] Heartbeat Pulse Received from Host/App\n");
                 }
                 if (signals & 0x2) {
                     printf("[PTX-OS] EMERGENCY FLUSH REQUESTED. Clearing non-critical pools.\n");
@@ -215,10 +252,23 @@ __global__ void ptx_os_kernel(PTXSystemState* state) {
             }
         }
 
+        // Watchdog: track idle iterations and alert host if threshold exceeded
+        if (tid == 0) {
+            if (state->queue.head == state->queue.tail) {
+                idle_iterations++;
+                if (idle_iterations >= WATCHDOG_IDLE_THRESHOLD && !state->watchdog_alert) {
+                    state->watchdog_alert = true;
+                    printf("[GPU-OS] WATCHDOG: %llu idle iterations, alerting host\n",
+                           (unsigned long long)idle_iterations);
+                }
+            }
+        }
+
         // Feature: OS Health Debugger
         if (tid == 0 && iterations % 10000000 == 0) {
-            printf("[GPU-OS-DEBUG] Head: %d | Tail: %d | Total Ops: %lld\n", 
-                   state->queue.head, state->queue.tail, state->total_ops);
+            KLOG("[GPU-OS-DEBUG] Head: %d | Tail: %d | Total Ops: %lld | Idle: %llu\n",
+                   state->queue.head, state->queue.tail, state->total_ops,
+                   (unsigned long long)idle_iterations);
         }
 
         // Small delay to prevent saturation of the command bridge

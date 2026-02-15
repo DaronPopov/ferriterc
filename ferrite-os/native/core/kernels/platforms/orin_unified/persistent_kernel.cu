@@ -3,6 +3,16 @@
 
 #include "gpu/gpu_hot_runtime.h"
 
+#ifndef PTX_ENABLE_CDP
+#define PTX_ENABLE_CDP 0
+#endif
+
+#ifdef PTX_KERNEL_QUIET
+#define KLOG(...) ((void)0)
+#else
+#define KLOG(...) printf(__VA_ARGS__)
+#endif
+
 // Reuse the shared CDP system-state pointer defined in kernels/os_kernel.cu.
 extern __device__ PTXSystemState* d_ptx_system_state;
 
@@ -12,6 +22,17 @@ extern __device__ PTXSystemState* d_ptx_system_state;
 // This mirrors the baseline PTX scheduler logic while pacing fences/yields for
 // integrated-memory devices (Jetson Orin class).
 // ============================================================================
+
+__device__ __forceinline__ void ptx_orin_scheduler_backoff() {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 700)
+    __nanosleep(256);
+#else
+    // Fallback for older architectures in fatbin builds where __nanosleep is unavailable.
+    uint64_t start = clock64();
+    while ((clock64() - start) < 1024ULL) {
+    }
+#endif
+}
 
 __global__ void ptx_os_kernel_orin_um(PTXSystemState* state) {
     uint32_t tid = threadIdx.x;
@@ -60,7 +81,11 @@ __global__ void ptx_os_kernel_orin_um(PTXSystemState* state) {
                             typedef void (*compute_fn_t)(void**, int);
                             compute_fn_t fn = (compute_fn_t)task->args[0];
                             if (fn) {
+#if PTX_ENABLE_CDP
                                 fn<<<1, 256>>>(&task->args[1], task->priority);
+#else
+                                KLOG("[PTX-CDP] COMPUTE dispatch skipped (PTX_ENABLE_CDP=0)\n");
+#endif
                             }
                         } break;
 
@@ -69,13 +94,13 @@ __global__ void ptx_os_kernel_orin_um(PTXSystemState* state) {
                             break;
 
                         case 4: // SWAP_IN
-                            printf("[GPU-OS-ORIN-UM] SWAP_IN task_id=%d\n", task->task_id);
+                            KLOG("[GPU-OS-ORIN-UM] SWAP_IN task_id=%d\n", task->task_id);
                             atomicOr((unsigned long long*)&state->signal_mask, 0x4ULL);
                             break;
 
                         case 5: // VFS_MOUNT
                             state->fs_node_count++;
-                            printf("[GPU-OS-ORIN-UM] VFS mount idx=%d nodes=%d\n",
+                            KLOG("[GPU-OS-ORIN-UM] VFS mount idx=%d nodes=%d\n",
                                    (int)(size_t)task->args[0], state->fs_node_count);
                             break;
 
@@ -89,13 +114,17 @@ __global__ void ptx_os_kernel_orin_um(PTXSystemState* state) {
                             if (launch && launch->kernel_func) {
                                 typedef void (*kernel_ptr_t)(void**);
                                 kernel_ptr_t func = (kernel_ptr_t)launch->kernel_func;
+#if PTX_ENABLE_CDP
                                 func<<<launch->grid, launch->block, launch->shared_mem, launch->stream>>>(
                                     launch->arg_values);
+#else
+                                KLOG("[PTX-CDP] Recursive launch skipped (PTX_ENABLE_CDP=0)\n");
+#endif
                             }
                         } break;
 
                         default:
-                            printf("[GPU-OS-ORIN-UM] Unknown opcode: %d\n", task->opcode);
+                            KLOG("[GPU-OS-ORIN-UM] Unknown opcode: %d\n", task->opcode);
                             break;
                     }
 
@@ -112,7 +141,7 @@ __global__ void ptx_os_kernel_orin_um(PTXSystemState* state) {
             if (state->signal_mask != 0) {
                 uint64_t signals = atomicExch((unsigned long long*)&state->signal_mask, 0);
                 if (signals & 0x1) {
-                    printf("[GPU-OS-ORIN-UM] Heartbeat pulse\n");
+                    KLOG("[GPU-OS-ORIN-UM] Heartbeat pulse\n");
                 }
                 if (signals & 0x2) {
                     printf("[GPU-OS-ORIN-UM] Emergency flush requested\n");
@@ -122,7 +151,7 @@ __global__ void ptx_os_kernel_orin_um(PTXSystemState* state) {
         }
 
         if (tid == 0 && iterations % 20000000ULL == 0ULL) {
-            printf("[GPU-OS-ORIN-UM-DEBUG] Head=%d Tail=%d Ops=%lld\n",
+            KLOG("[GPU-OS-ORIN-UM-DEBUG] Head=%d Tail=%d Ops=%lld\n",
                    state->queue.head, state->queue.tail, state->total_ops);
         }
 
@@ -133,7 +162,7 @@ __global__ void ptx_os_kernel_orin_um(PTXSystemState* state) {
             __threadfence();
         }
         if (tid == 0) {
-            __nanosleep(256);
+            ptx_orin_scheduler_backoff();
         }
         iterations++;
     }

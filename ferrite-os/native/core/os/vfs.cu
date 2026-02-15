@@ -175,8 +175,10 @@ VFSState* vfs_init(GPUHotRuntime* runtime) {
     }
 
     vfs->root->type = VFS_NODE_DIRECTORY;
-    strcpy(vfs->root->name, "/");
-    strcpy(vfs->root->path, "/");
+    strncpy(vfs->root->name, "/", GPU_HOT_MAX_NAME_LEN - 1);
+    vfs->root->name[GPU_HOT_MAX_NAME_LEN - 1] = '\0';
+    strncpy(vfs->root->path, "/", VFS_MAX_PATH_LEN - 1);
+    vfs->root->path[VFS_MAX_PATH_LEN - 1] = '\0';
     vfs->root->mode = 0755;
 
     vfs->next_fd = 3;  // 0, 1, 2 reserved for stdin/stdout/stderr
@@ -228,7 +230,8 @@ VFSInode* vfs_lookup(VFSState* vfs, const char* path) {
     strncpy(path_copy, path, VFS_MAX_PATH_LEN - 1);
 
     VFSInode* current = vfs->root;
-    char* token = strtok(path_copy + 1, "/");  // Skip leading /
+    char* saveptr = NULL;
+    char* token = strtok_r(path_copy + 1, "/", &saveptr);  // Skip leading /
 
     while (token && current) {
         VFSInode* found = NULL;
@@ -245,7 +248,7 @@ VFSInode* vfs_lookup(VFSState* vfs, const char* path) {
         if (!found) return NULL;
 
         current = found;
-        token = strtok(NULL, "/");
+        token = strtok_r(NULL, "/", &saveptr);
     }
 
     if (current) {

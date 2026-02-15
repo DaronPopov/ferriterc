@@ -278,6 +278,8 @@ pid_file = "/var/run/ferrite-os/daemon.pid"
 max_clients = 32
 max_streams = 128
 pool_fraction = 0.25
+prefer_orin_unified_memory = false
+use_managed_pool = false
 keepalive_ms = 5000
 watch_ms = 1000
 watch_enabled = false
@@ -292,6 +294,8 @@ client_timeout_secs = 30
 - `FERRITE_DEVICE`: GPU device ID
 - `FERRITE_SOCKET`: Socket path
 - `FERRITE_MAX_STREAMS`: Maximum streams
+- `FERRITE_PREFER_ORIN_UM`: Enable Orin unified-memory kernel path (`1`/`true`)
+- `FERRITE_MANAGED_POOL`: Enable managed-memory TLSF pool (`1`/`true`)
 - `FERRITE_BOOT_KERNEL`: Boot persistent kernel
 - `FERRITE_WATCH`: Enable watch mode
 

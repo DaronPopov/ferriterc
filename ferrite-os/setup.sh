@@ -240,6 +240,11 @@ fi
 
 # Detect or verify GPU compute capability
 if [ -n "$SM" ]; then
+    if [ "$SM" -lt 75 ]; then
+        log_error "GPU SM $SM is unsupported by current kernel profile (requires sm_75+)"
+        log_error "For Jetson, use Orin-class targets (sm_87) or maintain a legacy kernel profile"
+        exit 1
+    fi
     # User specified SM
     log_info "Using specified compute capability: sm_$SM"
     export PTX_GPU_SM="sm_$SM"
@@ -247,20 +252,29 @@ if [ -n "$SM" ]; then
 else
     # Auto-detect
     log_info "Detecting GPU compute capability..."
+    DETECTED_SM=""
 
     if command -v nvidia-smi &> /dev/null; then
         DETECTED_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n1 | tr -d '.' | tr -d ' ')
-        if [ -n "$DETECTED_SM" ]; then
-            log_info "Detected GPU compute capability: sm_$DETECTED_SM"
-            export PTX_GPU_SM="sm_$DETECTED_SM"
-            export GPU_SM="$DETECTED_SM"
-        else
-            log_warn "Could not auto-detect GPU compute capability"
-            log_warn "Build will use runtime detection (may be slower)"
+    fi
+
+    # Jetson and headless fallback path (uses model + nvcc probe logic).
+    if [ -z "$DETECTED_SM" ] && [ -x "./tooling/scripts/ptx_env.sh" ]; then
+        DETECTED_SM=$(./tooling/scripts/ptx_env.sh --format env --quiet 2>/dev/null | sed -n 's/^GPU_SM=//p' | head -n1)
+    fi
+
+    if [ -n "$DETECTED_SM" ]; then
+        if [ "$DETECTED_SM" -lt 75 ]; then
+            log_error "Detected GPU SM sm_$DETECTED_SM is unsupported by current kernel profile (requires sm_75+)"
+            log_error "For Jetson, use Orin-class targets (sm_87) or maintain a legacy kernel profile"
+            exit 1
         fi
+        log_info "Detected GPU compute capability: sm_$DETECTED_SM"
+        export PTX_GPU_SM="sm_$DETECTED_SM"
+        export GPU_SM="$DETECTED_SM"
     else
-        log_warn "nvidia-smi not found - cannot detect GPU"
-        log_warn "Build will use runtime detection"
+        log_warn "Could not auto-detect GPU compute capability"
+        log_warn "Build will use conservative defaults (set --sm for best results)"
     fi
 fi
 

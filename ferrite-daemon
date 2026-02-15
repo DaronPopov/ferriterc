@@ -52,4 +52,4 @@ if [[ -x "$DAEMON_DEBUG" ]]; then
   exec "$DAEMON_DEBUG" "$@"
 fi
 
-exec cargo run --manifest-path "$ROOT/ferrite-os/Cargo.toml" -p ferrite-daemon -- "$@"
+exec cargo run --manifest-path "$ROOT/ferrite-os/Cargo.toml" -p ferrite-daemon --bin ferrite-daemon -- "$@"

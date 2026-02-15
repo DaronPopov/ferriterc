@@ -29,9 +29,16 @@ void gpu_hot_shutdown(GPUHotRuntime* runtime) {
         if (entry->event) {
             cudaEventDestroy(entry->event);
         }
-        free(entry);
+        // Entries belong to the slab, no individual free needed
         entry = next;
     }
+
+    // Free the deferred entry slab (one free replaces N frees)
+    free(runtime->deferred_slab);
+    runtime->deferred_slab = NULL;
+    runtime->deferred_slab_free = NULL;
+    runtime->deferred_slab_capacity = 0;
+    runtime->deferred_slab_used = 0;
     
     // Destroy streams
     for (int i = 0; i < runtime->num_streams; i++) {

@@ -1,3 +1,27 @@
+// Generate a cryptographically random 32-bit session token
+static uint32_t ptx_generate_session_token(void) {
+    uint32_t token = 0;
+#ifdef _WIN32
+    // Use BCryptGenRandom or CryptGenRandom on Windows
+    HCRYPTPROV hProv = 0;
+    if (CryptAcquireContextW(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
+        CryptGenRandom(hProv, sizeof(token), (BYTE*)&token);
+        CryptReleaseContext(hProv, 0);
+    }
+#else
+    // Use /dev/urandom on POSIX systems
+    FILE* f = fopen("/dev/urandom", "rb");
+    if (f) {
+        size_t n = fread(&token, sizeof(token), 1, f);
+        fclose(f);
+        (void)n;
+    }
+#endif
+    // Ensure non-zero (zero would be ambiguous with uninitialized state)
+    if (token == 0) token = 1;
+    return token;
+}
+
 // Initialize with default config (backward compatible)
 GPUHotRuntime* gpu_hot_init(int device_id, const char* token) {
     GPUHotConfig config = gpu_hot_default_config();
@@ -16,7 +40,9 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
     } else {
         effective_config = gpu_hot_default_config();
     }
-    apply_env_overrides(&effective_config);
+    if (effective_config.allow_env_overrides) {
+        apply_env_overrides(&effective_config);
+    }
 
     // Single-pool strict mode guard: deny competing pool init from daemon children
     if (effective_config.single_pool_strict) {
@@ -39,6 +65,28 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
     runtime->deferred_head = NULL;
     runtime->deferred_tail = NULL;
     runtime->deferred_count = 0;
+
+    // Pre-allocate deferred free entry slab — one-time cold-path malloc that
+    // eliminates malloc/free from every gpu_hot_free_async hot path call.
+    runtime->deferred_slab = (DeferredFreeEntry*)malloc(
+        sizeof(DeferredFreeEntry) * PTX_DEFERRED_POOL_CAPACITY);
+    if (runtime->deferred_slab) {
+        memset(runtime->deferred_slab, 0,
+               sizeof(DeferredFreeEntry) * PTX_DEFERRED_POOL_CAPACITY);
+        runtime->deferred_slab_capacity = PTX_DEFERRED_POOL_CAPACITY;
+        runtime->deferred_slab_used = 0;
+        // Thread into free list
+        runtime->deferred_slab_free = &runtime->deferred_slab[0];
+        for (int i = 0; i < PTX_DEFERRED_POOL_CAPACITY - 1; i++) {
+            runtime->deferred_slab[i].next = &runtime->deferred_slab[i + 1];
+        }
+        runtime->deferred_slab[PTX_DEFERRED_POOL_CAPACITY - 1].next = NULL;
+    } else {
+        runtime->deferred_slab_free = NULL;
+        runtime->deferred_slab_capacity = 0;
+        runtime->deferred_slab_used = 0;
+        printf("[Ferrite-OS] Warning: Failed to allocate deferred slab, async frees will use sync fallback\n");
+    }
     // Set device and initialize runtime
     cudaError_t cuda_err = cudaSetDevice(device_id);
     if (cuda_err != cudaSuccess) {
@@ -102,13 +150,13 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
     void* shm_base = NULL;
     // Linux POSIX shared memory
     // Try O_EXCL to detect if we are the creator (daemon)
-    int shm_fd = shm_open(ipc_key, O_CREAT | O_EXCL | O_RDWR, 0666);
+    int shm_fd = shm_open(ipc_key, O_CREAT | O_EXCL | O_RDWR, 0600);
     bool is_daemon = true;
 
     if (shm_fd == -1 && errno == EEXIST) {
         // Segment already exists, we are a client
         is_daemon = false;
-        shm_fd = shm_open(ipc_key, O_RDWR, 0666);
+        shm_fd = shm_open(ipc_key, O_RDWR, 0600);
     }
 
     if (shm_fd == -1) {
@@ -138,10 +186,23 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
         
         if (is_daemon) {
             memset(shm_base, 0, total_shm_size);
-            // Generate session token
-            runtime->system_state->auth_token = 0xDEADC0DE; // In prod, this would be random
-            printf("[Ferrite-OS] Global state initialized (daemon mode)\n");
+            // Generate cryptographically random session token
+            runtime->system_state->auth_token = ptx_generate_session_token();
+            printf("[Ferrite-OS] Global state initialized (daemon mode, token=%08x)\n",
+                   runtime->system_state->auth_token);
         } else {
+            // Validate token: if caller supplied a token string, verify it matches
+            // the session token set by the daemon. This prevents unauthorized
+            // processes from attaching to the shared memory segment.
+            if (token && token[0]) {
+                uint32_t expected = (uint32_t)strtoul(token, NULL, 16);
+                if (expected != 0 && expected != runtime->system_state->auth_token) {
+                    printf("[Ferrite-OS] DENIED: token mismatch (expected %08x, got %08x)\n",
+                           runtime->system_state->auth_token, expected);
+                    free(runtime);
+                    return NULL;
+                }
+            }
             printf("[Ferrite-OS] Attached to global state (client mode)\n");
             InterlockedIncrement((LONG*)&runtime->system_state->active_processes);
         }
@@ -173,13 +234,24 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
     printf("[Ferrite-OS] Compute Capability: %d.%d\n", prop.major, prop.minor);
     printf("[Ferrite-OS] Total VRAM: %.2f GB\n", prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
 
-    // Orin unified-memory detection/tuning gate.
+    // Jetson/Orin unified-memory detection and tuning gates.
     bool detected_orin_soc = (prop.integrated != 0 && prop.major == 8 && prop.minor == 7);
+#if defined(__aarch64__)
+    bool detected_embedded_soc = (prop.integrated != 0);
+#else
+    bool detected_embedded_soc = false;
+#endif
+    bool disable_embedded_managed_pool = (getenv("PTX_DISABLE_EMBEDDED_MANAGED_POOL") != NULL);
+    bool auto_embedded_managed_pool = (detected_embedded_soc && !disable_embedded_managed_pool);
     runtime->use_orin_um_kernel = (effective_config.prefer_orin_unified_memory || detected_orin_soc);
     runtime->managed_pool = false;
-    bool want_managed_pool = (effective_config.use_managed_pool || runtime->use_orin_um_kernel);
+    bool want_managed_pool =
+        (effective_config.use_managed_pool || runtime->use_orin_um_kernel || auto_embedded_managed_pool);
     if (runtime->use_orin_um_kernel && !effective_config.quiet_init) {
         printf("[Ferrite-OS] Orin unified-memory mode active (integrated=%d, sm=%d%d)\n",
+               prop.integrated ? 1 : 0, prop.major, prop.minor);
+    } else if (auto_embedded_managed_pool && !effective_config.quiet_init) {
+        printf("[Ferrite-OS] Embedded managed-pool mode active (integrated=%d, sm=%d%d)\n",
                prop.integrated ? 1 : 0, prop.major, prop.minor);
     }
     
@@ -246,6 +318,17 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
             size_t min_orin_reserve = 1536ULL * 1024 * 1024; // 1.5GB
             if (orin_reserve < min_orin_reserve) orin_reserve = min_orin_reserve;
             effective_config.reserve_vram = orin_reserve;
+        }
+    } else if (auto_embedded_managed_pool) {
+        // Non-Orin Jetson defaults: slightly larger pool than Orin mode, modest host reserve.
+        if (!explicit_pool && effective_config.fixed_pool_size == 0) {
+            effective_config.pool_fraction = 0.45f;
+        }
+        if (!explicit_reserve && effective_config.reserve_vram == 0) {
+            size_t embedded_reserve = total_mem / 10; // 10%
+            size_t min_embedded_reserve = 768ULL * 1024 * 1024; // 768MB
+            if (embedded_reserve < min_embedded_reserve) embedded_reserve = min_embedded_reserve;
+            effective_config.reserve_vram = embedded_reserve;
         }
     }
 
@@ -398,6 +481,11 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
                 if (effective_config.enable_pool_health) {
                     printf("[Ferrite-OS]      - Pool health monitoring active\n");
                 }
+                printf("[Ferrite-OS]      - Block header slab: %u slots (%.2f MB)\n",
+                       runtime->tlsf_allocator->slab_capacity,
+                       (runtime->tlsf_allocator->slab_capacity * sizeof(TLSFBlock)) / (1024.0 * 1024.0));
+                printf("[Ferrite-OS]      - Deferred free slab: %d slots\n",
+                       runtime->deferred_slab_capacity);
             }
         } else {
             printf("[Ferrite-OS] Error: Failed to create enhanced TLSF allocator\n");

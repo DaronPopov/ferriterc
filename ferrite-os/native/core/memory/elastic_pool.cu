@@ -21,6 +21,8 @@ ElasticPool::ElasticPool(int device_id, ElasticPoolConfig config)
     , tlsf_(nullptr)
     , tlsf_base_(nullptr)
     , tlsf_size_(0)
+    , immutable_chunk_count_(0)
+    , immutable_block_count_(0)
     , immutable_total_used_(0)
 {
     cudaSetDevice(device_id);
@@ -71,13 +73,13 @@ ElasticPool::~ElasticPool() {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Free immutable chunks
-    for (auto& chunk : immutable_chunks_) {
-        if (chunk.base) {
-            ptx_driver_free(chunk.base);
+    for (int i = 0; i < immutable_chunk_count_; i++) {
+        if (immutable_chunks_[i].base) {
+            ptx_driver_free(immutable_chunks_[i].base);
         }
     }
-    immutable_chunks_.clear();
-    immutable_blocks_.clear();
+    immutable_chunk_count_ = 0;
+    immutable_block_count_ = 0;
 
     // Free TLSF
     if (tlsf_) {
@@ -159,7 +161,9 @@ void* ElasticPool::alloc_immutable(size_t size, uint32_t layer_id,
             .tensor_id = tensor_id,
             .is_quantized = is_quantized,
         };
-        immutable_blocks_.push_back(block);
+        if (immutable_block_count_ < ELASTIC_MAX_BLOCKS) {
+            immutable_blocks_[immutable_block_count_++] = block;
+        }
         immutable_total_used_ += size;
 
         if (config_.verbose) {
@@ -201,9 +205,10 @@ void* ElasticPool::load_quantized_weight(const void* host_data, size_t size,
 void* ElasticPool::get_immutable(uint32_t layer_id, uint32_t tensor_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    for (const auto& block : immutable_blocks_) {
-        if (block.layer_id == layer_id && block.tensor_id == tensor_id) {
-            return block.ptr;
+    for (int i = 0; i < immutable_block_count_; i++) {
+        if (immutable_blocks_[i].layer_id == layer_id &&
+            immutable_blocks_[i].tensor_id == tensor_id) {
+            return immutable_blocks_[i].ptr;
         }
     }
     return nullptr;
@@ -238,12 +243,16 @@ size_t ElasticPool::poll_and_expand() {
         return 0;
     }
 
+    if (immutable_chunk_count_ >= ELASTIC_MAX_CHUNKS) {
+        ptx_driver_free(chunk_base);
+        return 0;
+    }
     ImmutableChunk chunk = {
         .base = chunk_base,
         .size = chunk_size,
         .used = 0,
     };
-    immutable_chunks_.push_back(chunk);
+    immutable_chunks_[immutable_chunk_count_++] = chunk;
 
     if (config_.verbose) {
         printf("[ElasticPool] Expanded immutable region: +%.1f MB at %p\n",
@@ -277,13 +286,13 @@ ElasticPoolStats ElasticPool::get_stats() const {
 
     // Immutable stats
     size_t immutable_committed = 0;
-    for (const auto& chunk : immutable_chunks_) {
-        immutable_committed += chunk.size;
+    for (int i = 0; i < immutable_chunk_count_; i++) {
+        immutable_committed += immutable_chunks_[i].size;
     }
     stats.immutable_total = immutable_committed;
     stats.immutable_used = immutable_total_used_;
     stats.immutable_committed = immutable_committed;
-    stats.immutable_blocks = static_cast<uint32_t>(immutable_blocks_.size());
+    stats.immutable_blocks = static_cast<uint32_t>(immutable_block_count_);
 
     // System stats
     size_t vram_free, vram_total;
@@ -296,9 +305,9 @@ ElasticPoolStats ElasticPool::get_stats() const {
     if (stats.immutable_blocks > 0) {
         // Estimate: count quantized blocks and assume ~4x compression
         size_t quantized_size = 0;
-        for (const auto& block : immutable_blocks_) {
-            if (block.is_quantized) {
-                quantized_size += block.size;
+        for (int i = 0; i < immutable_block_count_; i++) {
+            if (immutable_blocks_[i].is_quantized) {
+                quantized_size += immutable_blocks_[i].size;
             }
         }
         if (quantized_size > 0) {
@@ -372,16 +381,20 @@ bool ElasticPool::expand_immutable_region(size_t min_size) {
         return false;
     }
 
+    if (immutable_chunk_count_ >= ELASTIC_MAX_CHUNKS) {
+        ptx_driver_free(chunk_base);
+        return false;
+    }
     ImmutableChunk chunk = {
         .base = chunk_base,
         .size = chunk_size,
         .used = 0,
     };
-    immutable_chunks_.push_back(chunk);
+    immutable_chunks_[immutable_chunk_count_++] = chunk;
 
     if (config_.verbose) {
-        printf("[ElasticPool] Expanded immutable region: +%.1f MB at %p (total: %zu chunks)\n",
-               chunk_size / 1e6, chunk_base, immutable_chunks_.size());
+        printf("[ElasticPool] Expanded immutable region: +%.1f MB at %p (total: %d chunks)\n",
+               chunk_size / 1e6, chunk_base, immutable_chunk_count_);
     }
 
     return true;
@@ -395,10 +408,10 @@ size_t ElasticPool::query_available_vram() const {
 
 void* ElasticPool::find_immutable_space(size_t size) {
     // Find a chunk with enough space
-    for (auto& chunk : immutable_chunks_) {
-        if (chunk.size - chunk.used >= size) {
-            void* ptr = static_cast<char*>(chunk.base) + chunk.used;
-            chunk.used += size;
+    for (int i = 0; i < immutable_chunk_count_; i++) {
+        if (immutable_chunks_[i].size - immutable_chunks_[i].used >= size) {
+            void* ptr = static_cast<char*>(immutable_chunks_[i].base) + immutable_chunks_[i].used;
+            immutable_chunks_[i].used += size;
             return ptr;
         }
     }

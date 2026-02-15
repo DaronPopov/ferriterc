@@ -8,6 +8,7 @@ pub struct ConnectorConfig {
     pub sources: Vec<SourceConfig>,
     #[serde(default)]
     pub sink: SinkConfig,
+    pub server: Option<ServerSectionConfig>,
     #[serde(default = "default_queue_capacity")]
     pub queue_capacity: usize,
     #[serde(default = "default_shutdown_drain_timeout_ms")]
@@ -99,6 +100,30 @@ impl Default for SinkConfig {
             ipc_enabled: default_ipc_enabled(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServerSectionConfig {
+    #[serde(default = "default_server_bind")]
+    pub bind: String,
+    #[serde(default = "default_server_port")]
+    pub port: u16,
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+    #[serde(default)]
+    pub feed_queue: bool,
+}
+
+fn default_server_bind() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_server_port() -> u16 {
+    8080
+}
+
+fn default_max_connections() -> usize {
+    64
 }
 
 impl SourceConfig {

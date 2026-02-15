@@ -73,6 +73,8 @@ pub(super) fn init_runtime(config: &DaemonConfig) -> io::Result<Arc<PtxRuntime>>
     let mut runtime_config = ptx_sys::GPUHotConfig::default();
     runtime_config.max_streams = config.max_streams;
     runtime_config.pool_fraction = config.pool_fraction;
+    runtime_config.prefer_orin_unified_memory = config.prefer_orin_unified_memory;
+    runtime_config.use_managed_pool = config.use_managed_pool;
     runtime_config.enable_leak_detection = config.enable_leak_detection;
 
     let runtime = Arc::new(
@@ -86,9 +88,11 @@ pub(super) fn init_runtime(config: &DaemonConfig) -> io::Result<Arc<PtxRuntime>>
     );
 
     info!(
-        "Runtime initialized with {} streams, pool={:.0}%",
+        "Runtime initialized with {} streams, pool={:.0}%, orin_um={}, managed_pool={}",
         config.max_streams,
-        config.pool_fraction * 100.0
+        config.pool_fraction * 100.0,
+        config.prefer_orin_unified_memory,
+        config.use_managed_pool
     );
 
     // Export runtime/context handles from the daemon process environment so

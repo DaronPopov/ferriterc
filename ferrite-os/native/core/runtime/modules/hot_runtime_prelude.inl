@@ -49,7 +49,16 @@ static void ptx_mutex_unlock(PTXMutex* m) { LeaveCriticalSection(m); }
 static void ptx_mutex_destroy(PTXMutex* m) { DeleteCriticalSection(m); }
 #else
 typedef pthread_mutex_t PTXMutex;
-static void ptx_mutex_init(PTXMutex* m) { pthread_mutex_init(m, NULL); }
+static void ptx_mutex_init(PTXMutex* m) {
+    // Use PTHREAD_PRIO_INHERIT to prevent unbounded priority inversion:
+    // if a high-priority thread blocks on this mutex while a low-priority
+    // thread holds it, the holder is boosted to the waiter's priority.
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT);
+    pthread_mutex_init(m, &attr);
+    pthread_mutexattr_destroy(&attr);
+}
 static void ptx_mutex_lock(PTXMutex* m) { pthread_mutex_lock(m); }
 static void ptx_mutex_unlock(PTXMutex* m) { pthread_mutex_unlock(m); }
 static void ptx_mutex_destroy(PTXMutex* m) { pthread_mutex_destroy(m); }
@@ -61,6 +70,13 @@ typedef struct DeferredFreeEntry {
     cudaStream_t stream;
     struct DeferredFreeEntry* next;
 } DeferredFreeEntry;
+
+// Maximum pre-allocated DeferredFreeEntry nodes.
+// Allocated once at runtime init; gpu_hot_free_async draws from this pool
+// instead of calling malloc on every async free.
+#ifndef PTX_DEFERRED_POOL_CAPACITY
+#define PTX_DEFERRED_POOL_CAPACITY 16384
+#endif
 
 static cudaEvent_t ptx_event_acquire(GPUHotRuntime* runtime);
 static void ptx_event_release(GPUHotRuntime* runtime, cudaEvent_t ev);
@@ -134,6 +150,13 @@ struct GPUHotRuntime {
 
     // VMM reference for eviction bridge
     VMMState* vmm;
+
+    // Pre-allocated DeferredFreeEntry slab — eliminates malloc/free from
+    // the async free hot path.
+    DeferredFreeEntry* deferred_slab;       // Contiguous array
+    DeferredFreeEntry* deferred_slab_free;  // Intrusive free list
+    int deferred_slab_capacity;
+    int deferred_slab_used;
 };
 
 #ifndef _WIN32
@@ -229,6 +252,7 @@ static void nvml_try_init(int device_id) {
     const char* libs[] = {
         "libnvidia-ml.so.1",
         "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1",
+        "/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1",
         "/usr/lib64/libnvidia-ml.so.1",
         NULL
     };
@@ -337,6 +361,7 @@ static void cupti_try_init(GPUHotRuntime* runtime) {
         "/usr/local/cuda/targets/x86_64-linux/lib/libcupti.so",
         "/usr/local/cuda/targets/aarch64-linux/lib/libcupti.so",
         "/usr/local/cuda/extras/CUPTI/lib64/libcupti.so",
+        "/usr/local/cuda/extras/CUPTI/lib/aarch64-linux-gnu/libcupti.so",
         NULL
     };
     for (int i = 0; libs[i] != NULL && !g_cupti.lib; ++i) {
@@ -503,6 +528,9 @@ GPUHotConfig gpu_hot_default_config(void) {
     // Platform tuning defaults
     config.prefer_orin_unified_memory = false;
     config.use_managed_pool = false;
+
+    // Certification lockdown: allow env overrides by default
+    config.allow_env_overrides = true;
 
     return config;
 }

@@ -231,16 +231,43 @@ static TLSFBlock* find_free_block(PTXTLSFAllocator* allocator, size_t size) {
 }
 
 // ============================================================================
+// Block header slab — O(1) deterministic allocation of TLSFBlock metadata
+// ============================================================================
+
+// Acquire a zeroed block header from the pre-allocated slab.
+// Returns NULL only if all slab slots are in use (pool fragmentation limit).
+static TLSFBlock* tlsf_slab_alloc(PTXTLSFAllocator* allocator) {
+    TLSFBlock* block = allocator->slab_free_list;
+    if (!block) return NULL;
+    allocator->slab_free_list = block->next_free;
+    allocator->slab_used++;
+    memset(block, 0, sizeof(TLSFBlock));
+    return block;
+}
+
+// Return a block header to the slab free list.
+static void tlsf_slab_free(PTXTLSFAllocator* allocator, TLSFBlock* block) {
+    memset(block, 0, sizeof(TLSFBlock));
+    block->next_free = allocator->slab_free_list;
+    allocator->slab_free_list = block;
+    allocator->slab_used--;
+}
+
+// ============================================================================
 // Block operations
 // ============================================================================
 
 static void split_block(PTXTLSFAllocator* allocator, TLSFBlock* block, size_t size) {
     size_t remaining = block->size - size;
-    
+
     if (remaining >= TLSF_MIN_BLOCK_SIZE) {
-        // Create new block
-        TLSFBlock* new_block = (TLSFBlock*)malloc(sizeof(TLSFBlock));
-        memset(new_block, 0, sizeof(TLSFBlock));
+        TLSFBlock* new_block = tlsf_slab_alloc(allocator);
+        if (!new_block) {
+            // Slab exhausted — return the oversized block as-is rather than
+            // failing the allocation. This is safe: the caller gets more
+            // memory than requested.
+            return;
+        }
         
         new_block->device_ptr = (char*)block->device_ptr + size;
         new_block->size = remaining;
@@ -274,49 +301,49 @@ static TLSFBlock* coalesce(PTXTLSFAllocator* allocator, TLSFBlock* block) {
     // Coalesce with next block
     if (block->next_phys && block->next_phys->is_free && !block->next_phys->is_pinned) {
         TLSFBlock* next = block->next_phys;
-        
+
         remove_free_block(allocator, next);
         hash_remove(allocator, next);
-        
+
         block->size += next->size;
         block->next_phys = next->next_phys;
         block->is_last = next->is_last;
-        
+
         if (block->next_phys) {
             block->next_phys->prev_phys = block;
         } else {
             allocator->last_block = block;
         }
-        
-        free(next);
+
+        tlsf_slab_free(allocator, next);
         allocator->stats.total_blocks--;
         allocator->stats.total_merges++;
     }
-    
+
     // Coalesce with previous block
     if (block->prev_phys && block->prev_phys->is_free && !block->prev_phys->is_pinned) {
         TLSFBlock* prev = block->prev_phys;
-        
+
         remove_free_block(allocator, prev);
         hash_remove(allocator, block);
-        
+
         prev->size += block->size;
         prev->next_phys = block->next_phys;
         prev->is_last = block->is_last;
-        
+
         if (block->next_phys) {
             block->next_phys->prev_phys = prev;
         } else {
             allocator->last_block = prev;
         }
-        
-        free(block);
+
+        tlsf_slab_free(allocator, block);
         allocator->stats.total_blocks--;
         allocator->stats.total_merges++;
-        
+
         return prev;
     }
-    
+
     return block;
 }
 

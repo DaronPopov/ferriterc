@@ -113,9 +113,13 @@ Common compute capabilities:
 - **RTX 30xx (Ampere)**: `--sm 86` (3090, 3080, 3070)
 - **A100 (Ampere)**: `--sm 80`
 - **RTX 20xx (Turing)**: `--sm 75` (2080 Ti, 2070)
+- **Jetson Orin**: `--sm 87`
 - **H100 (Hopper)**: `--sm 90`
 - **B100/B200 (Blackwell)**: `--sm 100`
 - **GB200 (Blackwell Ultra)**: `--sm 120`
+
+Current kernel profile requires `sm_75+`. Legacy Jetson SKUs
+(`sm_72`/`sm_62`/`sm_53`) require a separate legacy kernel profile.
 
 ### Manual Build
 
@@ -127,6 +131,9 @@ cd ferrite-os
 # Set CUDA path and compute capability (optional, will auto-detect)
 export CUDA_PATH=/usr/local/cuda-12.6
 export PTX_GPU_SM=sm_89  # For RTX 4090
+# Optional embedded tuning toggles
+export PTX_ORIN_UM=1      # Use Orin unified-memory scheduler branch
+export PTX_MANAGED_POOL=1 # Use cudaMallocManaged for TLSF backing pool
 
 # Build C/CUDA libraries
 make
@@ -143,6 +150,9 @@ cargo build --release
 
 # Run integration tests
 cargo test --package ptx-runtime --test integration_tests -- --ignored
+
+# Jetson-specific smoke check
+tooling/scripts/jetson_doctor.sh
 
 # Run benchmarks
 tooling/scripts/ptx_bench_all.sh --no-build

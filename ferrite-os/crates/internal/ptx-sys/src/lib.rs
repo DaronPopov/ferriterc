@@ -79,6 +79,8 @@ pub const GPU_HOT_MAX_NAME_LEN: u32 = 64;
 pub const GPU_HOT_DEFAULT_VRAM_PERCENT: f32 = 70.0;
 pub const PTX_STABLE_ABI_VERSION: u32 = 1;
 pub const PTX_STABLE_CONFIG_DEFAULT: u32 = 0;
+pub const PTX_STABLE_CONFIG_PREFER_ORIN_UM: u32 = 1 << 0;
+pub const PTX_STABLE_CONFIG_USE_MANAGED_POOL: u32 = 1 << 1;
 pub const PTX_STABLE_INVALID_DEVICE: i32 = -1;
 
 pub const TLSF_FL_INDEX_MAX: u32 = 32;
@@ -755,12 +757,15 @@ pub struct GPUHotConfig {
     pub force_daemon_mode: bool,
     pub quiet_init: bool,
     pub max_streams: u32,
+    pub single_pool_strict: bool,
+    pub prefer_orin_unified_memory: bool,
+    pub use_managed_pool: bool,
 }
 
 impl Default for GPUHotConfig {
     fn default() -> Self {
         Self {
-            pool_fraction: 0.6, // Must match C gpu_hot_default_config()
+            pool_fraction: 1.0, // Must match C gpu_hot_default_config()
             fixed_pool_size: 0,
             min_pool_size: 256 * 1024 * 1024,
             max_pool_size: 0,
@@ -771,6 +776,9 @@ impl Default for GPUHotConfig {
             force_daemon_mode: false,
             quiet_init: false,
             max_streams: 16, // Must match C gpu_hot_default_config(); GPU_HOT_MAX_STREAMS is the cap, not the default
+            single_pool_strict: false,
+            prefer_orin_unified_memory: false,
+            use_managed_pool: false,
         }
     }
 }
@@ -2103,6 +2111,88 @@ extern "C" {
         total_work: c_int,
         device_capacities: *const c_int,
     ) -> c_int;
+
+    // ========================================================================
+    // Graphics Kernels — GPU Software Rasterization
+    // ========================================================================
+
+    // Framebuffer operations
+    pub fn ptx_gfx_clear_color(
+        color_buf: *mut f32,
+        r: f32, g: f32, b: f32, a: f32,
+        num_pixels: u32,
+        stream: cudaStream_t,
+    );
+
+    pub fn ptx_gfx_clear_depth(
+        depth_buf: *mut f32,
+        value: f32,
+        num_pixels: u32,
+        stream: cudaStream_t,
+    );
+
+    // Vertex processing
+    pub fn ptx_gfx_vertex_transform(
+        positions_in: *const f32,
+        positions_out: *mut f32,
+        mvp: *const f32,
+        num_vertices: u32,
+        stream: cudaStream_t,
+    );
+
+    pub fn ptx_gfx_viewport_transform(
+        clip_positions: *const f32,
+        screen_out: *mut f32,
+        viewport_width: u32,
+        viewport_height: u32,
+        num_vertices: u32,
+        stream: cudaStream_t,
+    );
+
+    // Triangle rasterization
+    pub fn ptx_gfx_rasterize_triangles(
+        screen_positions: *const f32,
+        vertex_colors: *const f32,
+        indices: *const u32,
+        color_buf: *mut f32,
+        depth_buf: *mut u32,
+        fb_width: u32,
+        fb_height: u32,
+        num_triangles: u32,
+        stream: cudaStream_t,
+    );
+
+    pub fn ptx_gfx_rasterize_normals(
+        screen_positions: *const f32,
+        vertex_normals: *const f32,
+        indices: *const u32,
+        normal_buf: *mut f32,
+        depth_buf: *const u32,
+        fb_width: u32,
+        fb_height: u32,
+        num_triangles: u32,
+        stream: cudaStream_t,
+    );
+
+    // Shading
+    pub fn ptx_gfx_shade_phong(
+        normal_buf: *const f32,
+        color_buf: *mut f32,
+        depth_buf: *const u32,
+        light_dir: *const f32,
+        light_color: *const f32,
+        ambient: *const f32,
+        num_pixels: u32,
+        stream: cudaStream_t,
+    );
+
+    // Framebuffer conversion
+    pub fn ptx_gfx_framebuffer_to_rgba(
+        color_buf: *const f32,
+        rgba_out: *mut u32,
+        num_pixels: u32,
+        stream: cudaStream_t,
+    );
 }
 
 // ============================================================================

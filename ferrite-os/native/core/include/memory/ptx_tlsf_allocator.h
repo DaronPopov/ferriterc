@@ -30,6 +30,14 @@ extern "C" {
 #define TLSF_BLOCK_MAGIC        0x544C5346  // "TLSF"
 #endif
 
+// Maximum pre-allocated block headers for deterministic hot-path allocation.
+// The slab is allocated once at TLSF creation; split_block() and coalesce()
+// draw from / return to this pool instead of calling malloc/free.
+// Sized for 256K concurrent blocks (~32MB host RAM at ~128 bytes/header).
+#ifndef TLSF_SLAB_MAX_HEADERS
+#define TLSF_SLAB_MAX_HEADERS   262144
+#endif
+
 // ============================================================================
 // Hash Bucket (not in main header)
 // ============================================================================
@@ -93,6 +101,14 @@ typedef struct PTXTLSFAllocator {
 
     // Allocation event ring buffer
     TLSFEventRing event_ring;
+
+    // Pre-allocated block header slab — eliminates malloc/free from hot paths.
+    // Allocated once at TLSF creation; split_block()/coalesce() use O(1) slab
+    // operations instead of hitting the system heap.
+    TLSFBlock* block_slab;          // Contiguous array of block headers
+    TLSFBlock* slab_free_list;      // Intrusive free list within the slab
+    uint32_t slab_capacity;         // Total headers in slab
+    uint32_t slab_used;             // Currently in-use headers
 } PTXTLSFAllocator;
 
 // ============================================================================

@@ -2,15 +2,24 @@
 // Task Submission API
 // ============================================================================
 
+// Maximum spin iterations before declaring lock acquisition failure.
+// Provides bounded worst-case latency for certification/audit purposes.
+#define PTX_SPINLOCK_MAX_SPINS 1000000
+
 int ptx_os_submit_task(GPUHotRuntime* runtime, uint32_t opcode, uint32_t priority, void* args[PTX_MAX_TASK_ARGS]) {
     if (!runtime || !runtime->system_state) return -1;
 
     PTXSystemState* state = runtime->system_state;
     PTXTaskQueue* queue = &state->queue;
 
-    // Spinlock acquire
+    // Bounded spinlock acquire
+    int spins = 0;
     while (__sync_lock_test_and_set(&queue->lock, 1)) {
-        // spin
+        if (++spins >= PTX_SPINLOCK_MAX_SPINS) {
+            printf("[PTX-OS] ERROR: Task submit spinlock timeout after %d spins\n",
+                   PTX_SPINLOCK_MAX_SPINS);
+            return -2;
+        }
     }
 
     uint32_t next_head = (queue->head + 1) % PTX_MAX_QUEUE_SIZE;

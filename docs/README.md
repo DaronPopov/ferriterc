@@ -49,5 +49,6 @@ It is written for engineers and LLM coding agents.
 - `02.01`: Runtime operations runbook: `02-runtime-architecture/runbooks/runtime-operations.md`
 - `03.01`: Install/provision runbook: `03-build-and-portability/runbooks/install-and-provision.md`
 - `03.02`: Debug/remediation runbook: `03-build-and-portability/runbooks/debugging-and-remediation.md`
+- `03.03`: Jetson embedded bring-up runbook: `03-build-and-portability/runbooks/jetson-embedded-bringup.md`
 - `04.06`: Agent routing and validation gates: `04-llm-programming-guides/contracts/task-routing-and-gates.md`
 - `04.07`: Loose app manifest contract: `04-llm-programming-guides/contracts/ferrite-app-manifest-v0-loose.md`

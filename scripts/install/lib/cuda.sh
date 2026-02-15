@@ -202,6 +202,28 @@ detect_sm_with_nvcc() {
   return 1
 }
 
+detect_sm_jetson_model() {
+  local model=""
+  if [[ -r /proc/device-tree/model ]]; then
+    model="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  elif [[ -r /sys/firmware/devicetree/base/model ]]; then
+    model="$(tr -d '\0' < /sys/firmware/devicetree/base/model 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  fi
+
+  if [[ -z "$model" ]]; then
+    return 1
+  fi
+
+  case "$model" in
+    *orin*) echo "87"; return 0 ;;
+    *xavier*) echo "72"; return 0 ;;
+    *tx2*) echo "62"; return 0 ;;
+    *nano*|*tx1*) echo "53"; return 0 ;;
+  esac
+
+  return 1
+}
+
 resolve_cuda_compat() {
   local compat_script="$ROOT/scripts/resolve_cuda_compat.sh"
   if [[ ! -x "$compat_script" ]]; then
@@ -272,6 +294,14 @@ auto_detect_sm() {
   fi
 
   if [[ -z "${SM}" ]]; then
+    DETECTED_JETSON="$(detect_sm_jetson_model || true)"
+    if [[ -n "${DETECTED_JETSON:-}" ]]; then
+      SM="${DETECTED_JETSON}"
+      echo "[info] auto-detected GPU SM from Jetson model: ${SM}"
+    fi
+  fi
+
+  if [[ -z "${SM}" ]]; then
     DETECTED_NVCC="$(detect_sm_with_nvcc "$CUDA_PATH_RESOLVED" || true)"
     if [[ -n "${DETECTED_NVCC:-}" ]]; then
       SM="${DETECTED_NVCC}"
@@ -280,14 +310,21 @@ auto_detect_sm() {
   fi
 
   if [[ -z "${SM}" ]]; then
-    echo "[error] GPU SM not resolved. Pass --sm <SM> (example: --sm 86)."
-    diag_emit "installer.cuda" "FAIL" "INS-CUDA-0005" "GPU SM not resolved" "pass --sm <SM> (example: --sm 86)"
+    echo "[error] GPU SM not resolved. Pass --sm <SM> (example: --sm 87 on Orin)."
+    diag_emit "installer.cuda" "FAIL" "INS-CUDA-0005" "GPU SM not resolved" "pass --sm <SM> (example: --sm 87 on Orin)"
     exit 1
   fi
 
   if ! [[ "${SM}" =~ ^[0-9]{2,3}$ ]]; then
     echo "[error] invalid --sm value '${SM}'. Expected 2-3 digits like 75, 86, 90, 100, 120."
     diag_emit "installer.cuda" "FAIL" "INS-CUDA-0006" "invalid --sm value '${SM}'" "use two or three digits such as 75, 86, 90, 100, 120"
+    exit 1
+  fi
+
+  if [[ "${SM}" -lt 75 ]]; then
+    echo "[error] GPU SM ${SM} is unsupported by current kernel profile (requires sm_75+)."
+    echo "[hint] for Jetson, this currently means Orin-class targets (sm_87)."
+    diag_emit "installer.cuda" "FAIL" "INS-CUDA-0007" "GPU SM ${SM} unsupported by current kernel profile" "use a sm_75+ target profile (Jetson Orin: sm_87) or maintain a legacy kernel profile"
     exit 1
   fi
 }

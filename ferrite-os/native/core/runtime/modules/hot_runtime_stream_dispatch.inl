@@ -37,23 +37,27 @@ static cudaEvent_t ptx_event_acquire(GPUHotRuntime* runtime) {
     return ev;
 }
 
+// Maximum pre-allocated event pool size.
+// The pool is allocated once at first use and never grown, ensuring no
+// heap operations (realloc/malloc) on the hot path after initialization.
+#define PTX_EVENT_POOL_MAX_CAPACITY 4096
+
 // Return a CUDA event to the pool
 static void ptx_event_release_locked(GPUHotRuntime* runtime, cudaEvent_t ev) {
     if (!ev) return;
-    if (runtime->event_pool_count >= runtime->event_pool_capacity) {
-        int new_cap = (runtime->event_pool_capacity == 0) ? 64 : runtime->event_pool_capacity * 2;
-        cudaEvent_t* new_pool = (cudaEvent_t*)realloc(runtime->event_pool, sizeof(cudaEvent_t) * new_cap);
-        if (new_pool) {
-            runtime->event_pool = new_pool;
-            runtime->event_pool_capacity = new_cap;
+
+    // One-time pre-allocation of the event pool (cold path)
+    if (runtime->event_pool_capacity == 0 && !runtime->event_pool) {
+        runtime->event_pool = (cudaEvent_t*)malloc(sizeof(cudaEvent_t) * PTX_EVENT_POOL_MAX_CAPACITY);
+        if (runtime->event_pool) {
+            runtime->event_pool_capacity = PTX_EVENT_POOL_MAX_CAPACITY;
         }
     }
+
     if (runtime->event_pool_count < runtime->event_pool_capacity) {
         runtime->event_pool[runtime->event_pool_count++] = ev;
-        ev = NULL;
-    }
-
-    if (ev) {
+    } else {
+        // Pool full — destroy the event rather than growing the pool
         cudaEventDestroy(ev);
     }
 }
@@ -98,7 +102,11 @@ static void gpu_hot_poll_deferred_internal(GPUHotRuntime* runtime, int max_drain
                 ptx_tlsf_free(runtime->tlsf_allocator, done->ptr);
             }
             ptx_event_release_locked(runtime, done->event);
-            free(done);
+
+            // Return entry to the deferred slab pool (O(1), no heap)
+            done->next = runtime->deferred_slab_free;
+            runtime->deferred_slab_free = done;
+            runtime->deferred_slab_used--;
             drained++;
             continue;
         } else if (q != cudaErrorNotReady) {
@@ -135,11 +143,17 @@ void* gpu_hot_alloc(GPUHotRuntime* runtime, size_t size) {
         ptx_mutex_unlock(&runtime->async_lock);
         if (ptr) return ptr;
 
-        // Retry 2: brief yield to let other threads finish their frees,
-        // then drain + retry once more.
+        // Retry 2: deterministic bounded busy-wait to let other threads
+        // finish their frees, then drain + retry once more.
+        // Uses a calibrated spin loop instead of nanosleep to avoid
+        // non-deterministic OS scheduler involvement.
         {
-            struct timespec ts = {0, 500000}; // 0.5ms
-            nanosleep(&ts, NULL);
+            volatile int backoff_counter = 0;
+            for (int b = 0; b < 50000; b++) {
+                backoff_counter++;
+                __sync_synchronize(); // compiler + memory barrier
+            }
+            (void)backoff_counter;
         }
         gpu_hot_poll_deferred_internal(runtime, 0);
         ptx_mutex_lock(&runtime->async_lock);
@@ -229,9 +243,17 @@ void gpu_hot_free_async(GPUHotRuntime* runtime, void* ptr, cudaStream_t stream) 
         return;
     }
 
-    DeferredFreeEntry* entry = (DeferredFreeEntry*)malloc(sizeof(DeferredFreeEntry));
+    // Acquire entry from pre-allocated slab (O(1), no heap)
+    ptx_mutex_lock(&runtime->async_lock);
+    DeferredFreeEntry* entry = runtime->deferred_slab_free;
+    if (entry) {
+        runtime->deferred_slab_free = entry->next;
+        runtime->deferred_slab_used++;
+    }
+    ptx_mutex_unlock(&runtime->async_lock);
+
     if (!entry) {
-        printf("[Ferrite-OS] Warning:DeferredFreeEntry alloc failed (sync fallback)\n");
+        printf("[Ferrite-OS] Warning: Deferred slab exhausted (sync fallback)\n");
         ptx_event_release(runtime, ev);
         cudaStreamSynchronize(stream);
         ptx_mutex_lock(&runtime->async_lock);

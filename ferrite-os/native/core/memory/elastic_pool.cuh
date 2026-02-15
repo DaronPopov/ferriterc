@@ -15,7 +15,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <mutex>
-#include <vector>
 #include <atomic>
 
 // Forward declare TLSF
@@ -151,14 +150,19 @@ private:
     void* tlsf_base_;
     size_t tlsf_size_;
 
-    // Immutable region - contiguous chunks
+    // Immutable region - contiguous chunks (fixed-capacity, no heap realloc)
+    static const int ELASTIC_MAX_CHUNKS = 256;
+    static const int ELASTIC_MAX_BLOCKS = 8192;
+
     struct ImmutableChunk {
         void* base;
         size_t size;
         size_t used;
     };
-    std::vector<ImmutableChunk> immutable_chunks_;
-    std::vector<ImmutableBlock> immutable_blocks_;
+    ImmutableChunk immutable_chunks_[ELASTIC_MAX_CHUNKS];
+    int immutable_chunk_count_;
+    ImmutableBlock immutable_blocks_[ELASTIC_MAX_BLOCKS];
+    int immutable_block_count_;
     size_t immutable_total_used_;
 
     // Thread safety
