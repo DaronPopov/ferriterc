@@ -112,9 +112,9 @@ __global__ void ptx_os_kernel_orin_um(PTXSystemState* state) {
                         case 7: { // LAUNCH_KERNEL / CDP recursion
                             PTXKernelLaunch* launch = (PTXKernelLaunch*)&task->args[0];
                             if (launch && launch->kernel_func) {
+#if PTX_ENABLE_CDP
                                 typedef void (*kernel_ptr_t)(void**);
                                 kernel_ptr_t func = (kernel_ptr_t)launch->kernel_func;
-#if PTX_ENABLE_CDP
                                 func<<<launch->grid, launch->block, launch->shared_mem, launch->stream>>>(
                                     launch->arg_values);
 #else

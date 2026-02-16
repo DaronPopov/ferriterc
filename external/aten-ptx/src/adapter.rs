@@ -1,12 +1,12 @@
 use std::ffi::CStr;
-use std::os::raw::c_void;
+use std::os::raw::{c_char, c_void};
 
 extern "C" {
     fn aten_tlsf_init(device_id: i32);
     fn aten_set_cuda_stream(raw_stream: *mut c_void, device_id: i32);
     fn aten_reset_default_stream(device_id: i32);
-    fn dlopen(filename: *const i8, flags: i32) -> *mut c_void;
-    fn dlerror() -> *const i8;
+    fn dlopen(filename: *const c_char, flags: i32) -> *mut c_void;
+    fn dlerror() -> *const c_char;
 }
 
 pub const RTLD_NOW: i32 = 0x2;
@@ -19,7 +19,7 @@ pub fn maybe_load_shared_lib(name: &str) -> Result<bool, String> {
     nul_terminated.push('\0');
     unsafe {
         let handle = dlopen(
-            nul_terminated.as_ptr() as *const i8,
+            nul_terminated.as_ptr() as *const c_char,
             RTLD_NOW | RTLD_NOLOAD | RTLD_GLOBAL,
         );
         if !handle.is_null() {
@@ -27,7 +27,7 @@ pub fn maybe_load_shared_lib(name: &str) -> Result<bool, String> {
         }
 
         let loaded = dlopen(
-            nul_terminated.as_ptr() as *const i8,
+            nul_terminated.as_ptr() as *const c_char,
             RTLD_NOW | RTLD_GLOBAL,
         );
         if loaded.is_null() {

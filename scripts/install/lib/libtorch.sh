@@ -20,6 +20,15 @@ check_libtorch_version() {
   local installed_ver
   installed_ver="$(head -n1 "$ver_file" | cut -d+ -f1)"
   if [[ "$installed_ver" != "$LIBTORCH_VERSION" ]]; then
+    # On Jetson, we may intentionally use a different libtorch version (NVIDIA
+    # does not always publish the latest).  Accept any 2.x within the same
+    # major series to avoid pointless re-downloads.
+    local inst_major="${installed_ver%%.*}"
+    local want_major="${LIBTORCH_VERSION%%.*}"
+    if is_jetson 2>/dev/null && [[ "$inst_major" == "$want_major" ]]; then
+      echo "[info] Jetson: accepting libtorch ${installed_ver} (requested ${LIBTORCH_VERSION})"
+      return 0
+    fi
     echo "[warn] bundled libtorch is ${installed_ver} but need ${LIBTORCH_VERSION}"
     diag_emit "installer.libtorch" "WARN" "INS-LIBTORCH-0001" "bundled libtorch version mismatch (${installed_ver} != ${LIBTORCH_VERSION})" "installer will re-download compatible libtorch"
     return 1
@@ -80,6 +89,108 @@ download_libtorch_x86_64() {
   echo "[info] libtorch ready at: $dst"
 }
 
+# Detect whether we are running on an NVIDIA Jetson (Tegra) board.
+# Jetson requires NVIDIA-built wheels with sm_72/sm_87 kernels — the standard
+# PyTorch aarch64 wheel only ships sm_80+sm_90 (ARM server targets).
+is_jetson() {
+  # Check kernel version for "tegra"
+  if uname -r 2>/dev/null | grep -qi tegra; then
+    return 0
+  fi
+  # Check device-tree model string
+  local model=""
+  if [[ -r /proc/device-tree/model ]]; then
+    model="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  fi
+  case "$model" in
+    *jetson*|*orin*|*xavier*|*tx2*|*nano*) return 0 ;;
+  esac
+  return 1
+}
+
+# Download a torch wheel, extract it, and move torch/ → external/libtorch.
+extract_wheel_to_libtorch() {
+  local url="$1"
+  local cache="$ROOT/external/.cache"
+  local dst="$ROOT/external/libtorch"
+  local whl="$cache/torch-aarch64.whl"
+
+  echo "[info] aarch64: downloading torch wheel for C++ libraries"
+  echo "[info] url: $url"
+  fetch_file "$url" "$whl"
+
+  echo "[info] extracting C++ libraries from torch wheel"
+  local extract_dir="$cache/wheel_extract"
+  rm -rf "$extract_dir"
+  mkdir -p "$extract_dir"
+  extract_zip "$whl" "$extract_dir"
+
+  if [[ ! -d "$extract_dir/torch" ]]; then
+    echo "[error] wheel extraction did not produce torch/ directory"
+    diag_emit "installer.libtorch" "FAIL" "INS-LIBTORCH-0005" "torch/ directory missing in extracted wheel" "use a compatible aarch64 torch wheel"
+    exit 1
+  fi
+
+  rm -rf "$dst"
+  mv "$extract_dir/torch" "$dst"
+  rm -rf "$extract_dir"
+}
+
+# Try to download a Jetson-specific wheel from NVIDIA's Jetson AI Lab index.
+# These wheels are compiled with sm_72 and sm_87 (Jetson Xavier/Orin).
+# Falls back to the standard PyTorch wheel if the Jetson index is unreachable.
+download_libtorch_jetson() {
+  local cache="$ROOT/external/.cache"
+  mkdir -p "$cache"
+
+  # NVIDIA Jetson AI Lab index — best source for Jetson-native wheels.
+  # Override with JETSON_TORCH_INDEX if the default changes.
+  local jetson_index="${JETSON_TORCH_INDEX:-https://pypi.jetson-ai-lab.io}"
+  local jetson_ver="${JETSON_TORCH_VERSION:-2.9.1}"
+  local jetson_tag="${TORCH_CPYTHON_TAG:-cp310}"
+
+  # Jetson wheels use the linux_aarch64 platform tag (not manylinux).
+  local whl_name="torch-${jetson_ver}-${jetson_tag}-${jetson_tag}-linux_aarch64.whl"
+
+  echo "[info] Jetson detected — trying NVIDIA Jetson AI Lab wheel"
+
+  # The Jetson AI Lab index is a devpi server — scrape the actual download URL
+  # from the simple index page rather than guessing the hash-based path.
+  local simple_url="${jetson_index}/jp6/${LIBTORCH_CUDA_TAG}/+simple/torch/"
+  local url
+  url="$(curl -sL --max-time 15 "$simple_url" 2>/dev/null \
+    | grep -oP 'href="\K[^"]+'"${jetson_tag}"'-'"${jetson_tag}"'-linux_aarch64\.whl[^"]*' \
+    | grep "torch-${jetson_ver}" \
+    | head -1)"
+
+  # If simple index didn't work, try direct path
+  if [[ -z "$url" ]]; then
+    url="${jetson_index}/jp6/${LIBTORCH_CUDA_TAG}/${whl_name}"
+  fi
+
+  echo "[info] url: $url"
+
+  if curl --head --silent --fail --max-time 10 "$url" >/dev/null 2>&1; then
+    extract_wheel_to_libtorch "$url"
+    return 0
+  fi
+
+  echo "[warn] Jetson wheel not available at: $url"
+
+  # Fallback: NVIDIA developer redistribution index (older builds)
+  local nv_url="https://developer.download.nvidia.com/compute/redist/jp/v61/pytorch/"
+  echo "[info] trying NVIDIA developer index: $nv_url"
+  local nv_whl
+  nv_whl="$(curl -sL "$nv_url" 2>/dev/null | grep -oP 'href="\Ktorch-[^"]+linux_aarch64\.whl' | tail -1)"
+  if [[ -n "$nv_whl" ]]; then
+    extract_wheel_to_libtorch "${nv_url}${nv_whl}"
+    return 0
+  fi
+
+  echo "[warn] no Jetson wheel found on NVIDIA indexes"
+  return 1
+}
+
 download_libtorch_aarch64() {
   local cache="$ROOT/external/.cache"
   local dst="$ROOT/external/libtorch"
@@ -92,34 +203,22 @@ download_libtorch_aarch64() {
     fetch_file "$LIBTORCH_URL" "$zip"
     rm -rf "$dst"
     extract_zip "$zip" "$ROOT/external"
-  else
-    # Download the aarch64 PyTorch wheel and extract C++ libraries from it.
-    # A .whl is a zip archive. The torch/ directory inside contains the same
-    # lib/, include/, and share/ layout that libtorch expects.
-    local whl_name="torch-${LIBTORCH_VERSION}%2B${LIBTORCH_CUDA_TAG}-${TORCH_CPYTHON_TAG}-${TORCH_CPYTHON_TAG}-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
-    local url="https://download.pytorch.org/whl/${LIBTORCH_CUDA_TAG}/${whl_name}"
-    local whl="$cache/torch-${LIBTORCH_VERSION}-${LIBTORCH_CUDA_TAG}-aarch64.whl"
-
-    echo "[info] aarch64: downloading torch wheel for C++ libraries"
-    echo "[info] url: $url"
-    fetch_file "$url" "$whl"
-
-    echo "[info] extracting C++ libraries from torch wheel"
-    local extract_dir="$cache/wheel_extract"
-    rm -rf "$extract_dir"
-    mkdir -p "$extract_dir"
-    extract_zip "$whl" "$extract_dir"
-
-    if [[ ! -d "$extract_dir/torch" ]]; then
-      echo "[error] wheel extraction did not produce torch/ directory"
-      diag_emit "installer.libtorch" "FAIL" "INS-LIBTORCH-0005" "torch/ directory missing in extracted wheel" "use a compatible aarch64 torch wheel"
+  elif is_jetson; then
+    # Jetson boards need NVIDIA-built wheels with sm_72/sm_87 kernels.
+    # The standard PyTorch aarch64 wheel only contains sm_80+sm_90 (ARM server)
+    # which causes "no kernel image available" at runtime on Orin/Xavier.
+    if ! download_libtorch_jetson; then
+      echo "[error] could not obtain a Jetson-compatible libtorch"
+      echo "[hint] provide a Jetson torch wheel manually via --libtorch-url or LIBTORCH_URL"
+      diag_emit "installer.libtorch" "FAIL" "INS-LIBTORCH-0007" "no Jetson-compatible libtorch available" "provide a Jetson torch wheel via --libtorch-url"
       exit 1
     fi
-
-    # Move torch/ → external/libtorch (lib/, include/, share/ are already there)
-    rm -rf "$dst"
-    mv "$extract_dir/torch" "$dst"
-    rm -rf "$extract_dir"
+  else
+    # Non-Jetson aarch64 (e.g. Grace Hopper, Ampere Altra) — standard wheel.
+    local plat_tag="${TORCH_AARCH64_PLAT_TAG:-manylinux_2_28_aarch64}"
+    local whl_name="torch-${LIBTORCH_VERSION}%2B${LIBTORCH_CUDA_TAG}-${TORCH_CPYTHON_TAG}-${TORCH_CPYTHON_TAG}-${plat_tag}.whl"
+    local url="https://download.pytorch.org/whl/${LIBTORCH_CUDA_TAG}/${whl_name}"
+    extract_wheel_to_libtorch "$url"
   fi
 
   if ! is_valid_libtorch "$dst"; then
@@ -129,6 +228,22 @@ download_libtorch_aarch64() {
     exit 1
   fi
   echo "[info] libtorch ready at: $dst"
+}
+
+# The PyTorch wheel's libtorch_cuda.so links NCCL, cuSPARSELt, and NVSHMEM
+# for multi-GPU / sparse ops.  On single-GPU Jetson boards these libraries
+# are absent and the code paths are never hit.  Create empty stub .so files
+# so the dynamic loader is satisfied at runtime.
+stub_missing_libtorch_deps() {
+  local libdir="$1/lib"
+  local libs="libcusparseLt.so.0 libnccl.so.2 libnvshmem_host.so.3 libcudss.so.0"
+  for lib in $libs; do
+    if [[ ! -f "$libdir/$lib" ]]; then
+      echo "[info] creating stub for missing optional dep: $lib"
+      echo "" | gcc -shared -x c - -o "$libdir/$lib" -Wl,-soname,"$lib" -nostdlib 2>/dev/null \
+        || echo "[warn] failed to create stub $lib (gcc not available?)"
+    fi
+  done
 }
 
 ensure_libtorch() {
@@ -156,4 +271,9 @@ ensure_libtorch() {
     aarch64) download_libtorch_aarch64 ;;
   esac
   export LIBTORCH="$ROOT/external/libtorch"
+
+  # On aarch64, PyTorch wheel bundles deps not present on single-GPU Jetson
+  if [[ "$ARCH" == "aarch64" ]]; then
+    stub_missing_libtorch_deps "$LIBTORCH"
+  fi
 }

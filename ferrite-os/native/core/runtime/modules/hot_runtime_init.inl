@@ -314,10 +314,7 @@ GPUHotRuntime* gpu_hot_init_with_config(int device_id, const char* token, const 
             effective_config.pool_fraction = 0.35f;
         }
         if (!explicit_reserve && effective_config.reserve_vram == 0) {
-            size_t orin_reserve = total_mem / 5; // 20%
-            size_t min_orin_reserve = 1536ULL * 1024 * 1024; // 1.5GB
-            if (orin_reserve < min_orin_reserve) orin_reserve = min_orin_reserve;
-            effective_config.reserve_vram = orin_reserve;
+            effective_config.reserve_vram = 64ULL * 1024 * 1024; // 64MB - CUDA driver/cuBLAS headroom
         }
     } else if (auto_embedded_managed_pool) {
         // Non-Orin Jetson defaults: slightly larger pool than Orin mode, modest host reserve.

@@ -20,6 +20,9 @@ rustflags = [
   "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../../ferrite-os/lib",
   "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../../../external/libtorch/lib",
   "-C", "link-arg=-Wl,-rpath,$ORIGIN/../../../external/libtorch/lib",
+  # PyTorch wheel's libtorch_cuda.so links NCCL/cuSPARSELt/NVSHMEM which
+  # are absent on single-GPU Jetson — allow their symbols to stay unresolved.
+  "-C", "link-args=-Wl,--allow-shlib-undefined",
 ]
 
 [env]

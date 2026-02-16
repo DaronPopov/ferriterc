@@ -210,11 +210,10 @@ __global__ void ptx_os_kernel(PTXSystemState* state) {
                                      KLOG("[PTX-CDP] Recursive Launch: Func=%p | Grid=(%d,%d) | Block=%d\n",
                                             launch->kernel_func, launch->grid.x, launch->grid.y, launch->block.x);
                                      
-                                     typedef void (*kernel_ptr_t)(void**);
-                                     kernel_ptr_t func = (kernel_ptr_t)launch->kernel_func;
-                                     
                                      // Pass the address of the inline argument array
 #if PTX_ENABLE_CDP
+                                     typedef void (*kernel_ptr_t)(void**);
+                                     kernel_ptr_t func = (kernel_ptr_t)launch->kernel_func;
                                      func<<<launch->grid, launch->block, launch->shared_mem, launch->stream>>>(launch->arg_values);
 #else
                                      KLOG("[PTX-CDP] Recursive launch skipped (PTX_ENABLE_CDP=0)\n");
