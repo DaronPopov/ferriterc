@@ -3,6 +3,7 @@ use std::env;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
@@ -167,7 +168,7 @@ fn hash_token(token: &str, vocab_size: i64) -> i64 {
     (hasher.finish() % vocab_size as u64) as i64
 }
 
-fn load_tokens(path: &str, vocab_size: i64) -> Result<Vec<i64>> {
+fn load_tokens(path: &Path, vocab_size: i64) -> Result<Vec<i64>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut tokens = Vec::new();
@@ -230,7 +231,16 @@ fn main() -> Result<()> {
     let bias2 = Tensor::zeros(&[cfg.hidden_dim], (Kind::Float, device));
 
     println!("Streaming workload starting (Jetson-friendly) ...");
-    let tokens = load_tokens(&cfg.dataset_path, cfg.vocab_size)?;
+    let base = env::var("FERRITE_RUN_CALLER_CWD")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let dataset_path = Path::new(&cfg.dataset_path);
+    let dataset_absolute = if dataset_path.is_absolute() {
+        dataset_path.to_path_buf()
+    } else {
+        base.join(dataset_path)
+    };
+    let tokens = load_tokens(&dataset_absolute, cfg.vocab_size)?;
     if tokens.is_empty() {
         return Err(anyhow!("dataset produced no tokens"));
     }
@@ -247,7 +257,8 @@ fn main() -> Result<()> {
         set_torch_stream(stream_id);
 
         let token_batch = fetch_batch(&tokens, &mut cursor, cfg.batch_size as usize);
-        let indices = Tensor::of_slice(&token_batch).to_device(device);
+        let indices = Tensor::f_from_slice(&token_batch)?
+            .to_device(device);
         let embeddings = embedding.index_select(0, &indices);
 
         let logits = no_grad(|| {
