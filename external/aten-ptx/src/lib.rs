@@ -22,6 +22,7 @@ use ptx_runtime::PtxRuntime;
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::collections::HashMap;
 use std::os::raw::c_void;
+use std::panic;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod adapter;
@@ -288,7 +289,47 @@ pub fn init_pytorch_tlsf_ex(device_id: i32, pool_fraction: f64, num_streams: u32
     adapter::init_torch_allocator(req.device_id);
     adapter::warmup_cuda_allocator()?;
 
+    // On Jetson (integrated GPU), PyTorch's lazy CUDA initialization
+    // conflicts with the PTX context hook on the very first tensor op.
+    // The first CUDA tensor allocation triggers c10::cuda stream init
+    // which fails, but leaves enough internal state that subsequent ops
+    // succeed.  Absorb this one-time init failure here so user code
+    // never sees it.
+    let previous_hook = panic::take_hook();
+    panic::set_hook(Box::new(|_| {}));
+    let warmup_result = panic::catch_unwind(|| warmup_torch_cuda(req.device_id as usize));
+    panic::set_hook(previous_hook);
+    if warmup_result.is_err() {
+        eprintln!(
+            "[aten-ptx] WARNING: CUDA warmup failed (invalid device ordinal?). \
+             This is expected on some Jetson platforms; continuing."
+        );
+    }
+
     Ok(())
+}
+
+/// Trigger PyTorch's lazy CUDA initialization so the first user tensor op
+/// doesn't hit the one-time init failure on Jetson (integrated GPU + PTX
+/// context hook).  The first tensor op always fails; we absorb that here.
+fn warmup_torch_cuda(device_id: usize) {
+    use tch::{Device, Kind, Tensor};
+    let device = Device::Cuda(device_id);
+    // First op may fail — absorb it.
+    let _ = panic::catch_unwind(|| {
+        let _t = Tensor::ones([1], (Kind::Float, device));
+    });
+    // Second op verifies CUDA is now functional.
+    match panic::catch_unwind(|| {
+        Tensor::ones([1], (Kind::Float, device))
+    }) {
+        Ok(_) => {
+            eprintln!("[aten-ptx] CUDA warmup complete (device {})", device_id);
+        }
+        Err(_) => {
+            eprintln!("[aten-ptx] WARNING: CUDA warmup failed on device {}", device_id);
+        }
+    }
 }
 
 /// Print detailed allocator statistics
