@@ -1,4 +1,8 @@
+use std::collections::hash_map::DefaultHasher;
 use std::env;
+use std::fs::File;
+use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
@@ -11,11 +15,13 @@ struct Config {
     duration_seconds: u64,
     iterations: usize,
     batch_size: i64,
-    input_dim: i64,
+    vocab_size: i64,
+    embedding_dim: i64,
     hidden_dim: i64,
     streams: u32,
     pool_fraction: f32,
     report_every: usize,
+    dataset_path: String,
 }
 
 impl Default for Config {
@@ -24,11 +30,13 @@ impl Default for Config {
             duration_seconds: 60,
             iterations: 0,
             batch_size: 32,
-            input_dim: 256,
+            vocab_size: 32_000,
+            embedding_dim: 256,
             hidden_dim: 256,
             streams: 8,
             pool_fraction: 0.20,
             report_every: 10,
+            dataset_path: "data/wikitext-2/wikitext-2.train.tokens".to_string(),
         }
     }
 }
@@ -57,10 +65,16 @@ fn parse_args() -> Result<Config> {
                     .ok_or_else(|| anyhow!("missing value for --batch-size"))?
                     .parse()?;
             }
-            "--input-dim" => {
-                cfg.input_dim = args
+            "--vocab-size" => {
+                cfg.vocab_size = args
                     .next()
-                    .ok_or_else(|| anyhow!("missing value for --input-dim"))?
+                    .ok_or_else(|| anyhow!("missing value for --vocab-size"))?
+                    .parse()?;
+            }
+            "--embedding-dim" => {
+                cfg.embedding_dim = args
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for --embedding-dim"))?
                     .parse()?;
             }
             "--hidden-dim" => {
@@ -87,6 +101,11 @@ fn parse_args() -> Result<Config> {
                     .ok_or_else(|| anyhow!("missing value for --report"))?
                     .parse()?;
             }
+            "--dataset-path" => {
+                cfg.dataset_path = args
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for --dataset-path"))?;
+            }
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -112,11 +131,13 @@ fn print_help() {
     println!("  --duration N     Seconds to stream (ignored if --iterations > 0) [default: 60]");
     println!("  --iterations N   Number of iterations (overrides duration when >0)");
     println!("  --batch-size N   Input batch size [default: 32]");
-    println!("  --input-dim N    Synthetic input dimensionality [default: 256]");
+    println!("  --vocab-size N   Vocabulary size for hashed tokens [default: 32000]");
+    println!("  --embedding-dim N Embedding dimension [default: 256]");
     println!("  --hidden-dim N   Hidden layer size [default: 256]");
     println!("  --streams N      PTX stream count [default: 8]");
     println!("  --pool F         TLSF pool fraction (0.01-0.9) [default: 0.20]");
-    println!("  --report N       Show status every N iterations [default: 10]");
+    println!("  --report N       Status every N iterations (default: 10)");
+    println!("  --dataset-path P Path to text corpus of tokens to stream");
     println!("  -h, --help       Print this help");
 }
 
@@ -127,12 +148,54 @@ fn describe_summary(cfg: &Config, iterations: usize, tokens: i64, start: Instant
     println!("  iterations:     {}", iterations);
     println!("  duration:       {:.2}s", elapsed.as_secs_f64());
     println!("  batch size:     {}", cfg.batch_size);
-    println!("  input dim:      {}", cfg.input_dim);
+    println!("  vocab size:     {}", cfg.vocab_size);
+    println!("  embedding dim:  {}", cfg.embedding_dim);
     println!("  hidden dim:     {}", cfg.hidden_dim);
     println!("  stream count:   {}", cfg.streams);
     println!("  pool fraction:  {:.2}", cfg.pool_fraction);
     println!("  tokens total:   {}", tokens);
-    println!("  sample throughput: {:.1} tokens/s", tokens as f64 / elapsed.as_secs_f64());
+    println!(
+        "  sample throughput: {:.1} tokens/s",
+        tokens as f64 / elapsed.as_secs_f64()
+    );
+    println!("  dataset path:   {}", cfg.dataset_path);
+}
+
+fn hash_token(token: &str, vocab_size: i64) -> i64 {
+    let mut hasher = DefaultHasher::new();
+    token.hash(&mut hasher);
+    (hasher.finish() % vocab_size as u64) as i64
+}
+
+fn load_tokens(path: &str, vocab_size: i64) -> Result<Vec<i64>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut tokens = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+        for token in line.split_whitespace() {
+            tokens.push(hash_token(token, vocab_size));
+        }
+    }
+
+    Ok(tokens)
+}
+
+fn fetch_batch(tokens: &[i64], cursor: &mut usize, batch_size: usize) -> Vec<i64> {
+    let mut batch = Vec::with_capacity(batch_size);
+    for _ in 0..batch_size {
+        if tokens.is_empty() {
+            batch.push(0);
+            continue;
+        }
+        batch.push(tokens[*cursor]);
+        *cursor = (*cursor + 1) % tokens.len();
+    }
+    batch
 }
 
 fn main() -> Result<()> {
@@ -160,12 +223,18 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow!(e))?;
 
     let device = Device::Cuda(0);
-    let kernel1 = Tensor::randn(&[cfg.input_dim, cfg.hidden_dim], (Kind::Float, device));
+    let embedding = Tensor::randn(&[cfg.vocab_size, cfg.embedding_dim], (Kind::Float, device));
+    let kernel1 = Tensor::randn(&[cfg.embedding_dim, cfg.hidden_dim], (Kind::Float, device));
     let bias1 = Tensor::zeros(&[cfg.hidden_dim], (Kind::Float, device));
     let kernel2 = Tensor::randn(&[cfg.hidden_dim, cfg.hidden_dim], (Kind::Float, device));
     let bias2 = Tensor::zeros(&[cfg.hidden_dim], (Kind::Float, device));
 
     println!("Streaming workload starting (Jetson-friendly) ...");
+    let tokens = load_tokens(&cfg.dataset_path, cfg.vocab_size)?;
+    if tokens.is_empty() {
+        return Err(anyhow!("dataset produced no tokens"));
+    }
+    let mut cursor = 0usize;
     let start = Instant::now();
     let mut iteration = 0usize;
     let mut tokens_processed = 0i64;
@@ -177,9 +246,12 @@ fn main() -> Result<()> {
         let stream_id = iteration % cfg.streams as usize;
         set_torch_stream(stream_id);
 
-        let inputs = Tensor::randn(&[cfg.batch_size, cfg.input_dim], (Kind::Float, device));
+        let token_batch = fetch_batch(&tokens, &mut cursor, cfg.batch_size as usize);
+        let indices = Tensor::of_slice(&token_batch).to_device(device);
+        let embeddings = embedding.index_select(0, &indices);
+
         let logits = no_grad(|| {
-            let hidden = inputs.matmul(&kernel1) + &bias1;
+            let hidden = embeddings.matmul(&kernel1) + &bias1;
             let activated = hidden.relu();
             let mid = activated.matmul(&kernel2) + &bias2;
             mid.softmax(-1, Kind::Float)
@@ -191,8 +263,8 @@ fn main() -> Result<()> {
         sync_all_streams();
 
         if iteration % cfg.report_every == 0 {
-            let sample_rate = cfg.batch_size as f64 * (iteration as f64 + 1.0)
-                / start.elapsed().as_secs_f64().max(1.0);
+            let sample_rate =
+                cfg.batch_size as f64 * (iteration as f64 + 1.0) / start.elapsed().as_secs_f64().max(1.0);
             println!(
                 "iteration {} stream {} sample rate {:.1} samples/s",
                 iteration + 1,
