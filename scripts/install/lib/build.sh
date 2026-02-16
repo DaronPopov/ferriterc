@@ -33,7 +33,7 @@ run_build() {
   echo "[info] using GPU SM: ${SM}"
 
   if [[ "${CORE_ONLY}" == "true" ]]; then
-    local STEPS=4
+    local STEPS=5
     echo "[info] core-only mode — skipping libtorch and torch-dependent crates"
 
     echo "[1/${STEPS}] Building ferrite-os"
@@ -54,7 +54,16 @@ run_build() {
     cd "$ROOT/ferrite-os"
     CUDA_PATH="${CUDA_PATH}" cargo build --release -p ferrite-daemon
 
-    echo "[4/${STEPS}] Installing ferrite command"
+    echo "[4/${STEPS}] Building ferrite LLM inference engine"
+    if [[ -d "$ROOT/ferrite" && -f "$ROOT/ferrite/Cargo.toml" ]]; then
+      cd "$ROOT/ferrite"
+      LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LD_LIBRARY_PATH:-}" \
+        cargo build --release --bin orin-infer
+    else
+      echo "[warn] ferrite/ submodule not found, skipping LLM engine"
+    fi
+
+    echo "[5/${STEPS}] Installing ferrite command"
   else
     if [[ -z "${LIBTORCH:-}" ]] || ! is_valid_libtorch "${LIBTORCH}"; then
       echo "[error] LIBTORCH is not set or invalid — cannot build torch-dependent crates"
@@ -63,7 +72,7 @@ run_build() {
       exit 1
     fi
     echo "[info] using libtorch: ${LIBTORCH}"
-    local STEPS=12
+    local STEPS=13
 
     echo "[1/${STEPS}] Building ferrite-os"
     cd "$ROOT/ferrite-os"
@@ -124,7 +133,16 @@ run_build() {
     cd "$ROOT/ferrite-os"
     CUDA_PATH="${CUDA_PATH}" cargo build --release -p ferrite-daemon
 
-    echo "[12/${STEPS}] Installing ferrite command"
+    echo "[12/${STEPS}] Building ferrite LLM inference engine"
+    if [[ -d "$ROOT/ferrite" && -f "$ROOT/ferrite/Cargo.toml" ]]; then
+      cd "$ROOT/ferrite"
+      LD_LIBRARY_PATH="${ROOT}/ferrite-os/lib:${LIBTORCH}/lib:${LD_LIBRARY_PATH:-}" \
+        cargo build --release --bin orin-infer
+    else
+      echo "[warn] ferrite/ submodule not found, skipping LLM engine"
+    fi
+
+    echo "[13/${STEPS}] Installing ferrite command"
   fi
 
   local INSTALL_BIN="${HOME}/.local/bin"
@@ -136,6 +154,13 @@ run_build() {
   else
     echo "[warn] ferrite binary not found at ${FERRITE_BIN}, skipping symlink"
   fi
+  # Symlink orin-infer for LLM inference
+  local ORIN_INFER_BIN="$ROOT/ferrite/target/release/orin-infer"
+  if [[ -f "$ORIN_INFER_BIN" ]]; then
+    ln -sf "$ORIN_INFER_BIN" "${INSTALL_BIN}/orin-infer"
+    echo "[info] symlinked: ${INSTALL_BIN}/orin-infer -> ${ORIN_INFER_BIN}"
+  fi
+
   # Symlink ferrite-daemon wrapper for direct access from any directory.
   # Wrapper handles runtime + libtorch environment and forwards to the binary.
   local DAEMON_WRAPPER="$ROOT/ferrite-daemon"

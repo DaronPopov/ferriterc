@@ -13,8 +13,21 @@ detect_platform_arch() {
   esac
 }
 
+ensure_submodules() {
+  if [[ -f "$ROOT/.gitmodules" ]]; then
+    # Check if any submodule is missing its checkout
+    if git -C "$ROOT" submodule status 2>/dev/null | grep -q '^-'; then
+      echo "[info] initializing git submodules..."
+      git -C "$ROOT" submodule update --init --recursive
+    else
+      echo "[info] submodules up to date"
+    fi
+  fi
+}
+
 run_preflight_checks() {
   echo "[info] architecture: ${ARCH}"
+  ensure_submodules
   ensure_host_build_tools
   ensure_fetch_tools
   ensure_cuda_toolkit
