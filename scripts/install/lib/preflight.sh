@@ -20,7 +20,7 @@ detect_platform_arch() {
   IS_JETSON=false
   if [[ "$ARCH" == "aarch64" ]] && uname -r 2>/dev/null | grep -qi tegra; then
     IS_JETSON=true
-    if [[ "${CORE_ONLY}" != "true" ]]; then
+    if [[ "${CORE_ONLY:-false}" != "true" ]]; then
       echo "[info] Jetson (Tegra) platform detected — enabling core-only mode"
       echo "[info] torch-sys x86_64 bindings are incompatible with Jetson libtorch"
       echo "[info] orin-infer LLM engine uses candle and does not require libtorch"

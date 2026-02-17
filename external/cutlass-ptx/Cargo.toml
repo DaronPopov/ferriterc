@@ -1,0 +1,21 @@
+[package]
+name = "cutlass-ptx"
+version = "0.1.0"
+edition = "2021"
+authors = ["Daron Popov"]
+description = "NVIDIA CUTLASS GEMM kernels with PTX-OS TLSF allocator"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ptx-runtime = { path = "../../ferrite-os/crates/public/ptx-runtime" }
+ptx-sys = { path = "../../ferrite-os/crates/internal/ptx-sys" }
+libc = "0.2"
+
+[build-dependencies]
+cc = "1.0"
+
+[[example]]
+name = "cutlass_gemm_test"

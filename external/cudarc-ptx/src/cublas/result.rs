@@ -401,6 +401,26 @@ pub unsafe fn gemm_ex(
     compute_type: sys::cublasComputeType_t,
     algo: sys::cublasGemmAlgo_t,
 ) -> Result<(), CublasError> {
+    // CUTLASS fast-path for FP16 OP_N/OP_N (column-major)
+    #[cfg(feature = "ptx-cutlass")]
+    {
+        use sys::cublasOperation_t::CUBLAS_OP_N;
+        use sys::cudaDataType_t::CUDA_R_16F;
+        if transa == CUBLAS_OP_N
+            && transb == CUBLAS_OP_N
+            && a_type == CUDA_R_16F
+            && b_type == CUDA_R_16F
+            && c_type == CUDA_R_16F
+        {
+            if let Ok(()) = crate::ptx_cutlass::cutlass_hgemm_nn(
+                a, b, c, m, n, k, lda, ldb, ldc, alpha, beta,
+            ) {
+                return Ok(());
+            }
+            // Fall through to cuBLAS on CUTLASS failure
+        }
+    }
+
     lib()
         .cublasGemmEx(
             handle,

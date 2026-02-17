@@ -99,6 +99,10 @@ pub mod types;
 // PTX-OS TLSF allocator integration
 pub mod ptx_alloc;
 
+// CUTLASS GEMM intercept (routes cuBLAS FP16 GEMM to CUTLASS when ptx-cutlass enabled)
+#[cfg(feature = "cublas")]
+pub mod ptx_cutlass;
+
 pub(crate) fn panic_no_lib_found<S: std::fmt::Debug>(lib_name: &str, choices: &[S]) -> ! {
     panic!("Unable to dynamically load the \"{lib_name}\" shared library - searched for library names: {choices:?}. Ensure that `LD_LIBRARY_PATH` has the correct path to the installed library. If the shared library is present on the system under a different name than one of those listed above, please open a GitHub issue.");
 }

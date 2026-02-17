@@ -80,6 +80,13 @@ pub unsafe fn tlsf_free(ptr: CUdeviceptr) -> Result<(), crate::driver::result::D
     Err(crate::driver::result::DriverError(crate::driver::sys::CUresult::CUDA_ERROR_INVALID_VALUE))
 }
 
+/// Get the shared TLSF runtime (for CUTLASS pool sharing).
+/// Initializes the runtime if not already done.
+#[cfg(feature = "ptx-alloc")]
+pub fn get_runtime() -> Option<std::sync::Arc<PtxRuntime>> {
+    Some(get_or_init_runtime())
+}
+
 /// Get TLSF statistics
 #[cfg(feature = "ptx-alloc")]
 pub fn get_tlsf_stats() -> Option<ptx_sys::TLSFPoolStats> {

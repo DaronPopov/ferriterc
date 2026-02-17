@@ -37,6 +37,9 @@ main() {
   auto_detect_sm
   export_build_env
 
+  # CUTLASS headers (needed for cutlass-ptx GEMM kernels)
+  ensure_cutlass
+
   # provisioning boundary
   if [[ "${CORE_ONLY}" != "true" ]]; then
     ensure_libtorch

@@ -28,6 +28,7 @@ spin = { version = "0.9.8", features = ["rwlock"], optional = true, default-feat
 # PTX-OS Integration
 ptx-runtime = { path = "../../ferrite-os/crates/public/ptx-runtime", optional = true }
 ptx-sys = { path = "../../ferrite-os/crates/internal/ptx-sys", optional = true }
+cutlass-ptx = { path = "../cutlass-ptx", optional = true }
 
 [features]
 default = ["std", "cublas", "cublaslt", "curand", "driver", "runtime", "nvrtc"]
@@ -46,6 +47,9 @@ dynamic-linking = []
 
 # PTX-OS TLSF allocator (THE KEY FEATURE)
 ptx-alloc = ["dep:ptx-runtime", "dep:ptx-sys"]
+
+# CUTLASS GEMM intercept (routes cuBLAS FP16 GEMM to CUTLASS)
+ptx-cutlass = ["dep:cutlass-ptx", "ptx-alloc", "f16"]
 
 # CUDA version features
 cuda-version-from-build-system = []
