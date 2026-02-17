@@ -1,6 +1,13 @@
 // Complete PyTorch TLSF Allocator Implementation
 // Implements ALL required methods from c10::cuda::CUDACachingAllocator::CUDAAllocator
-// Compatible with PyTorch 2.9.x (Jetson AI Lab wheel)
+// Compatible with PyTorch 2.9.x (both Jetson AI Lab wheel and upstream x86_64)
+//
+// The CUDAAllocator interface changed between Jetson-patched 2.9 and upstream 2.9:
+//   - emptyCache / snapshot lost the DeviceIndex parameter
+//   - recordHistory gained a 5th bool parameter
+//   - Stat / StatType moved to c10::CachingAllocator namespace
+//   - New pure virtuals: getMemoryFraction, enable, isEnabled, shareIpcHandle
+// We detect the new API via CachingDeviceAllocator.h which only exists upstream.
 
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/cuda/CUDAStream.h>
@@ -10,6 +17,15 @@
 #include <unordered_map>
 #include <mutex>
 #include <memory>
+
+// Detect upstream PyTorch ≥2.9 where the allocator API changed.
+// CachingDeviceAllocator.h is a new header that upstream CUDACachingAllocator.h
+// includes; it does not exist in NVIDIA's Jetson AI Lab builds.
+#if __has_include(<c10/core/CachingDeviceAllocator.h>)
+#define FERRITE_PYTORCH_NEW_ALLOC_API 1
+#else
+#define FERRITE_PYTORCH_NEW_ALLOC_API 0
+#endif
 
 // Rust FFI functions
 extern "C" {
@@ -86,12 +102,21 @@ public:
         (void)device;
     }
 
+    // ── emptyCache ──────────────────────────────────────────────
+    // Old API: emptyCache(DeviceIndex, MempoolId_t)
+    // New API: emptyCache(MempoolId_t)
+#if FERRITE_PYTORCH_NEW_ALLOC_API
+    void emptyCache(MempoolId_t mempool_id = {0, 0}) override {
+        (void)mempool_id;
+    }
+#else
     void emptyCache(
         c10::DeviceIndex device = -1,
         MempoolId_t mempool_id = {0, 0}) override {
         (void)device;
         (void)mempool_id;
     }
+#endif
 
     void cacheInfo(c10::DeviceIndex device, size_t* largestBlock) override {
         (void)device;
@@ -114,35 +139,46 @@ public:
         (void)stream;
     }
 
+    // ── getDeviceStats ──────────────────────────────────────────
+    // Old API: Stat / StatType live in CUDACachingAllocator
+    // New API: moved to c10::CachingAllocator
     DeviceStats getDeviceStats(c10::DeviceIndex device) override {
         (void)device;
         DeviceStats stats;
 
         std::lock_guard<std::mutex> lock(mutex_);
 
-        Stat allocated_stat;
+#if FERRITE_PYTORCH_NEW_ALLOC_API
+        using StatT = c10::CachingAllocator::Stat;
+        using StatTypeT = c10::CachingAllocator::StatType;
+#else
+        using StatT = Stat;
+        using StatTypeT = StatType;
+#endif
+
+        StatT allocated_stat;
         allocated_stat.current = current_allocated_;
         allocated_stat.peak = peak_allocated_;
 
-        Stat zero_stat;
+        StatT zero_stat;
         zero_stat.current = 0;
         zero_stat.peak = 0;
 
-        stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)] = allocated_stat;
-        stats.allocated_bytes[static_cast<size_t>(StatType::SMALL_POOL)] = zero_stat;
-        stats.allocated_bytes[static_cast<size_t>(StatType::LARGE_POOL)] = zero_stat;
+        stats.allocated_bytes[static_cast<size_t>(StatTypeT::AGGREGATE)] = allocated_stat;
+        stats.allocated_bytes[static_cast<size_t>(StatTypeT::SMALL_POOL)] = zero_stat;
+        stats.allocated_bytes[static_cast<size_t>(StatTypeT::LARGE_POOL)] = zero_stat;
 
-        stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)] = allocated_stat;
-        stats.reserved_bytes[static_cast<size_t>(StatType::SMALL_POOL)] = zero_stat;
-        stats.reserved_bytes[static_cast<size_t>(StatType::LARGE_POOL)] = zero_stat;
+        stats.reserved_bytes[static_cast<size_t>(StatTypeT::AGGREGATE)] = allocated_stat;
+        stats.reserved_bytes[static_cast<size_t>(StatTypeT::SMALL_POOL)] = zero_stat;
+        stats.reserved_bytes[static_cast<size_t>(StatTypeT::LARGE_POOL)] = zero_stat;
 
-        stats.active_bytes[static_cast<size_t>(StatType::AGGREGATE)] = allocated_stat;
-        stats.active_bytes[static_cast<size_t>(StatType::SMALL_POOL)] = zero_stat;
-        stats.active_bytes[static_cast<size_t>(StatType::LARGE_POOL)] = zero_stat;
+        stats.active_bytes[static_cast<size_t>(StatTypeT::AGGREGATE)] = allocated_stat;
+        stats.active_bytes[static_cast<size_t>(StatTypeT::SMALL_POOL)] = zero_stat;
+        stats.active_bytes[static_cast<size_t>(StatTypeT::LARGE_POOL)] = zero_stat;
 
-        stats.inactive_split_bytes[static_cast<size_t>(StatType::AGGREGATE)] = zero_stat;
-        stats.inactive_split_bytes[static_cast<size_t>(StatType::SMALL_POOL)] = zero_stat;
-        stats.inactive_split_bytes[static_cast<size_t>(StatType::LARGE_POOL)] = zero_stat;
+        stats.inactive_split_bytes[static_cast<size_t>(StatTypeT::AGGREGATE)] = zero_stat;
+        stats.inactive_split_bytes[static_cast<size_t>(StatTypeT::SMALL_POOL)] = zero_stat;
+        stats.inactive_split_bytes[static_cast<size_t>(StatTypeT::LARGE_POOL)] = zero_stat;
 
         stats.num_alloc_retries = 0;
         stats.num_ooms = 0;
@@ -160,6 +196,15 @@ public:
         peak_allocated_ = current_allocated_;
     }
 
+    // ── snapshot ─────────────────────────────────────────────────
+    // Old API: snapshot(DeviceIndex, MempoolId_t)
+    // New API: snapshot(MempoolId_t)
+#if FERRITE_PYTORCH_NEW_ALLOC_API
+    SnapshotInfo snapshot(MempoolId_t mempool_id = {0, 0}) override {
+        (void)mempool_id;
+        return SnapshotInfo();
+    }
+#else
     SnapshotInfo snapshot(
         c10::DeviceIndex device = -1,
         MempoolId_t mempool_id = {0, 0}) override {
@@ -167,6 +212,7 @@ public:
         (void)mempool_id;
         return SnapshotInfo();
     }
+#endif
 
     void beginAllocateToPool(
         c10::DeviceIndex device,
@@ -200,6 +246,23 @@ public:
         return nullptr;
     }
 
+    // ── recordHistory ───────────────────────────────────────────
+    // Old API: 4 params
+    // New API: 5 params (added trailing bool)
+#if FERRITE_PYTORCH_NEW_ALLOC_API
+    void recordHistory(
+        bool enabled,
+        CreateContextFn context_recorder,
+        size_t alloc_trace_max_entries,
+        RecordContext when,
+        bool alloc_is_free) override {
+        (void)enabled;
+        (void)context_recorder;
+        (void)alloc_trace_max_entries;
+        (void)when;
+        (void)alloc_is_free;
+    }
+#else
     void recordHistory(
         bool enabled,
         CreateContextFn context_recorder,
@@ -210,6 +273,7 @@ public:
         (void)alloc_trace_max_entries;
         (void)when;
     }
+#endif
 
     void attachOutOfMemoryObserver(OutOfMemoryObserver observer) override {
         (void)observer;
@@ -281,6 +345,27 @@ public:
             std::cerr << "[aten-ptx] cudaMemcpy failed: " << cudaGetErrorString(err) << std::endl;
         }
     }
+
+    // ── New pure virtuals (upstream PyTorch ≥2.9 only) ──────────
+#if FERRITE_PYTORCH_NEW_ALLOC_API
+    double getMemoryFraction(c10::DeviceIndex device) override {
+        (void)device;
+        return 1.0;  // TLSF owns the entire pool
+    }
+
+    void enable(bool value) override {
+        enabled_ = value;
+    }
+
+    bool isEnabled() const override {
+        return enabled_;
+    }
+
+    ShareableHandle shareIpcHandle(void* ptr) override {
+        (void)ptr;
+        return ShareableHandle();
+    }
+#endif
 };
 
 // Global instance
